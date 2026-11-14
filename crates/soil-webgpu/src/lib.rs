@@ -760,6 +760,49 @@ impl soil::present::surface::Host for WebGpuHost {
         self.presenter.scale()
     }
 
+    /// This host links `wasi:webgpu`, so it takes either delivery. A device
+    /// host with no adapter would answer `[rgba]` and a GPU-only Spore would
+    /// learn that from the one call, rather than by failing to create a device.
+    fn delivery(&mut self) -> Vec<soil::present::types::DeliveryKind> {
+        vec![
+            soil::present::types::DeliveryKind::Texture,
+            soil::present::types::DeliveryKind::Rgba,
+        ]
+    }
+
+    /// The no-GPU arm: the Spore rasterized its own frame, so the host only
+    /// validates it and hands it to the presenter. No device, no texture, no
+    /// readback.
+    fn present_rgba(
+        &mut self,
+        frame: soil::present::types::RgbaFrame,
+    ) -> std::result::Result<(), String> {
+        let (width, height) = self.presenter.size();
+        if frame.width != width || frame.height != height {
+            return Err(format!(
+                "frame is {}x{}, the granted surface is {width}x{height}",
+                frame.width, frame.height
+            ));
+        }
+        let expected = width as usize * height as usize * 4;
+        if frame.pixels.len() != expected {
+            return Err(format!(
+                "frame is {} bytes, expected {expected}",
+                frame.pixels.len()
+            ));
+        }
+        if frame.pixels.chunks_exact(4).any(|pixel| pixel[3] != 0xFF) {
+            return Err("every pixel must be opaque".into());
+        }
+        self.presenter
+            .present(CanvasFrame {
+                width,
+                height,
+                rgba: frame.pixels,
+            })
+            .map_err(|error| error.to_string())
+    }
+
     fn present(
         &mut self,
         texture: wasmtime::component::Resource<wasi_webgpu_wasmtime::Texture>,

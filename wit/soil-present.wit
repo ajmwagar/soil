@@ -1,39 +1,28 @@
 // How a Spore hands over what it rendered.
 //
-// One package, two arms, because two kinds of guest present the same frame:
+// One interface, two deliveries. A Spore either hands over the pixels it
+// rasterized (`rgba`) or the texture it rendered (`texture`); the host turns
+// whichever it receives into the next frame. The extent is always the host's:
+// `size()` is the only authority, so a Spore cannot choose or resize a display.
 //
-// * `owner` is the core-Wasm arm. A guest with its own rasterizer (Slint's
-//   software renderer, egui, Skia) hands the host consecutive RGBA8 bytes and
-//   the host copies them into the frame it presents. The extent stays the
-//   host's; the guest never chooses or resizes the display.
-// * `surface`/`input`/`cursor`/`clipboard` are the component arm. A
-//   `wasm32-wasip2` guest that renders with `wasi:webgpu` hands the host a
-//   texture to sample, and receives one ordered input stream and the cursor and
-//   clipboard services its window implies.
+// Both deliveries are bytes-free of documents on purpose: no scene graph, no
+// JSON, no per-frame schema negotiation. A frame is an extent and a buffer, or
+// a texture handle.
 //
-// Bytes rather than a document either way: no scene graph, no JSON, no
-// per-frame schema negotiation. A frame is an extent and a buffer.
-// How a Spore hands over the pixels it rendered.
+// This interface is bound two ways, and that is an implementation detail of the
+// host, not a second contract:
 //
-// Two deliveries, one contract. `rgba` is the encoded arm: the Spore owns the
-// rasterizer and the host copies bytes straight into the frame it presents.
-// `texture` is the sampled arm: the Spore rendered with `wasi:webgpu` and the
-// host samples that texture instead of copying pixels back.
+// * a component host binds it directly through the canonical ABI
+//   (`soil-webgpu`, `canvas-winit`);
+// * a core-Wasm host lowers the same functions by hand
+//   (`soil-runtime`, see `docs/abi-core-wasm.md`).
 //
-// Deliberately not a document format: no scene graph, no JSON, no per-frame
-// schema negotiation. A frame is an extent and a buffer.
+// A Spore targets `surface` once and runs against either.
 package soil:present@0.1.0;
 
-interface owner {
-  enum failure {
-    denied,
-    not-ready,
-    /// A present budget was exceeded, or the frame did not match the extent.
-    over-budget,
-    invalid,
-    backend,
-  }
-
+interface types {
+  /// Which deliveries the host can accept. A Spore asks once and picks the
+  /// renderer it already has, instead of inferring from a failed call.
   enum delivery-kind {
     /// The host samples a texture the Spore rendered.
     texture,
@@ -43,28 +32,19 @@ interface owner {
 
   /// Tightly packed RGBA8, `width * height * 4` bytes, alpha 255.
   ///
-  /// The extent is the host's: it equals the surface state the Spore observed,
-  /// never a size the Spore chose.
+  /// The extent is the host's: it equals `size()`, never a size the Spore
+  /// chose. A frame that disagrees with it is refused, not resampled.
   record rgba-frame {
     width: u32,
     height: u32,
     pixels: list<u8>,
   }
-
-  /// Which arm this host takes. A Spore checks once and picks its renderer.
-  delivery: func() -> delivery-kind;
-
-  /// Present an encoded frame. The host validates extent and opacity, then
-  /// presents it in the space it granted.
-  present-rgba: func(frame: rgba-frame) -> result<_, failure>;
 }
 
-// ---------------------------------------------------------------- component arm
-
-/// Presentation-only bridge from a standard `wasi:webgpu` texture to the
-/// host compositor. This does not create a second GPU device ABI and does
-/// not expose a window or swapchain to the guest.
+/// The surface a Spore presents into. The host owns the window, the z-order and
+/// the display; the Spore owns its layout and its rasterizer.
 interface surface {
+  use types.{delivery-kind, rgba-frame};
   use wasi:webgpu/webgpu@0.3.0-rc.2.{gpu-texture};
 
   /// The surface extent in the Spore's layout space. A Spore lays out against
@@ -77,10 +57,21 @@ interface surface {
   /// resolution the window will actually blit rather than a fixed guess.
   scale: func() -> f64;
 
+  /// Which deliveries this host accepts. A host with no GPU says `rgba` only,
+  /// which is what lets a Spore run on a device without a graphics stack.
+  delivery: func() -> list<delivery-kind>;
+
   /// Copy one guest-rendered texture into the compositor's next frame.
   present: func(texture: borrow<gpu-texture>) -> result<_, string>;
-}
 
+  /// Copy one guest-rendered RGBA8 frame into the compositor's next frame.
+  ///
+  /// This is the arm for a Spore with its own rasterizer -- Slint's software
+  /// renderer, egui, Skia -- which needs no GPU, no `wasi:webgpu` and no
+  /// texture readback. The host validates extent and opacity, then presents it
+  /// in the space it granted.
+  present-rgba: func(frame: rgba-frame) -> result<_, string>;
+}
 
 /// Keyboard and pointer events from the presenter. The Spore decides what they
 /// mean; the host only normalizes them. Keys and pointer actions share one
@@ -173,12 +164,7 @@ interface clipboard {
 
 // ---------------------------------------------------------------- worlds
 
-/// A core-Wasm guest that presents encoded pixels.
-world runtime-owner {
-  import owner;
-}
-
-/// A component guest that renders its own texture and reads input.
+/// A component guest: renders its own texture or pixels, reads input.
 world component-guest {
   import surface;
   import input;
