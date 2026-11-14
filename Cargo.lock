@@ -7473,12 +7473,16 @@ name = "soil-shell"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "canvas-winit",
  "fungos-vfs",
  "http",
+ "image",
+ "pollster",
  "serde_json",
  "soil",
  "soil-spore",
  "soil-web-bridge",
+ "soil-webgpu",
  "tempfile",
  "tokio",
  "toml 0.8.23",

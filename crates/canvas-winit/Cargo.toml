@@ -6,9 +6,9 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-[[bin]]
-name = "canvas-winit"
-path = "src/main.rs"
+[lib]
+name = "canvas_winit"
+path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1"

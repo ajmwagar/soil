@@ -1241,7 +1241,7 @@ const BACKGROUND: u32 = 0x0c10_15;
 
 /// What the window shows while a Spore starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Splash {
+pub enum Splash {
     /// The mark, masked like the Dock icon, over two thin curves.
     Logo,
     /// No mark: a small, thick lissajous figure that moves.
@@ -1498,7 +1498,96 @@ fn build_http(launch: &LaunchConfig) -> Result<Option<HttpAccess>> {
     Ok(Some(access))
 }
 
-fn main() -> Result<()> {
+/// Everything one window needs: where the Spore is, what it may reach, and
+/// what a capture should do with the frames it presents.
+#[derive(Debug, Clone)]
+pub struct Options {
+    /// One module (or package) to present.
+    pub module: Option<PathBuf>,
+    /// Write each presented frame here, tightly packed RGBA.
+    pub capture: Option<PathBuf>,
+    /// Stop after this many presented frames.
+    pub frames: Option<usize>,
+    /// One key name to deliver before the guest starts.
+    pub key: Option<String>,
+    /// Text to deliver before the guest starts.
+    pub keys: Option<String>,
+    /// What the terminal's pty runs instead of a login shell.
+    pub command: Option<String>,
+    /// Pointer position to seed.
+    pub pointer: Option<(f32, f32)>,
+    /// Click to seed.
+    pub click: Option<(f32, f32)>,
+    /// Drag to seed.
+    pub drag: Option<((f32, f32), (f32, f32))>,
+    /// Delay before seeded input, so the Spore has painted.
+    pub after: Option<u64>,
+    /// Which splash to draw while the Spore starts.
+    pub splash: Splash,
+    /// Compile and cache the component, then exit.
+    pub prewarm: bool,
+    /// Catalog root for `soil:spore`.
+    pub spores: Option<PathBuf>,
+    /// Initial logical window extent.
+    pub logical_size: (f64, f64),
+    /// Origins `soil:http` may reach.
+    pub origins: Vec<String>,
+    /// Geode socket for leased credentials.
+    pub geode_socket: Option<PathBuf>,
+    /// Geode purpose the lease is for.
+    pub geode_purpose: Option<String>,
+    /// Bridge `hue.local` maps to.
+    pub hue_bridge: Option<Url>,
+    /// Records store the Spore may read or write.
+    pub records_root: Option<PathBuf>,
+    /// One workspace the Spore may list and read.
+    pub vfs_root: Option<PathBuf>,
+    /// Book a granted collection maps onto.
+    pub records_book: Option<String>,
+    /// Collection the guest addresses.
+    pub records_collection: Option<String>,
+    /// Principal the host attests for this Spore.
+    pub actor: Option<String>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            module: None,
+            capture: None,
+            frames: None,
+            key: None,
+            keys: None,
+            command: None,
+            pointer: None,
+            click: None,
+            drag: None,
+            after: None,
+            splash: Splash::Flow,
+            prewarm: false,
+            spores: None,
+            logical_size: LOGICAL_SIZE,
+            origins: Vec::new(),
+            geode_socket: None,
+            geode_purpose: None,
+            hue_bridge: None,
+            records_root: None,
+            vfs_root: None,
+            records_book: None,
+            records_collection: None,
+            actor: None,
+        }
+    }
+}
+
+/// Parse a window's arguments. The `soil` runner builds [`Options`] directly;
+/// this is what a direct `canvas-winit` invocation used to do.
+pub fn parse(args: &[String]) -> Result<Options> {
+    let mut args = args.iter();
+    // Every borrowed argument is cloned at the point it is taken, so the parse
+    // loop reads the same whether it is fed `argv` or a caller's vector.
+
+
     let mut module = None;
     let mut capture = None;
     let mut frames = None;
@@ -1522,12 +1611,11 @@ fn main() -> Result<()> {
     let mut records_book: Option<String> = None;
     let mut records_collection: Option<String> = None;
     let mut actor: Option<String> = None;
-    let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--capture" => {
                 capture = Some(PathBuf::from(
-                    args.next().context("--capture needs a path")?,
+                    args.next().context("--capture needs a path")?.clone(),
                 ));
             }
             "--frames" => {
@@ -1538,14 +1626,14 @@ fn main() -> Result<()> {
                         .context("--frames needs a number")?,
                 );
             }
-            "--key" => key = Some(args.next().context("--key needs a key name")?),
-            "--keys" => keys = Some(args.next().context("--keys needs text")?),
-            "--command" => command = Some(args.next().context("--command needs a command line")?),
-            "--pointer" => pointer = Some(point(args.next().context("--pointer needs X,Y")?)?),
-            "--click" => click = Some(point(args.next().context("--click needs X,Y")?)?),
+            "--key" => key = Some(args.next().context("--key needs a key name")?.clone()),
+            "--keys" => keys = Some(args.next().context("--keys needs text")?.clone()),
+            "--command" => command = Some(args.next().context("--command needs a command line")?.clone()),
+            "--pointer" => pointer = Some(point(args.next().context("--pointer needs X,Y")?.clone())?),
+            "--click" => click = Some(point(args.next().context("--click needs X,Y")?.clone())?),
             "--drag" => {
                 drag = Some(drag_point(
-                    args.next().context("--drag needs X1,Y1,X2,Y2")?,
+                    args.next().context("--drag needs X1,Y1,X2,Y2")?.clone(),
                 )?)
             }
             "--prewarm" => prewarm = true,
@@ -1580,7 +1668,7 @@ fn main() -> Result<()> {
                 logical_size = (width, height);
             }
             "--allow-origin" | "--store-origin" => {
-                origins.push(args.next().context("--allow-origin needs a URL")?);
+                origins.push(args.next().context("--allow-origin needs a URL")?.clone());
             }
             "--geode-socket" => {
                 geode_socket = Some(PathBuf::from(
@@ -1588,7 +1676,7 @@ fn main() -> Result<()> {
                 ));
             }
             "--geode-purpose" => {
-                geode_purpose = Some(args.next().context("--geode-purpose needs a purpose")?);
+                geode_purpose = Some(args.next().context("--geode-purpose needs a purpose")?.clone());
             }
             "--hue-bridge" => {
                 let value = args.next().context("--hue-bridge needs a URL")?;
@@ -1604,17 +1692,17 @@ fn main() -> Result<()> {
             }
             "--records-book" => {
                 let value = args.next().context("--records-book needs a book name")?;
-                records_book = Some(value);
+                records_book = Some(value.to_owned());
             }
             "--records-collection" => {
                 let value = args
                     .next()
                     .context("--records-collection needs a collection name")?;
-                records_collection = Some(value);
+                records_collection = Some(value.to_owned());
             }
             "--actor" => {
                 let value = args.next().context("--actor needs a principal name")?;
-                actor = Some(value);
+                actor = Some(value.to_owned());
             }
             "--records-root" => {
                 records_root = Some(PathBuf::from(
@@ -1627,6 +1715,60 @@ fn main() -> Result<()> {
             ),
         }
     }
+    Ok(Options {
+        module,
+        capture,
+        frames,
+        key,
+        keys,
+        command,
+        pointer,
+        click,
+        drag,
+        after,
+        splash,
+        prewarm,
+        spores,
+        logical_size,
+        origins,
+        geode_socket,
+        geode_purpose,
+        hue_bridge,
+        records_root,
+        vfs_root,
+        records_book,
+        records_collection,
+        actor,
+    })
+}
+
+/// Present one Spore in a window until it exits or the capture is complete.
+pub fn run(options: Options) -> Result<()> {
+    let Options {
+        module,
+        capture,
+        frames,
+        key,
+        keys,
+        command,
+        pointer,
+        click,
+        drag,
+        after,
+        splash,
+        prewarm,
+        spores,
+        logical_size,
+        origins,
+        geode_socket,
+        geode_purpose,
+        hue_bridge,
+        records_root,
+        vfs_root,
+        records_book,
+        records_collection,
+        actor,
+    } = options;
     let module = match module {
         Some(module) => module,
         None => {

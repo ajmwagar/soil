@@ -34,6 +34,7 @@
 pub mod grants;
 pub mod protocol;
 pub mod records;
+pub mod serve;
 pub mod server;
 pub mod transport;
 
@@ -43,6 +44,7 @@ pub use protocol::{
     VERSION,
 };
 pub use records::RecordsCapability;
+pub use serve::{Options as ServeOptions, Served, serve as serve_spore};
 pub use server::{Auth, Bridge, Server, serve};
 pub use transport::SessionTransport;
 

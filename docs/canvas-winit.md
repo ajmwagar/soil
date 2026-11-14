@@ -6,9 +6,10 @@ sink, and the host services a Spore asks for — nothing else.
 `canvas-winit` is not a host app in the Canvas sense. It owns no scene, no
 layout, and no hit testing. It opens a window, runs one component in a wasmtime
 store, blits whatever texture the Spore presents into that window, and forwards
-the events the window receives. The same Spore runs unchanged under
-`soil-webgpu` (one-shot capture), under Canvas's external-surface path, or under
-the future web bridge; only the host's implementation of `soil:present` moves.
+the events the window receives. It is the `window` surface of the `soil` runner
+(`soil spore run <pkg> --surface window`); the same Spore runs unchanged under
+one-shot capture, under Canvas's external-surface path, or through the web
+bridge. Only the host's implementation of `soil:present` moves.
 
 ## What a Spore may ask for
 
@@ -67,13 +68,17 @@ the Spore presents.
 
 ## Running it
 
+A window is one surface of the one runner:
+
 ```sh
-cargo build -p canvas-winit
-canvas-winit <module.wasm> [--spores DIR]
-canvas-winit                      # a bundle loads Contents/Resources/launcher.wasm
+soil spore run <spore-dir|package.spore> --surface window [--spores DIR]
+cargo build -p canvas-winit   # the library; there is no separate binary
 ```
 
-Flags for driving a Spore without a human:
+A `.app` bundle runs `soil spore run` with `--surface window` and no package
+argument; the bundle carries its module as `Contents/Resources/spore.wasm`.
+
+Flags for driving a Spore without a human (accepted by `soil spore run`):
 
 | Flag | Effect |
 | --- | --- |

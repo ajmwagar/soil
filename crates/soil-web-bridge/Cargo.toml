@@ -24,9 +24,5 @@ soil = { path = "../soil" }
 tempfile = "3"
 tungstenite = "0.30"
 
-[[bin]]
-name = "soil-web-bridge"
-path = "src/main.rs"
-
 [lints]
 workspace = true
