@@ -525,11 +525,8 @@ fn present_framebuffer(
     // the device itself or takes the keys it was handed: `--keys` is how a run
     // is driven with no hand on the phone.
     let input = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
-    for event in seeded_keys(request.keys.as_deref()) {
-        input
-            .lock()
-            .expect("input queue poisoned")
-            .push_back(event);
+    if let Some(script) = &request.keys {
+        play_keys(script, input.clone());
     }
     if let Some(input_device) = &request.input {
         crate::evdev::spawn(input_device, input.clone())?;
@@ -566,28 +563,75 @@ fn component_cache(request: &Request) -> PathBuf {
     base.join("soil").join("components")
 }
 
-/// `--keys a,b,c` as press/release pairs, in the order given.
-fn seeded_keys(keys: Option<&str>) -> Vec<soil_webgpu::InputEvent> {
-    let mut events = Vec::new();
-    for key in keys
-        .unwrap_or_default()
+/// `--keys "@1500,arrow-down*900,enter"`: a key script played in real time.
+///
+/// A token is a key name with an optional `*milliseconds` hold (sixty by
+/// default), or `@milliseconds` to wait without pressing anything. Played on
+/// its own thread because a hold is *time*: the guest's repeat timer runs while
+/// the key is down, and pressing everything into the queue at once would never
+/// exercise it. The leading wait is for the UI: a key that arrives while the
+/// first screen is still settling is spent dismissing it.
+fn play_keys(
+    script: &str,
+    input: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<soil_webgpu::InputEvent>>>,
+) {
+    enum Step {
+        Wait(u64),
+        Key(String, u64),
+    }
+    let plan: Vec<Step> = script
         .split(',')
         .map(str::trim)
-        .filter(|key| !key.is_empty())
-    {
-        for pressed in [true, false] {
-            events.push(soil_webgpu::InputEvent::Key(soil_webgpu::InputKey {
-                key: key.to_string(),
-                text: None,
-                pressed,
-                shift: false,
-                control: false,
-                alt: false,
-                meta: false,
-            }));
-        }
-    }
-    events
+        .filter(|token| !token.is_empty())
+        .map(|token| {
+            if let Some(ms) = token.strip_prefix('@') {
+                return Step::Wait(ms.trim().parse().unwrap_or(0));
+            }
+            match token.split_once('*') {
+                Some((name, hold)) => Step::Key(
+                    name.trim().to_string(),
+                    hold.trim().parse().unwrap_or(60),
+                ),
+                None => Step::Key(token.to_string(), 60),
+            }
+        })
+        .collect();
+    std::thread::Builder::new()
+        .name("soil-keys".into())
+        .spawn(move || {
+            for step in plan {
+                match step {
+                    Step::Wait(ms) => {
+                        std::thread::sleep(std::time::Duration::from_millis(ms));
+                    }
+                    Step::Key(name, hold) => {
+                        for pressed in [true, false] {
+                            input
+                                .lock()
+                                .expect("input queue poisoned")
+                                .push_back(key_event(&name, pressed));
+                            if pressed {
+                                std::thread::sleep(std::time::Duration::from_millis(hold));
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(40));
+                    }
+                }
+            }
+        })
+        .ok();
+}
+
+fn key_event(name: &str, pressed: bool) -> soil_webgpu::InputEvent {
+    soil_webgpu::InputEvent::Key(soil_webgpu::InputKey {
+        key: name.to_string(),
+        text: None,
+        pressed,
+        shift: false,
+        control: false,
+        alt: false,
+        meta: false,
+    })
 }
 
 /// Write a captured frame. A `.png` path gets a PNG; anything else is the raw
