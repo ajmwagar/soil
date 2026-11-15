@@ -167,6 +167,9 @@ impl SimBackend {
                 pine_time(),
                 ring("sim-ring", "COLMI Ring 2", 74.0, -62),
                 ring("sim-ring-2", "COLMI Ring 2", 68.0, -71),
+                // A second person's ring in the same room advertises a
+                // different model name, which is how a claim narrows to one.
+                ring("sim-r02", "COLMI R02_3101", 81.0, -58),
                 omi(),
             ],
             DEFAULT_CAPACITY,
