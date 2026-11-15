@@ -4,10 +4,13 @@ The smallest native presenter for a GPUI Spore: winit owns the window, the
 Spore owns the pixels. This is the native end of the same boundary Canvas and
 the future web bridge implement.
 
+This is the `window` surface of the `soil` runner, and a library rather than a
+binary:
+
 ```sh
-canvas-winit <module.wasm>
-canvas-winit <module.wasm> --capture frame.rgba --frames 2 --key a --size 480x800
-canvas-winit <module.wasm> --hue-bridge http://192.168.10.15 \
+soil spore run <spore-package> --surface window
+soil spore run <spore-package> --surface window --frame frame.rgba --frames 2
+soil spore run <spore-package> --surface window --allow-origin http://192.168.10.15 \
   --geode-socket ~/.geode/geode.sock --geode-purpose hue.control
 ```
 

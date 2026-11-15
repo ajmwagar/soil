@@ -16,6 +16,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use fungos_vfs::Vfs;
 
+mod present;
 mod spore;
 
 fn main() {

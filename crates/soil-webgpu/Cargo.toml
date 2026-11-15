@@ -29,6 +29,3 @@ sha2 = "0.10"
 [dev-dependencies]
 wat = "1"
 
-[[bin]]
-name = "soil-webgpu"
-path = "src/bin/soil-webgpu.rs"

@@ -1,5 +1,13 @@
 # Soil WebGPU
 
+This crate is a library: the `frame` and `framebuffer` surfaces of the `soil`
+runner, plus the window's presenter. There is no `soil-webgpu` binary — one
+runner front door, several surfaces:
+
+```sh
+soil spore run <spore-package> --surface frame --frame shot.png --size 1280x800
+```
+
 Status: **host + Canvas presentation proof, 2026-11-02; superseded by the
 [GPU-spore decision](gpu-spores.md).** The host moves to `wgpu` 30 and
 `wgpu-core` retires with the wasmtime fork; this document stays as the proof of

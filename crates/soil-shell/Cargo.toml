@@ -18,6 +18,12 @@ soil = { path = "../soil" }
 # instead of re-implementing it per product.
 soil-spore = { path = "../soil-spore" }
 soil-web-bridge = { path = "../soil-web-bridge" }
+# The one runner owns every presentation: the window, the frame, the
+# framebuffer. Each is a library the runner composes, never a binary of its own.
+canvas-winit = { path = "../canvas-winit" }
+soil-webgpu = { path = "../soil-webgpu" }
+image = { version = "0.25", default-features = false, features = ["png"] }
+pollster = "0.4"
 http = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] }

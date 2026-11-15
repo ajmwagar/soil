@@ -23,7 +23,7 @@ use ::soil::{
 use tokio::net::TcpListener;
 
 /// How a run is asked for.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Run {
     pub listen: Option<SocketAddr>,
     pub unibus_config: Option<PathBuf>,
@@ -44,6 +44,10 @@ pub struct Run {
     pub bridge_wait: Duration,
     /// Origins this Spore may reach through `soil:http`.
     pub allow_origins: Vec<String>,
+    /// Where and how to show it. A Spore is one component and the `soil`
+    /// binary is one runner: which surfaces it lands on is a request, not a
+    /// separate executable.
+    pub present: crate::present::Request,
 }
 
 pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
@@ -71,6 +75,7 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
         bridge: None,
         bridge_wait: Duration::ZERO,
         allow_origins: Vec::new(),
+        present: crate::present::Request::default(),
     };
     let mut index = 1;
     while index < args.len() {
@@ -142,6 +147,66 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
                 run.allow_origins.push(value(index + 1)?);
                 index += 2;
             }
+            "--surface" => {
+                run.present
+                    .surfaces
+                    .push(crate::present::Surface::parse(&value(index + 1)?)?);
+                index += 2;
+            }
+            "--frame" => {
+                run.present.frame = Some(PathBuf::from(value(index + 1)?));
+                index += 2;
+            }
+            "--fb" => {
+                run.present.framebuffer = Some(value(index + 1)?);
+                index += 2;
+            }
+            "--size" => {
+                let size = value(index + 1)?;
+                let (width, height) =
+                    size.split_once('x').context("--size is WxH")?;
+                run.present.size = (
+                    width.parse().context("--size is WxH")?,
+                    height.parse().context("--size is WxH")?,
+                );
+                index += 2;
+            }
+            "--keys" => {
+                run.present.keys = Some(value(index + 1)?);
+                index += 2;
+            }
+            "--vfs-root" => {
+                run.present.vfs_root = Some(PathBuf::from(value(index + 1)?));
+                index += 2;
+            }
+            "--records" => {
+                run.present.records_root = Some(PathBuf::from(value(index + 1)?));
+                index += 2;
+            }
+            "--book" => {
+                run.present.book = Some(value(index + 1)?);
+                index += 2;
+            }
+            "--collection" => {
+                run.present.collection = Some(value(index + 1)?);
+                index += 2;
+            }
+            "--actor" => {
+                run.present.actor = Some(value(index + 1)?);
+                index += 2;
+            }
+            "--spores" => {
+                run.present.spores = Some(PathBuf::from(value(index + 1)?));
+                index += 2;
+            }
+            "--bind" => {
+                run.present.bind = Some(value(index + 1)?);
+                index += 2;
+            }
+            "--token" => {
+                run.present.token = Some(value(index + 1)?);
+                index += 2;
+            }
             other => bail!("unknown option `{other}`"),
         }
     }
@@ -163,12 +228,43 @@ pub fn run(args: &[String]) -> Result<()> {
         .try_init();
 
     let (path, run) = parse(args)?;
-    let root = Spore::resolve(&path)?;
+    let spore = Spore::resolve(&path)?;
+    let surfaces = crate::present::plan(&run.present, &spore.manifest)?;
+    if surfaces.is_empty() {
+        bail!("nothing to do: no surface was planned");
+    }
+    tracing::info!(
+        spore = %spore.manifest.spore.id,
+        surfaces = %surfaces
+            .iter()
+            .map(|surface| surface.name())
+            .collect::<Vec<_>>()
+            .join(","),
+        "presenting"
+    );
+    crate::present::show(&spore.root, &spore.manifest, &run.present, &surfaces, Some(&run))
+}
+
+/// Serve the hosts a Spore claims in its `[http]` table, until the listener
+/// closes.
+///
+/// It takes the package directory rather than a resolved `Spore` because a
+/// composite run serves these hosts on their own thread while a window is open
+/// on this one.
+pub(crate) fn serve_http(root: &Path, run: Run) -> Result<()> {
+    let manifest = Manifest::load(root).map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("start the async runtime")?;
-    runtime.block_on(serve(root, run))
+    runtime.block_on(serve(
+        Spore {
+            root: root.to_path_buf(),
+            manifest,
+            transient: None,
+        },
+        run,
+    ))
 }
 
 /// A Spore unpacked and ready to host.
