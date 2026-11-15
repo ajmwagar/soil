@@ -272,6 +272,40 @@ impl SessionStore {
         self.claim_at(device_id, host_id, ttl_ms, at)
     }
 
+    /// The id this peripheral was claimed with, if any.
+    #[must_use]
+    pub fn device_id_for(&self, address: &str) -> Option<String> {
+        self.session
+            .devices
+            .iter()
+            .find(|device| device.address.eq_ignore_ascii_case(address))
+            .map(|device| device.device_id.clone())
+    }
+
+    /// Bind an id to a peripheral's platform address. One id owns one address:
+    /// claiming an address that belonged to another id replaces that claim, and
+    /// re-claiming an id moves it to the current peripheral. That keeps a
+    /// replaced ring from leaving a second address under the same identity.
+    pub fn claim_device(
+        &mut self,
+        address: &str,
+        device_id: &str,
+        name: Option<&str>,
+    ) -> Result<()> {
+        self.reload()?;
+        self.session.devices.retain(|device| {
+            !device.address.eq_ignore_ascii_case(address) && device.device_id != device_id
+        });
+        self.session.devices.push(DeviceIdentity {
+            device_id: device_id.to_string(),
+            address: address.to_string(),
+            name: name.map(str::to_string),
+            hardware_version: None,
+            firmware_version: None,
+        });
+        self.save()
+    }
+
     pub fn cursor_for(&self, device_id: &str, stream: &str) -> Option<u64> {
         self.session
             .cursors
@@ -382,6 +416,36 @@ mod tests {
         ));
         let _ = std::fs::remove_file(&path);
         path
+    }
+
+    #[test]
+    fn a_claim_binds_one_id_to_one_address() {
+        let path = temp_session("claim");
+        let mut store = SessionStore::open(&path).expect("store");
+        assert_eq!(store.device_id_for("addr-a"), None);
+
+        store
+            .claim_device("addr-a", "ring-left", Some("COLMI Ring 2"))
+            .expect("claim");
+        assert_eq!(store.device_id_for("addr-a").as_deref(), Some("ring-left"));
+        assert_eq!(store.device_id_for("addr-b"), None);
+
+        // The same id moving to a different ring drops the old address, so a
+        // replaced unit cannot keep answering under the same identity.
+        store
+            .claim_device("addr-b", "ring-left", Some("COLMI Ring 2"))
+            .expect("re-claim");
+        assert_eq!(store.device_id_for("addr-a"), None);
+        assert_eq!(store.device_id_for("addr-b").as_deref(), Some("ring-left"));
+        assert_eq!(store.get().devices.len(), 1);
+
+        // Claiming an address for a second id replaces the first id's claim.
+        store
+            .claim_device("addr-b", "ring-right", None)
+            .expect("reassign");
+        assert_eq!(store.device_id_for("addr-b").as_deref(), Some("ring-right"));
+        assert_eq!(store.get().devices.len(), 1);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

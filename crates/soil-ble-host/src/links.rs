@@ -92,6 +92,22 @@ impl Links {
             .map_err(lease_error)
     }
 
+    /// The id a peripheral was claimed with, so a scan can report it before
+    /// the guest reads anything.
+    #[must_use]
+    pub fn device_id_for(&self, address: &str) -> Option<String> {
+        self.session.device_id_for(address)
+    }
+
+    /// Bind a guest-chosen id to this peripheral's platform address.
+    pub fn claim(&mut self, address: &str, name: Option<&str>, device_id: &str) -> Result<()> {
+        let device_id = device_id.trim();
+        if device_id.is_empty() {
+            return fail(Failure::Invalid("empty device id".to_string()));
+        }
+        self.session.claim_device(address, device_id, name)
+    }
+
     /// Device behind a link, for guest-visible identity.
     #[must_use]
     pub fn device(&self, link: LinkId) -> Option<&str> {

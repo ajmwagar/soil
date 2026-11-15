@@ -996,14 +996,10 @@ fn ring(id: &str, name: &str, battery_percent: f32, rssi: i16) -> SimDevice {
                         b"COLMI Ring 2".to_vec(),
                         Source::Static,
                     ),
-                    characteristic(
-                        DIS_SERIAL,
-                        true,
-                        false,
-                        false,
-                        id.as_bytes().to_vec(),
-                        Source::Static,
-                    ),
+                    // The real Ring 2 exposes 2A25 and answers with zero
+                    // bytes, so the simulator does the same: a ring with no
+                    // serial is the case the Spore has to handle.
+                    characteristic(DIS_SERIAL, true, false, false, Vec::new(), Source::Static),
                     characteristic(
                         DIS_FIRMWARE,
                         true,

@@ -37,11 +37,19 @@ const LEASE_TTL_MS: u64 = 60_000;
 const MAX_HTTP_BYTES: usize = 16 * 1024 * 1024;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// One scan result. The platform address stays host-side, the handle is what
+/// the guest sees, and a claimed id is what the guest may key a record on.
+#[derive(Clone)]
+struct Scanned {
+    address: String,
+    name: Option<String>,
+}
+
 struct DevHost {
     ble: ble_host::Ble,
     links: links::Links,
     /// One-based handles into the last scan result.
-    devices: Vec<String>,
+    devices: Vec<Scanned>,
     records: NamespacedRecordsHost,
     http: HttpHost,
     wasi: WasiHost,
@@ -162,14 +170,6 @@ impl DevHost {
         self.time_origin_ms
             .saturating_add(u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX))
     }
-
-    fn device_id(&self, handle: u32) -> std::result::Result<String, BleError> {
-        usize::try_from(handle)
-            .ok()
-            .and_then(|index| index.checked_sub(1))
-            .and_then(|index| self.devices.get(index).cloned())
-            .ok_or(BleError::NotFound)
-    }
 }
 
 impl crate::soil::ble::ble::Host for DevHost {
@@ -177,17 +177,24 @@ impl crate::soil::ble::ble::Host for DevHost {
         let timeout_ms = u64::from(timeout_ms.min(30_000));
         let found = self.ble.scan(timeout_ms).map_err(io_error)?;
         let found: Vec<_> = found.into_iter().take(MAX_DEVICES).collect();
-        self.devices = found.iter().map(|device| device.id.clone()).collect();
-        Ok(found
-            .into_iter()
-            .enumerate()
-            .map(|(index, device)| Device {
+        self.devices.clear();
+        let mut out = Vec::with_capacity(found.len());
+        for (index, device) in found.into_iter().enumerate() {
+            // A claimed peripheral already knows its identity; report it now
+            // rather than after a connect, so a guest can select it.
+            let device_id = self.links.device_id_for(&device.id);
+            self.devices.push(Scanned {
+                address: device.id,
+                name: device.name.clone(),
+            });
+            out.push(Device {
                 handle: index as u32 + 1,
                 name: device.name,
                 rssi: device.rssi,
-                device_id: None,
-            })
-            .collect())
+                device_id,
+            });
+        }
+        Ok(out)
     }
 
     fn max_links(&mut self) -> u32 {
@@ -195,7 +202,15 @@ impl crate::soil::ble::ble::Host for DevHost {
     }
 
     fn connect(&mut self, device: u32) -> std::result::Result<ble_host::LinkId, BleError> {
-        let id = self.device_id(device)?;
+        let index = usize::try_from(device)
+            .ok()
+            .and_then(|handle| handle.checked_sub(1))
+            .ok_or(BleError::NotFound)?;
+        let id = self
+            .devices
+            .get(index)
+            .map(|device| device.address.clone())
+            .ok_or(BleError::NotFound)?;
         // The budget is checked and one device lease is taken before the
         // handshake starts; opening a second link never releases the first.
         self.links.open(&mut self.ble, &id).map_err(wit_error)
@@ -203,6 +218,17 @@ impl crate::soil::ble::ble::Host for DevHost {
 
     fn disconnect(&mut self, link: ble_host::LinkId) -> std::result::Result<(), BleError> {
         self.links.close(&mut self.ble, link).map_err(wit_error)
+    }
+
+    fn claim(&mut self, device: u32, device_id: String) -> std::result::Result<(), BleError> {
+        let index = usize::try_from(device)
+            .ok()
+            .and_then(|handle| handle.checked_sub(1))
+            .ok_or(BleError::NotFound)?;
+        let scanned = self.devices.get(index).cloned().ok_or(BleError::NotFound)?;
+        self.links
+            .claim(&scanned.address, scanned.name.as_deref(), &device_id)
+            .map_err(wit_error)
     }
 
     fn services(&mut self, link: ble_host::LinkId) -> std::result::Result<Vec<Service>, BleError> {

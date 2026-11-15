@@ -23,12 +23,20 @@ const MAX_READ_BYTES: u32 = 512;
 const MAX_WRITE_BYTES: usize = 512;
 const MAX_EVENT_WAIT_MS: u32 = 1000;
 
+/// One scan result. The platform address stays host-side, the handle is what
+/// the guest sees, and a claimed id is what the guest may key a record on.
+#[derive(Clone)]
+struct Scanned {
+    address: String,
+    name: Option<String>,
+}
+
 struct State {
     ble: ble::Ble,
     links: links::Links,
     /// Scan handles are one-based indexes into this list. They are Soil-issued
     /// and deliberately not the platform peripheral id.
-    devices: Vec<String>,
+    devices: Vec<Scanned>,
     wasi: wasmtime_wasi::WasiCtx,
     table: wasmtime_wasi::ResourceTable,
 }
@@ -68,17 +76,24 @@ impl soil::ble::ble::Host for State {
         let timeout_ms = u64::from(timeout_ms.min(30_000));
         let found = self.ble.scan(timeout_ms).map_err(io_error)?;
         let found: Vec<_> = found.into_iter().take(MAX_DEVICES).collect();
-        self.devices = found.iter().map(|d| d.id.clone()).collect();
-        Ok(found
-            .into_iter()
-            .enumerate()
-            .map(|(i, d)| Device {
-                handle: i as u32 + 1,
-                name: d.name,
-                rssi: d.rssi,
-                device_id: None,
-            })
-            .collect())
+        self.devices.clear();
+        let mut out = Vec::with_capacity(found.len());
+        for (index, device) in found.into_iter().enumerate() {
+            // A claimed peripheral already knows its identity; report it now
+            // rather than after a connect, so a guest can select it.
+            let device_id = self.links.device_id_for(&device.id);
+            self.devices.push(Scanned {
+                address: device.id,
+                name: device.name.clone(),
+            });
+            out.push(Device {
+                handle: index as u32 + 1,
+                name: device.name,
+                rssi: device.rssi,
+                device_id,
+            });
+        }
+        Ok(out)
     }
 
     fn max_links(&mut self) -> u32 {
@@ -90,7 +105,11 @@ impl soil::ble::ble::Host for State {
             .ok()
             .and_then(|h| h.checked_sub(1))
             .ok_or(BleError::NotFound)?;
-        let id = self.devices.get(index).cloned().ok_or(BleError::NotFound)?;
+        let id = self
+            .devices
+            .get(index)
+            .map(|device| device.address.clone())
+            .ok_or(BleError::NotFound)?;
 
         // One lease per device: a second link must not release the first's claim.
         self.links.open(&mut self.ble, &id).map_err(wit_error)
@@ -98,6 +117,17 @@ impl soil::ble::ble::Host for State {
 
     fn disconnect(&mut self, link: LinkId) -> std::result::Result<(), BleError> {
         self.links.close(&mut self.ble, link).map_err(wit_error)
+    }
+
+    fn claim(&mut self, device: u32, device_id: String) -> std::result::Result<(), BleError> {
+        let index = usize::try_from(device)
+            .ok()
+            .and_then(|h| h.checked_sub(1))
+            .ok_or(BleError::NotFound)?;
+        let scanned = self.devices.get(index).cloned().ok_or(BleError::NotFound)?;
+        self.links
+            .claim(&scanned.address, scanned.name.as_deref(), &device_id)
+            .map_err(wit_error)
     }
 
     fn services(&mut self, link: LinkId) -> std::result::Result<Vec<Service>, BleError> {
