@@ -224,6 +224,12 @@ fn write_vertices<T: Pod>(queue: &wgpu::Queue, buffer: &Option<wgpu::Buffer>, da
 }
 
 impl Renderer {
+    /// The queue this renderer submits on, for the caller that has to present a
+    /// surface texture through the same device.
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
     /// Acquires a GPU device asynchronously.
     ///
     /// A browser only offers a device through a promise, and a promise cannot be
@@ -231,9 +237,10 @@ impl Renderer {
     /// synchronous: a wasm host renders into the canvas surface with
     /// [`Renderer::draw_to`] and never reads pixels back.
     pub async fn new_async() -> Result<Self> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
+                apply_limit_buckets: false,
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: None,
                 force_fallback_adapter: false,
@@ -283,12 +290,13 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(RECT_SHADER.into()),
         });
         let rect_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            multiview_mask: None,
             label: Some("soil-scene-gpu rects"),
             layout: None,
             vertex: wgpu::VertexState {
                 module: &rect_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Vertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &wgpu::vertex_attr_array![
@@ -298,7 +306,7 @@ impl Renderer {
                         3 => Float32x2,
                         4 => Float32
                     ],
-                }],
+                })],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -317,7 +325,6 @@ impl Renderer {
                 count: samples,
                 ..Default::default()
             },
-            multiview: None,
             cache: None,
         });
 
@@ -326,16 +333,17 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(TEXT_SHADER.into()),
         });
         let text_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            multiview_mask: None,
             label: Some("soil-scene-gpu text"),
             layout: None,
             vertex: wgpu::VertexState {
                 module: &text_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<TextureVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4],
-                }],
+                })],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -354,7 +362,6 @@ impl Renderer {
                 count: samples,
                 ..Default::default()
             },
-            multiview: None,
             cache: None,
         });
 
@@ -561,6 +568,7 @@ impl Renderer {
         });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                multiview_mask: None,
                 label: Some("soil-scene-gpu pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
@@ -696,7 +704,7 @@ impl Renderer {
             .poll(wgpu::PollType::wait_indefinitely())
             .context("poll GPU readback")?;
         receiver.recv().context("wait for GPU readback")??;
-        let mapped = slice.get_mapped_range();
+        let mapped = slice.get_mapped_range()?;
         let mut rgba = Vec::with_capacity((width * height * 4) as usize);
         for row in 0..height {
             let start = (row * padded) as usize;
