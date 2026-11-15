@@ -13,19 +13,23 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use soil_host::http_host::{
+use ::soil::principal_host::PrincipalHost;
+use ::soil::vfs_host::VfsHost;
+use ::soil::http_host::{
     self, CredentialProvider, DirectTransport, HttpPolicy, HttpTransport, NoCredentials,
     Request as HttpRequest,
 };
-use soil_host::records_host::{self, Namespace, NamespacedRecordsHost};
+use ::soil::records_host::{self, Namespace, NamespacedRecordsHost};
 use wasi_webgpu_wasmtime::reexports::{wgpu_core, wgpu_types};
 use wasi_webgpu_wasmtime::{WasiWebGpuCtx, WasiWebGpuCtxView, WasiWebGpuOptions};
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
-use soil::present::input;
+use crate::soil::present::input;
 use soil_agent_host::{AgentBackend, Answer, Binding, Page};
+
+pub mod fb;
 
 /// The denying agent backend, for presenters that own no agent session.
 pub use soil_agent_host::NoAgents;
@@ -38,6 +42,11 @@ wasmtime::component::bindgen!({
     },
     with: {
         "wasi:webgpu/webgpu@0.3.0-rc.2.gpu-texture": wasi_webgpu_wasmtime::Texture,
+        // Same WIT package, one binding: the runner answers with the host
+        // crate's own `soil:vfs` and `soil:principal` types rather than a
+        // second generated copy that would need converting field by field.
+        "soil:vfs/vfs@1.0.0": ::soil::vfs_host::vfs,
+        "soil:principal/principal@0.1.0": ::soil::principal_host::api,
         // A subscription is host state, not a generated shadow type: the
         // backend keeps the position, so two subscriptions cannot disagree.
         "soil:agents/observe.subscription": AgentSubscription,
@@ -130,6 +139,20 @@ pub struct CatalogEntry {
     pub workspace: Option<String>,
     pub default_surface: String,
     pub surfaces: Vec<CatalogSurface>,
+    /// The package's `[presentation] mark`, as SVG source. A launcher draws it;
+    /// a host with no renderer ignores it.
+    pub mark: Option<String>,
+}
+
+/// How large a mark may be. A tile is 104 px; anything that needs more than this
+/// is not an icon, and shipping it through the catalogue would be a bug.
+pub const MARK_LIMIT: usize = 64 * 1024;
+
+/// Read a package's mark, if it declares one and ships it.
+pub fn read_mark(root: &std::path::Path, manifest: &soil_spore::Manifest) -> Option<String> {
+    let path = manifest.presentation.as_ref()?.mark.as_deref()?;
+    let svg = std::fs::read_to_string(root.join(path)).ok()?;
+    (svg.len() <= MARK_LIMIT && svg.contains("<svg")).then_some(svg)
 }
 
 #[derive(Clone, Debug)]
@@ -269,6 +292,7 @@ impl CatalogHost for InstallCatalog {
                     workspace: manifest.launch.canvas_module.clone(),
                     default_surface: manifest.launch.default.clone(),
                     surfaces,
+                    mark: read_mark(&dir, &manifest),
                 });
             }
         }
@@ -473,6 +497,10 @@ pub struct WebGpuHost {
     http: Option<HttpAccess>,
     /// A namespaced records book the guest may read or write, when granted.
     records: Option<NamespacedRecordsHost>,
+    /// One workspace the guest may list and read. `None` denies `soil:vfs`.
+    vfs: Option<VfsHost>,
+    /// Who the guest is acting as. `None` denies `soil:principal`.
+    principal: Option<PrincipalHost>,
     /// The cast of agents this run can see. `NoAgents` refuses every read, so a
     /// host that forgot to attach an adapter fails loudly instead of drawing an
     /// empty wall.
@@ -537,6 +565,22 @@ pub struct RecordsAccess {
 }
 
 impl RecordsAccess {
+    /// One named book collection a Spore may read and write.
+    ///
+    /// This is what a document-shaped Spore asks for: the guest names the
+    /// collection, and the grant decides the book it maps onto.
+    pub fn book(
+        root: impl Into<PathBuf>,
+        name: impl Into<String>,
+        book: impl Into<String>,
+        collection: impl Into<String>,
+    ) -> Self {
+        Self {
+            root: root.into(),
+            namespaces: vec![Namespace::write(name.into(), book.into(), collection.into())],
+        }
+    }
+
     /// The read-only namespace the vitals renderer uses.
     pub fn vitals(root: impl Into<PathBuf>) -> Self {
         Self {
@@ -564,6 +608,12 @@ pub struct HostSetup {
     pub http: Option<HttpAccess>,
     /// The records grant. `None` refuses every records call.
     pub records: Option<RecordsAccess>,
+    /// The VFS grant: one workspace the guest may list and read. `None` denies
+    /// `soil:vfs`, which is the honest answer for a Spore that only draws.
+    pub vfs: Option<PathBuf>,
+    /// The principal grant. `None` denies `soil:principal`: a host that cannot
+    /// attest who is acting must not let a guest guess.
+    pub principal: Option<PrincipalHost>,
     pub agents: Box<dyn AgentBackend>,
     /// Shorthand for a read-only `soil:http` grant for one origin, folded into
     /// `http` when that is unset. The storefront browser names its own origin
@@ -586,6 +636,8 @@ impl HostSetup {
             catalog: Box::new(NoCatalog),
             http: None,
             records: None,
+            vfs: None,
+            principal: None,
             agents: Box::new(NoAgents),
             store_origin: None,
             terminal: Box::new(NoTerminal),
@@ -629,6 +681,11 @@ impl WebGpuHost {
                         .context("open records for the WebGPU guest")
                 })
                 .transpose()?,
+            vfs: setup
+                .vfs
+                .map(|root| VfsHost::open(&root).context("open the workspace for soil:vfs"))
+                .transpose()?,
+            principal: setup.principal,
             agents: setup.agents,
             terminal: setup.terminal,
             cursor: setup.cursor,
@@ -703,6 +760,49 @@ impl soil::present::surface::Host for WebGpuHost {
         self.presenter.scale()
     }
 
+    /// This host links `wasi:webgpu`, so it takes either delivery. A device
+    /// host with no adapter would answer `[rgba]` and a GPU-only Spore would
+    /// learn that from the one call, rather than by failing to create a device.
+    fn delivery(&mut self) -> Vec<soil::present::types::DeliveryKind> {
+        vec![
+            soil::present::types::DeliveryKind::Texture,
+            soil::present::types::DeliveryKind::Rgba,
+        ]
+    }
+
+    /// The no-GPU arm: the Spore rasterized its own frame, so the host only
+    /// validates it and hands it to the presenter. No device, no texture, no
+    /// readback.
+    fn present_rgba(
+        &mut self,
+        frame: soil::present::types::RgbaFrame,
+    ) -> std::result::Result<(), String> {
+        let (width, height) = self.presenter.size();
+        if frame.width != width || frame.height != height {
+            return Err(format!(
+                "frame is {}x{}, the granted surface is {width}x{height}",
+                frame.width, frame.height
+            ));
+        }
+        let expected = width as usize * height as usize * 4;
+        if frame.pixels.len() != expected {
+            return Err(format!(
+                "frame is {} bytes, expected {expected}",
+                frame.pixels.len()
+            ));
+        }
+        if frame.pixels.chunks_exact(4).any(|pixel| pixel[3] != 0xFF) {
+            return Err("every pixel must be opaque".into());
+        }
+        self.presenter
+            .present(CanvasFrame {
+                width,
+                height,
+                rgba: frame.pixels,
+            })
+            .map_err(|error| error.to_string())
+    }
+
     fn present(
         &mut self,
         texture: wasmtime::component::Resource<wasi_webgpu_wasmtime::Texture>,
@@ -715,6 +815,71 @@ impl soil::present::surface::Host for WebGpuHost {
             rgba: image.rgba,
         };
         self.presenter.present(frame).map_err(|e| e.to_string())
+    }
+}
+
+impl ::soil::vfs_host::vfs::Host for WebGpuHost {
+    fn ls(
+        &mut self,
+        parent: String,
+        offset: u64,
+        limit: u32,
+    ) -> std::result::Result<::soil::vfs_host::vfs::Page, ::soil::vfs_host::vfs::Error>
+    {
+        self.vfs
+            .as_mut()
+            .ok_or(::soil::vfs_host::vfs::Error::Denied)?
+            .ls(parent, offset, limit)
+    }
+
+    fn stat(
+        &mut self,
+        path: String,
+    ) -> std::result::Result<::soil::vfs_host::vfs::Entry, ::soil::vfs_host::vfs::Error>
+    {
+        self.vfs
+            .as_mut()
+            .ok_or(::soil::vfs_host::vfs::Error::Denied)?
+            .stat(path)
+    }
+
+    fn read(
+        &mut self,
+        path: String,
+        offset: u64,
+        length: u32,
+    ) -> std::result::Result<::soil::vfs_host::vfs::Chunk, ::soil::vfs_host::vfs::Error>
+    {
+        self.vfs
+            .as_mut()
+            .ok_or(::soil::vfs_host::vfs::Error::Denied)?
+            .read(path, offset, length)
+    }
+}
+
+impl ::soil::principal_host::api::Host for WebGpuHost {
+    fn current(
+        &mut self,
+    ) -> std::result::Result<
+        ::soil::principal_host::api::Identity,
+        ::soil::principal_host::api::Error,
+    > {
+        self.principal
+            .as_mut()
+            .ok_or(::soil::principal_host::api::Error::Denied)?
+            .current()
+    }
+
+    fn signing_key(
+        &mut self,
+    ) -> std::result::Result<
+        Option<::soil::principal_host::api::SigningKeyInfo>,
+        ::soil::principal_host::api::Error,
+    > {
+        self.principal
+            .as_mut()
+            .ok_or(::soil::principal_host::api::Error::Denied)?
+            .signing_key()
     }
 }
 
@@ -878,6 +1043,7 @@ impl soil::spore::catalog::Host for WebGpuHost {
                 summary: entry.summary,
                 workspace: entry.workspace,
                 default_surface: entry.default_surface,
+                mark: entry.mark,
                 surfaces: entry
                     .surfaces
                     .into_iter()
@@ -923,7 +1089,7 @@ fn catalog_error(error: CatalogError) -> soil::spore::catalog::Error {
 pub struct AgentSubscription;
 
 fn agent_error(error: soil_agent_host::Error) -> soil::agents::types::Error {
-    use soil::agents::types::Error;
+    use crate::soil::agents::types::Error;
     match error {
         soil_agent_host::Error::Denied => Error::Denied,
         soil_agent_host::Error::NotFound => Error::NotFound,
@@ -937,7 +1103,7 @@ fn agent_error(error: soil_agent_host::Error) -> soil::agents::types::Error {
 }
 
 fn agent_phase(phase: soil_agent_host::Phase) -> soil::agents::types::Phase {
-    use soil::agents::types::Phase;
+    use crate::soil::agents::types::Phase;
     match phase {
         soil_agent_host::Phase::Connecting => Phase::Connecting,
         soil_agent_host::Phase::Idle => Phase::Idle,
@@ -951,7 +1117,7 @@ fn agent_phase(phase: soil_agent_host::Phase) -> soil::agents::types::Phase {
 }
 
 fn agent_activity_kind(kind: soil_agent_host::ActivityKind) -> soil::agents::types::ActivityKind {
-    use soil::agents::types::ActivityKind;
+    use crate::soil::agents::types::ActivityKind;
     match kind {
         soil_agent_host::ActivityKind::You => ActivityKind::You,
         soil_agent_host::ActivityKind::Model => ActivityKind::Model,
@@ -968,7 +1134,7 @@ fn agent_activity_kind(kind: soil_agent_host::ActivityKind) -> soil::agents::typ
 }
 
 fn agent_status(status: soil_agent_host::Status) -> soil::agents::types::Status {
-    use soil::agents::types::Status;
+    use crate::soil::agents::types::Status;
     match status {
         soil_agent_host::Status::Running => Status::Running,
         soil_agent_host::Status::Ok => Status::Ok,
@@ -978,7 +1144,7 @@ fn agent_status(status: soil_agent_host::Status) -> soil::agents::types::Status 
 }
 
 fn agent_prompt_kind(kind: soil_agent_host::PromptKind) -> soil::agents::types::PromptKind {
-    use soil::agents::types::PromptKind;
+    use crate::soil::agents::types::PromptKind;
     match kind {
         soil_agent_host::PromptKind::Question => PromptKind::Question,
         soil_agent_host::PromptKind::Approval => PromptKind::Approval,
@@ -987,7 +1153,7 @@ fn agent_prompt_kind(kind: soil_agent_host::PromptKind) -> soil::agents::types::
 }
 
 fn agent_role(role: soil_agent_host::Role) -> soil::agents::types::Role {
-    use soil::agents::types::Role;
+    use crate::soil::agents::types::Role;
     match role {
         soil_agent_host::Role::User => Role::User,
         soil_agent_host::Role::Assistant => Role::Assistant,
@@ -1003,7 +1169,7 @@ fn agent_owner(owner: soil_agent_host::Owner) -> soil::agents::types::Owner {
 }
 
 fn agent_scope(scope: soil_agent_host::Scope) -> soil::agents::types::Scope {
-    use soil::agents::types::ScopeKind;
+    use crate::soil::agents::types::ScopeKind;
     soil::agents::types::Scope {
         kind: match scope.kind {
             soil_agent_host::ScopeKind::Device => ScopeKind::Device,
@@ -1384,6 +1550,14 @@ impl WebGpuRuntime {
             .map_err(anyhow::Error::from)
             .context("link soil:terminal-screen")?;
         records_host::add_to_linker::<WebGpuHost>(&mut linker).context("link soil:records")?;
+        ::soil::vfs_host::vfs::add_to_linker::<WebGpuHost, HasSelf<WebGpuHost>>(
+            &mut linker,
+            |host| host,
+        )
+        .map_err(anyhow::Error::from)
+        .context("link soil:vfs")?;
+        ::soil::principal_host::add_to_linker::<WebGpuHost>(&mut linker)
+            .context("link soil:principal")?;
         Ok(Self {
             engine,
             linker,
@@ -1543,6 +1717,76 @@ pub fn run_component_capture_with(
         setup.agents = agents;
     }
     setup.http = http;
+    let status = pollster::block_on(runtime.run_component_with(bytes, setup))?;
+    Ok((status, capture.take()))
+}
+
+/// What a capture run is allowed to reach.
+///
+/// Everything a Spore can be granted is named here, once, so a caller that
+/// forgets a grant gets the denying default rather than a host that quietly
+/// answers as somebody else.
+#[derive(Default)]
+pub struct Grants {
+    /// One workspace the Spore may list and read through `soil:vfs`.
+    pub vfs: Option<PathBuf>,
+    /// The books the Spore may read or write through `soil:records`.
+    pub records: Option<RecordsAccess>,
+    /// Who the Spore is acting as, through `soil:principal`.
+    pub principal: Option<PrincipalHost>,
+    pub http: Option<HttpAccess>,
+    pub catalog: Option<Box<dyn CatalogHost>>,
+}
+
+impl Grants {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Attest `actor` as a human principal. Local development only: a host
+    /// that verifies a real identity builds its own provider.
+    pub fn actor(self, actor: impl Into<String>) -> Self {
+        let principal = PrincipalHost::new(::soil::principal_host::StaticPrincipalProvider::new(
+            ::soil::principal_host::Principal {
+                actor: actor.into(),
+                kind: ::soil::principal_host::PrincipalKind::Human,
+                display_name: None,
+                device: Some(gethostname()),
+                teams: Vec::new(),
+                roles: Vec::new(),
+                generation: 1,
+            },
+        ));
+        Self {
+            principal: Some(principal),
+            ..self
+        }
+    }
+}
+
+fn gethostname() -> String {
+    std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("HOST"))
+        .unwrap_or_else(|_| "localhost".into())
+}
+
+/// Capture one frame with whatever [`Grants`] the caller assembled.
+pub fn run_component_capture_with_grants(
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+    grants: Grants,
+) -> Result<(u32, Option<CanvasFrame>)> {
+    let runtime = WebGpuRuntime::new()?;
+    let capture = FrameCapture::new(width, height);
+    let mut setup = HostSetup::capture(Box::new(capture.clone()));
+    setup.vfs = grants.vfs;
+    setup.records = grants.records;
+    setup.principal = grants.principal;
+    setup.http = grants.http;
+    if let Some(catalog) = grants.catalog {
+        setup.catalog = catalog;
+    }
     let status = pollster::block_on(runtime.run_component_with(bytes, setup))?;
     Ok((status, capture.take()))
 }

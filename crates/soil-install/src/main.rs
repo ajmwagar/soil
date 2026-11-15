@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use soil_install::{
-    ApplyOptions, InstallOptions, SyncOptions, adopt, apply, install, install_cid, rollback,
-    status, sync,
+    ApplyOptions, InstallOptions, InstalledState, SyncOptions, UpdateOptions, adopt, apply,
+    commands, install, install_cid, progress, rollback, status, sync, update,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -60,6 +60,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         state.digest,
                         state.previous_digest.as_deref().unwrap_or("none")
                     );
+                    announce_commands(&root, &state);
                 }
                 return Ok(());
             }
@@ -89,6 +90,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     state.digest,
                     state.previous_digest.as_deref().unwrap_or("none")
                 );
+                announce_commands(&root, &state);
             }
             Ok(())
         }
@@ -121,6 +123,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 println!("no installed Spores");
             } else {
                 for state in states {
+                    let commands = commands(&root, &state);
                     println!(
                         "{:<32} {}  {}  previous={}",
                         state.id,
@@ -128,6 +131,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         state.digest,
                         state.previous_digest.as_deref().unwrap_or("none")
                     );
+                    if !commands.is_empty() {
+                        println!("  commands: {}", commands.join(", "));
+                    }
                 }
             }
             Ok(())
@@ -158,6 +164,75 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     println!(
                         "{:<32} {}  {} -> {}  {}",
                         outcome.id, outcome.class, outcome.from, outcome.to, outcome.action
+                    );
+                }
+            }
+            Ok(())
+        }
+        "update" => {
+            let index = PathBuf::from(required(rest, "--index")?);
+            let root = PathBuf::from(required(rest, "--root")?);
+            let packages = PathBuf::from(required(rest, "--packages")?);
+            let operator_key = PathBuf::from(required(rest, "--operator-key")?);
+            let warm = named(rest, "--warm")
+                .map(PathBuf::from)
+                .or_else(default_runner);
+            let runs = update(
+                &root,
+                UpdateOptions {
+                    index: &index,
+                    packages: &packages,
+                    operator_key: &operator_key,
+                    origin: named(rest, "--origin"),
+                    warm: warm.as_deref(),
+                    only: named(rest, "--id"),
+                    write: flag(rest, "--write"),
+                    allow_unsigned_dev: flag(rest, "--allow-unsigned-dev"),
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            if flag(rest, "--json") {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&runs).map_err(|error| error.to_string())?
+                );
+            } else {
+                for run in runs {
+                    let detail = run.error.as_deref().unwrap_or("");
+                    println!(
+                        "{:<32} {:<9} {} -> {}  {}{}",
+                        run.id,
+                        run.class,
+                        run.from,
+                        run.to,
+                        run.phase,
+                        if detail.is_empty() {
+                            String::new()
+                        } else {
+                            format!("  {detail}")
+                        }
+                    );
+                }
+            }
+            Ok(())
+        }
+        "progress" => {
+            let root = PathBuf::from(required(rest, "--root")?);
+            let runs = progress(&root);
+            if flag(rest, "--json") {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&runs).map_err(|error| error.to_string())?
+                );
+            } else if runs.is_empty() {
+                println!("no update has run here");
+            } else {
+                for run in runs {
+                    println!(
+                        "{:<32} {:<10} {}",
+                        run.id,
+                        if run.done() { "done" } else { "pending" },
+                        run.phase
                     );
                 }
             }
@@ -228,12 +303,23 @@ fn run(args: Vec<String>) -> Result<(), String> {
 fn usage() -> &'static str {
     "soil-install install <package.spore> --root DIR [--keyring FILE] [--key FP] [--publisher P] [--json]\n\
      soil-install install --cid ipfs://CID --index FILE --packages DIR [--origin URL] --root DIR [--json]\n\
+     soil-install update --index FILE --root DIR --packages DIR --operator-key FILE [--origin URL] [--warm BIN] [--id ID] [--write] [--allow-unsigned-dev] [--json]\n\
+     soil-install progress --root DIR [--json]\n\
      soil-install adopt --root DIR [--force] [--json]\n\
      soil-install sync --seed DIR --root DIR [--packages DIR] [--class DEVICE] [--write] [--json]\n\
      soil-install rollback --id ID --root DIR [--json]\n\
      soil-install status --root DIR [--json]\n\
      soil-install apply --index FILE --root DIR --packages DIR --operator-key FILE [--write] [--allow-unsigned-dev] [--json]\n\
      soil-install --version"
+}
+
+/// The runner that warms a compiled module, if one is installed: a host only
+/// warms what it will run, and `soil-command` is the host that runs commands.
+fn default_runner() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("soil-command"))
+        .find(|candidate| candidate.is_file())
 }
 
 fn named<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
@@ -257,4 +343,15 @@ fn first_path(args: &[String]) -> Result<PathBuf, String> {
         .filter(|argument| !argument.starts_with("--"))
         .ok_or_else(|| format!("a package path is required\n\n{}", usage()))?;
     Ok(Path::new(path).to_path_buf())
+}
+
+/// Say which programs the package just installed puts on a shell's PATH.
+///
+/// Nothing is copied at install time: the shell reads the tree where it landed,
+/// so this line is the whole handoff between the installer and the shell.
+fn announce_commands(root: &Path, state: &InstalledState) {
+    let commands = commands(root, state);
+    if !commands.is_empty() {
+        println!("  commands: {}", commands.join(", "));
+    }
 }

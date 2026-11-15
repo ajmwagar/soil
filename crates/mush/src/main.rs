@@ -38,11 +38,11 @@ use shell::{Connector, split_commands};
 use rand::Rng;
 use rustyline::{Editor, error::ReadlineError, history::FileHistory};
 use serde::{Deserialize, Serialize};
-use soil::command::command as command_abi;
+use crate::soil::command::command as command_abi;
 use soil_command::{CommandRegistry, CommandRunner, RecordsBinding, RunRequest};
 use soil_inference::{GeodeResolver, SoilConfig};
 use soil_spore::manual::{Manual, read_prose};
-use soil_host::vfs_host::{VfsHost, index, vfs, vfs_mut};
+use ::soil::vfs_host::{VfsHost, index, vfs, vfs_mut};
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
@@ -59,7 +59,7 @@ struct Host {
     table: ResourceTable,
     commands: CommandHost,
     spores: SporeCatalog,
-    http: soil_host::http_host::HttpHost,
+    http: ::soil::http_host::HttpHost,
 }
 
 /// Installed Spore packages, as much of them as a manual needs.
@@ -122,7 +122,7 @@ impl SporeCatalog {
 }
 
 struct CommandHost {
-    root: PathBuf,
+    roots: Vec<PathBuf>,
     runner: CommandRunner,
     /// The identity a command acts as, and the Marbles project the session is
     /// in. Both are host facts: a Spore gets no ambient environment, so the
@@ -133,23 +133,21 @@ struct CommandHost {
 
 impl CommandHost {
     fn new(
-        root: PathBuf,
+        roots: Vec<PathBuf>,
         records: Option<RecordsBinding>,
         principal: Option<&str>,
     ) -> Result<Self> {
         Ok(Self {
-            root,
+            roots,
             runner: CommandRunner::new(records)?,
             env: command_identity(principal),
         })
     }
 
+    /// Scanned per call: an install lands on the virtual PATH without a shell
+    /// restart, which is the one thing a shell must not require.
     fn registry(&self) -> Result<CommandRegistry> {
-        if self.root.is_dir() {
-            CommandRegistry::scan(&self.root)
-        } else {
-            Ok(CommandRegistry::empty(&self.root))
-        }
+        CommandRegistry::scan_roots(&self.roots)
     }
 
     fn list(&self) -> Result<Vec<command_abi::Command>> {
@@ -246,16 +244,14 @@ impl Host {
         store: Option<&std::path::Path>,
     ) -> Result<Self> {
         // Commands and Spores are siblings under the fungOS data directory;
-        // `--command-root` and `FUNGOS_COMMAND_ROOT` therefore move both.
-        let spore_root = std::env::var_os("MUSH_SPORE_ROOT")
-            .map(PathBuf::from)
-            .or_else(|| command_root.parent().map(|parent| parent.join("spores")))
-            .unwrap_or_else(|| PathBuf::from("spores"));
+        // `--command-root` and `FUNGOS_COMMAND_ROOT` therefore move both, and
+        // the registry reads the install root without anything being copied.
+        let spore_root = soil_command::spore_root(&command_root);
         Ok(Self {
             vfs: VfsHost::open_with_role_and_store(root, fungos_vfs::NodeRole::Full, store)?,
             wasi: WasiCtxBuilder::new().inherit_stdio().build(),
             table: ResourceTable::new(),
-            commands: CommandHost::new(command_root, records, principal)?,
+            commands: CommandHost::new(soil_command::roots(&command_root), records, principal)?,
             spores: SporeCatalog::new(spore_root),
             http: http::host(&access::from_env()),
         })
@@ -469,10 +465,10 @@ impl Runtime {
         let engine = Engine::new(&config)?;
         let mut linker = Linker::new(&engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
-        soil_host::vfs_host::add_to_linker::<Host>(&mut linker)?;
-        soil_host::vfs_host::add_mutation_to_linker::<Host>(&mut linker)?;
+        ::soil::vfs_host::add_to_linker::<Host>(&mut linker)?;
+        ::soil::vfs_host::add_mutation_to_linker::<Host>(&mut linker)?;
         command_abi::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host)?;
-        soil::net::net::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host)?;
+        ::soil::net::net::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host)?;
         soil::http::http::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host)?;
         let component = Component::new(&engine, wasm)?;
         let host = Host::new(root, command_root, records, principal, store)?;
@@ -1618,13 +1614,31 @@ fn doctor_report(
         problems.push("VFS root is missing");
     }
     if command_root.is_dir() {
-        let count = CommandRegistry::scan(command_root)
-            .map(|registry| registry.entries().count())
-            .unwrap_or(0);
-        println!(
-            "command root: {} [{count} commands]",
-            command_root.display()
-        );
+        let roots = soil_command::roots(command_root);
+        match CommandRegistry::scan_roots(&roots) {
+            Ok(registry) => {
+                println!(
+                    "command roots: {} [{count} commands]",
+                    roots
+                        .iter()
+                        .map(|root| root.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    count = registry.entries().count()
+                );
+                for refusal in registry.refused() {
+                    println!("  refused {}: {}", refusal.name, refusal.reason);
+                    problems.push("a command was refused; see above");
+                }
+            }
+            Err(error) => {
+                println!(
+                    "command roots: {} [unreadable: {error:#}]",
+                    command_root.display()
+                );
+                problems.push("command root could not be read");
+            }
+        }
     } else {
         println!("command root: {} [missing]", command_root.display());
         problems.push("command root is missing");
@@ -1695,7 +1709,7 @@ fn run_interactive(
         .completion_type(rustyline::CompletionType::List)
         .build();
     let mut editor = Editor::<complete::MushHelper, FileHistory>::with_config(editor_config)?;
-    let helper = complete::MushHelper::new(root.to_path_buf(), command_root);
+    let helper = complete::MushHelper::new(root.to_path_buf(), &soil_command::roots(command_root));
     let cwd = helper.cwd_handle();
     editor.set_helper(Some(helper));
     let _ = editor.load_history(history);

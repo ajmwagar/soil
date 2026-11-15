@@ -675,7 +675,7 @@ dependencies = [
  "pollster",
  "portable-pty",
  "softbuffer",
- "soil-host",
+ "soil",
  "soil-spore",
  "soil-vt",
  "soil-webgpu",
@@ -4238,8 +4238,8 @@ dependencies = [
  "rustyline",
  "serde",
  "serde_json",
+ "soil",
  "soil-command",
- "soil-host",
  "soil-inference",
  "soil-scrub",
  "soil-spore",
@@ -6874,6 +6874,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "soil"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "blake3",
+ "bytes",
+ "clap",
+ "ed25519-dalek 2.2.0",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=388d6dffbf8c68b48a581abe5bc618f35278241a)",
+ "fungos-vfs",
+ "hmac",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "ipnet",
+ "libc",
+ "model2vec-rs",
+ "mycelium-peer-protocol",
+ "percent-encoding",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tiny_http",
+ "tokio",
+ "tracing",
+ "unibus",
+ "unibus-sdk",
+ "ureq 2.12.1",
+ "url",
+ "wasmtime",
+ "wasmtime-wasi",
+ "wasmtime-wasi-http",
+]
+
+[[package]]
 name = "soil-abi"
 version = "0.1.0"
 dependencies = [
@@ -6981,7 +7021,8 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
- "soil-host",
+ "sha2 0.10.9",
+ "soil",
  "soil-spore",
  "tempfile",
  "toml 0.8.23",
@@ -7000,7 +7041,7 @@ dependencies = [
  "http",
  "serde",
  "serde_json",
- "soil-host",
+ "soil",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -7078,8 +7119,8 @@ name = "soil-dev-host"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "soil",
  "soil-ble-host",
- "soil-host",
  "wasmtime",
  "wasmtime-wasi",
 ]
@@ -7116,44 +7157,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "soil-host"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "blake3",
- "bytes",
- "clap",
- "ed25519-dalek 2.2.0",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=388d6dffbf8c68b48a581abe5bc618f35278241a)",
- "fungos-vfs",
- "hmac",
- "http",
- "http-body",
- "http-body-util",
- "hyper",
- "ipnet",
- "model2vec-rs",
- "percent-encoding",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "tiny_http",
- "tokio",
- "tracing",
- "unibus",
- "unibus-sdk",
- "ureq 2.12.1",
- "url",
- "wasmtime",
- "wasmtime-wasi",
- "wasmtime-wasi-http",
 ]
 
 [[package]]
@@ -7309,19 +7312,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "soil-principal-host"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ed25519-dalek 2.2.0",
- "mycelium-peer-protocol",
- "serde",
- "serde_json",
- "tempfile",
- "wasmtime",
-]
-
-[[package]]
 name = "soil-process"
 version = "0.1.0"
 dependencies = [
@@ -7343,6 +7333,7 @@ dependencies = [
  "s22-canvas-surface",
  "viewer-spore",
  "wasmtime",
+ "wasmtime-wasi",
  "wat",
 ]
 
@@ -7471,7 +7462,7 @@ dependencies = [
  "plist",
  "serde",
  "serde_json",
- "soil-host",
+ "soil",
  "soil-marbles",
  "soil-spore",
  "tempfile",
@@ -7483,12 +7474,16 @@ name = "soil-shell"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "canvas-winit",
  "fungos-vfs",
  "http",
+ "image",
+ "pollster",
  "serde_json",
- "soil-host",
+ "soil",
  "soil-spore",
  "soil-web-bridge",
+ "soil-webgpu",
  "tempfile",
  "tokio",
  "toml 0.8.23",
@@ -7613,7 +7608,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "soil-host",
+ "soil",
  "soil-spore",
  "tempfile",
  "tungstenite",
@@ -7626,8 +7621,8 @@ dependencies = [
  "anyhow",
  "pollster",
  "sha2 0.10.9",
+ "soil",
  "soil-agent-host",
- "soil-host",
  "soil-spore",
  "ureq 2.12.1",
  "wasi-webgpu-wasmtime",

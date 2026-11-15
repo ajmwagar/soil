@@ -21,6 +21,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 pub const META_DIR: &str = ".install";
+/// Where an update run journals its phases. Bookkeeping, not intent.
+pub const UPDATES_DIR: &str = ".updates";
 pub const PACKAGE_DIR: &str = ".packages";
 pub const STAGING_DIR: &str = ".staging";
 
@@ -117,6 +119,14 @@ pub fn install(
             .map_err(|error| Error::Io(format!("{}: {error}", staging.display())))?;
     }
     soil_spore::unpack(&bytes, &staging)?;
+    // A package that names a component it does not carry is refused here, while
+    // the tree is still staged; the alternative is a later registry scan that
+    // promises a program which cannot run. `pack` refuses this too, but a
+    // package that arrived over the network never went through `pack`.
+    if let Err(error) = check_declared(&staging, &manifest) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
 
     let cached = package_path(root, &lock.digest);
     if !cached.is_file() {
@@ -199,6 +209,10 @@ pub fn rollback(id: &str, root: &Path) -> Result<InstalledState, Error> {
             .map_err(|error| Error::Io(format!("{}: {error}", staging.display())))?;
     }
     soil_spore::unpack(&bytes, &staging)?;
+    if let Err(error) = check_declared(&staging, &manifest) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
     let current = root.join(state.tree_name());
     let backup = root.join(STAGING_DIR).join(format!(
         "{id}-rollback-old-{}-{}",
@@ -228,6 +242,221 @@ pub fn rollback(id: &str, root: &Path) -> Result<InstalledState, Error> {
     };
     write_state(root, &next)?;
     Ok(next)
+}
+
+/// One update, as far as it got.
+///
+/// This is a projection of work in flight, not intent: the intent is the install
+/// state, and a run that stops half way is a run that stopped, not a package that
+/// changed. `phase` is one of `staged`, `fetching`, `fetched`, `installed`,
+/// `warm`, `done` or `failed`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateRun {
+    pub id: String,
+    pub from: String,
+    pub to: String,
+    pub digest: String,
+    pub class: String,
+    pub phase: String,
+    pub updated_at: u64,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+impl UpdateRun {
+    /// Done means installed *and* compiled. A cached tar is not done.
+    #[must_use]
+    pub fn done(&self) -> bool {
+        self.phase == "done"
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct UpdateOptions<'a> {
+    pub index: &'a Path,
+    pub packages: &'a Path,
+    pub operator_key: &'a Path,
+    /// Where a missing tar may be fetched from, e.g. `http://127.0.0.1:8800`.
+    pub origin: Option<&'a str>,
+    /// The binary that compiles a module into the AOT cache. `None` stops at
+    /// `installed`: a host that will not run the package has nothing to warm.
+    pub warm: Option<&'a Path>,
+    /// One Spore, by id. Everything else is left alone.
+    pub only: Option<&'a str>,
+    pub write: bool,
+    pub allow_unsigned_dev: bool,
+}
+
+/// Walk every pending update through its phases, journaling each step.
+///
+/// The journal is what a surface reads to draw progress: one JSON file per Spore
+/// under `<root>/.updates/`, rewritten as the run advances. It is a projection -
+/// deleting it loses history, never truth - and reading it never blocks on work
+/// in flight.
+///
+/// A package that fails is recorded and the run continues: one bad update is not
+/// a reason to leave the rest of the machine behind. Classes that need a person
+/// (`consent`, `system`) are staged, not applied.
+pub fn update(root: &Path, options: UpdateOptions<'_>) -> Result<Vec<UpdateRun>, Error> {
+    let operator_key = fs::read(options.operator_key)
+        .map_err(|error| Error::Io(format!("{}: {error}", options.operator_key.display())))?;
+    let index = soil_store::Index::read(options.index)?;
+    if !options.allow_unsigned_dev {
+        index.verify(&operator_key)?;
+    }
+    let catalog = index.catalog();
+    let installed = scan_installed(root)?;
+    let plan = soil_store::plan(&installed, &catalog);
+    let mut runs = Vec::new();
+    for pending in plan.updates {
+        if options.only.is_some_and(|only| only != pending.spore_id) {
+            continue;
+        }
+        let mut run = UpdateRun {
+            id: pending.spore_id.clone(),
+            from: pending.from.clone(),
+            to: pending.to.clone(),
+            digest: pending.digest.clone(),
+            class: pending.class.as_str().to_owned(),
+            phase: "staged".into(),
+            updated_at: now(),
+            error: None,
+        };
+        if !matches!(
+            pending.class,
+            soil_store::Class::Live | soil_store::Class::Restart
+        ) {
+            record_run(root, &run)?;
+            runs.push(run);
+            continue;
+        }
+        match advance(root, &catalog, &options, &pending, &mut run) {
+            Ok(()) => {}
+            Err(error) => {
+                run.phase = "failed".into();
+                run.error = Some(error.to_string());
+            }
+        }
+        record_run(root, &run)?;
+        runs.push(run);
+    }
+    Ok(runs)
+}
+
+fn advance(
+    root: &Path,
+    catalog: &std::collections::BTreeMap<String, soil_store::Entry>,
+    options: &UpdateOptions<'_>,
+    pending: &soil_store::Update,
+    run: &mut UpdateRun,
+) -> Result<(), Error> {
+    let entry = catalog
+        .get(&pending.spore_id)
+        .ok_or_else(|| Error::NotFound(format!("{} left the index", pending.spore_id)))?;
+    let cached = package_path(root, &pending.digest);
+    let seeded = options.packages.join(format!("{}.spore", pending.digest));
+    let package = if cached.is_file() {
+        cached
+    } else if seeded.is_file() {
+        seeded
+    } else {
+        run.phase = "fetching".into();
+        run.updated_at = now();
+        record_run(root, run)?;
+        let origin = options.origin.ok_or_else(|| {
+            Error::NotFound(format!(
+                "{} is not cached and no --origin was given",
+                pending.digest
+            ))
+        })?;
+        fetch(origin, &entry.package, &cached)?;
+        cached
+    };
+    run.phase = "fetched".into();
+    run.updated_at = now();
+    record_run(root, run)?;
+
+    if !options.write {
+        return Ok(());
+    }
+    install(
+        &package,
+        root,
+        InstallOptions {
+            publisher: entry.publisher.as_deref(),
+            ..Default::default()
+        },
+    )?;
+    run.phase = "installed".into();
+    run.updated_at = now();
+    record_run(root, run)?;
+
+    if let Some(warm) = options.warm {
+        let status = std::process::Command::new(warm)
+            .arg("--root")
+            .arg(root)
+            .arg("warm")
+            .status()
+            .map_err(|error| Error::Io(format!("run {}: {error}", warm.display())))?;
+        if !status.success() {
+            return Err(Error::Io(format!(
+                "{} warm exited with {status}",
+                warm.display()
+            )));
+        }
+        run.phase = "warm".into();
+        run.updated_at = now();
+        record_run(root, run)?;
+        run.phase = "done".into();
+        run.updated_at = now();
+    }
+    // Without a runner the run stops at `installed`: done means compiled, and a
+    // host that will not run the package has nothing to compile.
+    Ok(())
+}
+
+fn fetch(origin: &str, cid: &str, cached: &Path) -> Result<(), Error> {
+    let url = format!("{}/package/{cid}", origin.trim_end_matches('/'));
+    let response = ureq::get(&url)
+        .call()
+        .map_err(|error| Error::Store(format!("{url}: {error}")))?;
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut response.into_reader(), &mut bytes)
+        .map_err(|error| Error::Io(format!("{url}: {error}")))?;
+    if let Some(parent) = cached.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| Error::Io(format!("{}: {error}", parent.display())))?;
+    }
+    fs::write(cached, &bytes).map_err(|error| Error::Io(format!("{}: {error}", cached.display())))
+}
+
+/// The journal a surface reads: one entry per update that has been attempted.
+#[must_use]
+pub fn progress(root: &Path) -> Vec<UpdateRun> {
+    let dir = root.join(UPDATES_DIR);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut runs: Vec<UpdateRun> = entries
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|entry| fs::read(entry.path()).ok())
+        .filter_map(|bytes| serde_json::from_slice(&bytes).ok())
+        .collect();
+    runs.sort_by(|left, right| left.id.cmp(&right.id));
+    runs
+}
+
+fn record_run(root: &Path, run: &UpdateRun) -> Result<(), Error> {
+    let dir = root.join(UPDATES_DIR);
+    fs::create_dir_all(&dir).map_err(|error| Error::Io(format!("{}: {error}", dir.display())))?;
+    let path = dir.join(format!("{}.json", run.id));
+    let temporary = path.with_extension("json.tmp");
+    let body = serde_json::to_vec_pretty(run)
+        .map_err(|error| Error::Store(format!("journal {}: {error}", run.id)))?;
+    fs::write(&temporary, body)
+        .map_err(|error| Error::Io(format!("{}: {error}", temporary.display())))?;
+    fs::rename(&temporary, &path).map_err(|error| Error::Io(format!("{}: {error}", path.display())))
 }
 
 pub fn status(root: &Path) -> Result<Vec<InstalledState>, Error> {
@@ -397,6 +626,44 @@ fn scan_installed(root: &Path) -> Result<Vec<soil_store::Installed>, Error> {
     Ok(installed)
 }
 
+/// Every component the manifest names must be a regular file in the tree.
+///
+/// One rule for every face: a `[module]`, an `[http]` handler and a command are
+/// all components a host will try to instantiate, and a package that names one
+/// it does not carry fails at the worst possible moment - after the install has
+/// replaced a working tree.
+fn check_declared(tree: &Path, manifest: &soil_spore::Manifest) -> Result<(), Error> {
+    for (face, path) in manifest.declared_modules() {
+        let relative = soil_spore::safe_relative(&path)?;
+        let file = tree.join(&relative);
+        if !fs::symlink_metadata(&file).is_ok_and(|metadata| metadata.is_file()) {
+            return Err(Error::Invalid(format!(
+                "{face} {path} is declared but the package does not carry it"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The command names an installed tree puts on a shell's PATH.
+///
+/// Read from the tree's own manifest: the state file says what is installed, the
+/// package says what it provides, and only one of those is authoritative about
+/// the second. A tree that has gone missing has no commands - that is a `status`
+/// question, not an error here.
+#[must_use]
+pub fn commands(root: &Path, state: &InstalledState) -> Vec<String> {
+    soil_spore::Manifest::load(&root.join(state.tree_name()))
+        .map(|manifest| {
+            manifest
+                .commands
+                .into_iter()
+                .map(|command| command.name)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn ensure_layout(root: &Path) -> Result<(), Error> {
     for dir in [META_DIR, PACKAGE_DIR, STAGING_DIR] {
         let path = root.join(dir);
@@ -558,6 +825,146 @@ surfaces = ["canvas"]
         assert_eq!(status(&root).unwrap().len(), 1);
     }
 
+    fn sealed_index(temp: &Path, digest: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let mut entry = soil_store::Entry {
+            seq: 1,
+            kind: soil_store::EntryKind::Update,
+            spore_id: "dev.fungos.install-test".into(),
+            version: "0.2.0".into(),
+            digest: digest.into(),
+            package: CID.into(),
+            listing: None,
+            module: None,
+            ui: Some("changed".into()),
+            grants: vec!["soil:canvas".into()],
+            system: None,
+            devices: Vec::new(),
+            publisher: Some("mycelium:test".into()),
+            publisher_key: None,
+            signature: String::new(),
+        };
+        entry.seq = 1;
+        let index = soil_store::Index::seal("test", vec![entry]);
+        let index_path = temp.join("index.json");
+        std::fs::write(&index_path, serde_json::to_vec(&index).unwrap()).unwrap();
+        let operator_key = temp.join("operator.asc");
+        std::fs::write(&operator_key, b"unsigned dev").unwrap();
+        (index_path, operator_key)
+    }
+
+    #[cfg(unix)]
+    fn warm_script(temp: &Path, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = temp.join("warm.sh");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn an_update_journals_every_phase_and_ends_done() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("spores");
+        let packages = temp.path().join("packages");
+        std::fs::create_dir_all(&packages).unwrap();
+        let one = temp.path().join("one.spore");
+        write_package(&one, &fixture("0.1.0", "return 'one'"));
+        install(&one, &root, InstallOptions::default()).unwrap();
+
+        let two = fixture("0.2.0", "return 'two'");
+        let (_, lock) = soil_spore::verify(&two).unwrap();
+        write_package(&packages.join(format!("{}.spore", lock.digest)), &two);
+        let (index, operator_key) = sealed_index(temp.path(), &lock.digest);
+
+        let runs = update(
+            &root,
+            UpdateOptions {
+                index: &index,
+                packages: &packages,
+                operator_key: &operator_key,
+                origin: None,
+                warm: None,
+                only: None,
+                write: true,
+                allow_unsigned_dev: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            runs[0].phase, "installed",
+            "without a runner, warm cannot be claimed"
+        );
+        assert_eq!(status(&root).unwrap()[0].version, "0.2.0");
+
+        // The journal is what a surface reads, and it survives the process.
+        let journal = progress(&root);
+        assert_eq!(journal.len(), 1);
+        assert_eq!(journal[0].phase, "installed");
+        assert!(!journal[0].done());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_warm_runner_finishes_the_run_and_a_failing_one_is_reported() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("spores");
+        let packages = temp.path().join("packages");
+        std::fs::create_dir_all(&packages).unwrap();
+        let one = temp.path().join("one.spore");
+        write_package(&one, &fixture("0.1.0", "return 'one'"));
+        install(&one, &root, InstallOptions::default()).unwrap();
+        let two = fixture("0.2.0", "return 'two'");
+        let (_, lock) = soil_spore::verify(&two).unwrap();
+        write_package(&packages.join(format!("{}.spore", lock.digest)), &two);
+        let (index, operator_key) = sealed_index(temp.path(), &lock.digest);
+
+        let failing = warm_script(temp.path(), "exit 3");
+        let runs = update(
+            &root,
+            UpdateOptions {
+                index: &index,
+                packages: &packages,
+                operator_key: &operator_key,
+                origin: None,
+                warm: Some(&failing),
+                only: None,
+                write: true,
+                allow_unsigned_dev: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(runs[0].phase, "failed");
+        assert!(
+            runs[0]
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("exited"),
+            "{:?}",
+            runs[0].error
+        );
+
+        let working = warm_script(temp.path(), "exit 0");
+        let runs = update(
+            &root,
+            UpdateOptions {
+                index: &index,
+                packages: &packages,
+                operator_key: &operator_key,
+                origin: None,
+                warm: Some(&working),
+                only: None,
+                write: true,
+                allow_unsigned_dev: true,
+            },
+        )
+        .unwrap();
+        // Nothing left to do: the digest is already installed, so the plan is empty.
+        assert!(runs.is_empty(), "{runs:?}");
+    }
+
     #[test]
     fn apply_installs_only_live_or_restart_entries() {
         let temp = tempfile::tempdir().unwrap();
@@ -626,6 +1033,43 @@ surfaces = ["canvas"]
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].action, "installed");
         assert_eq!(status(&root).unwrap()[0].version, "0.2.0");
+    }
+
+    const WITH_MODULE: &str = r#"schema = 1
+
+[spore]
+id = "dev.fungos.install-test"
+name = "install-test"
+version = "0.1.0"
+license = "MIT"
+summary = "install test"
+
+[engine]
+soil = ">=0.1"
+target = "soil"
+
+[ui]
+entry = "ui/main.lua"
+
+[launch]
+default = "canvas"
+surfaces = ["canvas"]
+
+[module]
+path = "module.wasm"
+"#;
+
+    #[test]
+    fn a_component_the_package_does_not_carry_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("spore.toml"), WITH_MODULE).unwrap();
+        let manifest = soil_spore::Manifest::parse(WITH_MODULE).unwrap();
+        // `pack` would never produce this; a package off the network can.
+        let error = check_declared(temp.path(), &manifest).unwrap_err();
+        assert!(error.to_string().contains("module.wasm"), "{error}");
+
+        std::fs::write(temp.path().join("module.wasm"), b"\0asm").unwrap();
+        check_declared(temp.path(), &manifest).unwrap();
     }
 
     #[test]

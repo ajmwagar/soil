@@ -6,9 +6,9 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-[[bin]]
-name = "canvas-winit"
-path = "src/main.rs"
+[lib]
+name = "canvas_winit"
+path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1"
@@ -17,7 +17,7 @@ pollster = "0.4"
 portable-pty = "0.9"
 softbuffer = "0.4"
 url = "2"
-soil-host = { path = "../soil-host", default-features = false }
+soil = { path = "../soil", default-features = false, features = ["http", "principal", "vfs"] }
 soil-spore = { path = "../soil-spore" }
 soil-vt = { path = "../soil-vt" }
 soil-webgpu = { path = "../soil-webgpu" }
