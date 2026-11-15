@@ -347,6 +347,18 @@ fn shim_script(entry: &CommandEntry, roots: &[PathBuf], runner: &Path) -> String
         entry.package.display(),
         entry.name
     );
+    // A command gets no ambient environment either: a policy file derives the
+    // variables it may see and names them in FUNGOS_COMMAND_ENV. Names are
+    // checked so the expansion below cannot smuggle shell syntax into the
+    // runner's argv; values travel by name, so quoting inside them never
+    // matters.
+    script.push_str(
+        "env_flags=\"\"\n\
+         for name in ${FUNGOS_COMMAND_ENV:-}; do\n\
+         \x20   case $name in ''|*[!A-Za-z0-9_]*) continue ;; esac\n\
+         \x20   env_flags=\"$env_flags --env-from $name\"\n\
+         done\n",
+    );
     let mut roots_flag = String::new();
     for root in roots {
         roots_flag.push_str(" --root ");
@@ -361,9 +373,9 @@ fn shim_script(entry: &CommandEntry, roots: &[PathBuf], runner: &Path) -> String
          \x20       --records-root \"${{FUNGOS_RECORDS_ROOT:-${{RECORDS_ROOT:-$HOME/.local/share/fungos/records}}}}\" \\\n\
          \x20       --book \"$book\" \\\n\
          \x20       --collection \"${{FUNGOS_RECORDS_COLLECTION:-${{RECORDS_COLLECTION:-records}}}}\" \\\n\
-         \x20       run {name} \"$@\"\n\
+         \x20       $env_flags run {name} \"$@\"\n\
          fi\n\
-         exec {runner}{roots_flag} run {name} \"$@\"\n"
+         exec {runner}{roots_flag} $env_flags run {name} \"$@\"\n"
     ));
     script
 }
@@ -969,6 +981,11 @@ mod tests {
         // Policy is sourced, never baked in: a records binding is the host's to
         // name, and the shim only knows where to look for it.
         assert!(shim.contains("fungos/commands/sfx.env"), "{shim}");
+        // The policy file derives the variables a command may see; the shim
+        // forwards exactly those, by name, and checks each name first.
+        assert!(shim.contains("FUNGOS_COMMAND_ENV"), "{shim}");
+        assert!(shim.contains("--env-from $name"), "{shim}");
+        assert!(shim.contains("*[!A-Za-z0-9_]*"), "{shim}");
         assert!(shim.contains("--records-root"), "{shim}");
         assert!(shim.ends_with("run 'sfx' \"$@\"\n"), "{shim}");
         #[cfg(unix)]

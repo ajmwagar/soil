@@ -75,6 +75,16 @@ fn run() -> Result<()> {
                 env.push((name.to_string(), value.to_string()));
                 i += 2;
             }
+            "--env-from" => {
+                // One variable from the caller's environment, named by a policy
+                // file the shim sourced. Unset is not an error: a policy may
+                // derive a value that only exists in some directories.
+                let name = args.get(i + 1).context("--env-from NAME")?;
+                if let Ok(value) = std::env::var(name) {
+                    env.push((name.clone(), value));
+                }
+                i += 2;
+            }
             "--records-root" => {
                 records_root = Some(PathBuf::from(
                     args.get(i + 1).context("--records-root DIR")?,
@@ -166,7 +176,7 @@ fn run() -> Result<()> {
     }
     let Some(name) = args.get(i).cloned() else {
         bail!(
-            "usage: soil-command [--root DIR]... [--env NAME=VALUE]... [--list] run NAME [ARGS...]\n       soil-command [--root DIR]... shims [--dir DIR] [--prune]\n       soil-command [--root DIR]... warm"
+            "usage: soil-command [--root DIR]... [--env NAME=VALUE]... [--env-from NAME]... [--list] run NAME [ARGS...]\n       soil-command [--root DIR]... shims [--dir DIR] [--prune]\n       soil-command [--root DIR]... warm"
         );
     };
     let entry = registry.get(&name).context("unknown command")?.clone();
