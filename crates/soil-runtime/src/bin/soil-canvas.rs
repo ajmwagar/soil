@@ -197,6 +197,23 @@ fn run() -> Result<()> {
     if aurora {
         owner.set_aurora(true);
     }
+    // A component guest targets the same `soil:present/surface` the core path
+    // lowers by hand. Detect the encoding and take the matching binding; the
+    // guest does not change, and neither does the contract.
+    if soil_runtime::canvas_component::is_component(&bytes) {
+        let frame = soil_runtime::canvas_component::render_component(
+            &bytes,
+            soil_runtime::canvas_component::COMPONENT_FUEL,
+            Some(Box::new(owner)),
+            surface,
+        )?;
+        let bgr = frame.to_bgr24()?;
+        let path = Path::new(&args[3]);
+        let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+        std::fs::write(&temporary, bgr)?;
+        std::fs::rename(&temporary, path)?;
+        return Ok(());
+    }
     let mut guest = if battery_permission.is_some() {
         let grant = if battery_permission == Some(true) {
             Some(BatteryGrant::new(

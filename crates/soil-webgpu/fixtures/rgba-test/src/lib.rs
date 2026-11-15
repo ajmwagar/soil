@@ -48,7 +48,7 @@ fn render() -> Result<(), String> {
 struct Component;
 
 impl Guest for Component {
-    async fn run() -> u32 {
+    fn run() -> u32 {
         match render() {
             Ok(()) => 0,
             Err(error) => {

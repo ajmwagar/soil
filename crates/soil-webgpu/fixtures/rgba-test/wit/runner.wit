@@ -5,5 +5,5 @@ world runner {
   import soil:present/surface@0.1.0;
 
   /// Render one frame, present it, and report a status code.
-  export run: async func() -> u32;
+  export run: func() -> u32;
 }

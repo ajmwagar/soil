@@ -13,6 +13,7 @@ pub(crate) fn host<T>(result: Result<T>) -> wasmtime::Result<T> {
 
 pub mod battery;
 pub mod canvas;
+pub mod canvas_component;
 pub mod estimate;
 pub mod evdev;
 pub mod keypad;
