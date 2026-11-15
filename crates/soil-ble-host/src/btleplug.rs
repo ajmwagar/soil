@@ -187,6 +187,14 @@ impl BtleplugBackend {
             if chars.is_empty() {
                 anyhow::bail!("connected but no GATT characteristics were discovered");
             }
+            // CoreBluetooth can answer discovery from its cache, so a dead
+            // link still lists services. Say which state the next read is in.
+            eprintln!(
+                "link: {id} connected={} services={} characteristics={}",
+                periph.is_connected().await.unwrap_or(false),
+                periph.services().len(),
+                periph.characteristics().len()
+            );
             Ok::<_, anyhow::Error>((periph, chars))
         })?;
 
