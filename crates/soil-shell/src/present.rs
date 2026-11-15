@@ -64,6 +64,8 @@ pub struct Request {
     pub frame: Option<PathBuf>,
     /// A device to present on directly, e.g. `/dev/fb0`.
     pub framebuffer: Option<String>,
+    /// An input device to read keys from, e.g. `/dev/input/event0`.
+    pub input: Option<PathBuf>,
     pub size: (u32, u32),
     /// Text delivered to the guest before it starts, for a capture that proves
     /// the input path.
@@ -94,6 +96,7 @@ impl Default for Request {
             surfaces: Vec::new(),
             frame: None,
             framebuffer: None,
+            input: None,
             size: (1280, 800),
             keys: None,
             vfs_root: None,
@@ -510,6 +513,22 @@ fn present_framebuffer(
         soil_webgpu::fb::FramebufferPresenter::open(device, request.size.0, request.size.1)?;
     let runtime = soil_webgpu::WebGpuRuntime::new()?;
     let mut setup = soil_webgpu::HostSetup::capture(Box::new(presenter));
+    // A framebuffer has no window system to deliver keys, so it either reads
+    // the device itself or takes the keys it was handed: `--keys` is how a run
+    // is driven with no hand on the phone.
+    let input = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    for event in seeded_keys(request.keys.as_deref()) {
+        input
+            .lock()
+            .expect("input queue poisoned")
+            .push_back(event);
+    }
+    if let Some(input_device) = &request.input {
+        crate::evdev::spawn(input_device, input.clone())?;
+    }
+    setup.interactive = request.input.is_some() || request.keys.is_some();
+    setup.input = input;
+
     let grants = grants(request, manifest)?;
     setup.vfs = grants.vfs;
     setup.records = grants.records;
@@ -521,6 +540,30 @@ fn present_framebuffer(
         request.size.0, request.size.1
     );
     Ok(())
+}
+
+/// `--keys a,b,c` as press/release pairs, in the order given.
+fn seeded_keys(keys: Option<&str>) -> Vec<soil_webgpu::InputEvent> {
+    let mut events = Vec::new();
+    for key in keys
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+    {
+        for pressed in [true, false] {
+            events.push(soil_webgpu::InputEvent::Key(soil_webgpu::InputKey {
+                key: key.to_string(),
+                text: None,
+                pressed,
+                shift: false,
+                control: false,
+                alt: false,
+                meta: false,
+            }));
+        }
+    }
+    events
 }
 
 /// Write a captured frame. A `.png` path gets a PNG; anything else is the raw
