@@ -79,6 +79,10 @@ pub struct Request {
     /// Where the web surface listens; loopback by default.
     pub bind: Option<String>,
     pub token: Option<String>,
+    /// The environment variable Palisade signs actors with.
+    pub actor_secret_env: Option<String>,
+    /// Keep one book per principal instead of one book for the process.
+    pub per_principal: bool,
 }
 
 impl Default for Request {
@@ -97,6 +101,8 @@ impl Default for Request {
             spores: None,
             bind: None,
             token: None,
+            actor_secret_env: None,
+            per_principal: false,
         }
     }
 }
@@ -220,6 +226,32 @@ pub fn web_grant(
     }))
 }
 
+/// How the web surface decides who is looking.
+///
+/// With `--actor-secret-env`, only a signed actor is believed — the header
+/// Palisade emits after Vouch, MACed with a secret the ingress and this host
+/// share. Without it, identity headers are read from a loopback peer, which is
+/// the local-development case and nothing more.
+pub fn access(request: &Request) -> Result<soil_web_bridge::serve::Access> {
+    let mut trust = soil_web_bridge::Trust::new();
+    if let Some(name) = &request.actor_secret_env {
+        let secret = std::env::var(name)
+            .with_context(|| format!("{name} is not set, so actors cannot be verified"))?;
+        if secret.is_empty() {
+            bail!("{name} is empty, so actors cannot be verified");
+        }
+        trust = trust.actor_secret(secret.into_bytes());
+    } else {
+        trust = trust.trust_loopback(true);
+    }
+    Ok(soil_web_bridge::serve::Access {
+        trust,
+        // Books follow identity whenever identity is established, and when a
+        // caller asked for it outright.
+        per_principal: request.per_principal || request.actor_secret_env.is_some(),
+    })
+}
+
 /// The grants every surface shares: one workspace, one book, one identity.
 pub fn grants(request: &Request, manifest: &Manifest) -> Result<soil_webgpu::Grants> {
     let mut grants = soil_webgpu::Grants::new();
@@ -284,6 +316,7 @@ pub fn show(
         let serve = soil_web_bridge::ServeOptions {
             spore: root.to_path_buf(),
             records: web_grant(request, manifest)?,
+            access: access(request)?,
             bind: request
                 .bind
                 .clone()
@@ -297,6 +330,9 @@ pub fn show(
         println!("soil: {} on the web", served.spore);
         if let (Some(collection), Some(book)) = (&served.collection, &served.book) {
             println!("  collection {collection} in book {book}");
+        }
+        if served.per_principal {
+            println!("  books   one per principal, chosen from the signed actor");
         }
         println!("  demo    http://{}/", served.server.addr());
         println!("  session ws://{}/v1/session", served.server.addr());

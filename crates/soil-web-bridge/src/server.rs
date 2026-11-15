@@ -34,7 +34,9 @@ use sha2::{Digest, Sha256};
 use tungstenite::Message;
 
 use crate::Registry;
+use crate::bindings::{Bindings, Fixed};
 use crate::grants::GrantSet;
+use crate::identity::{Identity, Refusal as IdentityRefusal, Trust};
 use crate::protocol::{
     self, Call, CallError, Event, EventFrame, Frame, Inbound, Outcome, Request, Response, VERSION,
 };
@@ -172,7 +174,10 @@ pub struct Bridge {
     /// needs to know which imports to provide, and the module itself, so a tab
     /// never has to be trusted with a path.
     package: Option<Arc<SporePackage>>,
-    registry: Registry,
+    /// What a session may dispatch against, per principal.
+    bindings: Arc<dyn Bindings>,
+    /// How a principal is established from a request.
+    trust: Trust,
     auth: Auth,
     bus: EventBus,
     sessions: AtomicUsize,
@@ -200,7 +205,8 @@ impl Bridge {
             spore: spore.into(),
             grants,
             package: None,
-            registry,
+            bindings: Arc::new(Fixed(Arc::new(registry))),
+            trust: Trust::default(),
             auth: Auth::default(),
             bus: EventBus::default(),
             sessions: AtomicUsize::new(0),
@@ -278,6 +284,23 @@ impl Bridge {
         self
     }
 
+    /// Decide what a session may call, per principal.
+    pub fn with_bindings(mut self, bindings: Arc<dyn Bindings>) -> Self {
+        self.bindings = bindings;
+        self
+    }
+
+    /// Say how a principal is established from a request.
+    pub fn with_trust(mut self, trust: Trust) -> Self {
+        self.trust = trust;
+        self
+    }
+
+    /// The caller, if this bridge was told how to believe one.
+    fn identify(&self, head: &Head, loopback: bool) -> Result<Option<Identity>, IdentityRefusal> {
+        self.trust.identify(&head.headers, loopback)
+    }
+
     pub fn spore(&self) -> &str {
         &self.spore
     }
@@ -301,8 +324,19 @@ impl Bridge {
             .unwrap_or(false)
     }
 
-    fn dispatch(&self, request: &Request) -> (Response, Vec<Event>) {
-        let (outcome, events) = self.registry.dispatch(&self.grants, &request.call);
+    fn dispatch(
+        &self,
+        request: &Request,
+        principal: Option<&Identity>,
+    ) -> (Response, Vec<Event>) {
+        let outcome = match self.bindings.registry(principal) {
+            Ok(registry) => registry.dispatch(&self.grants, &request.call),
+            Err(refusal) => (
+                Outcome::Err(CallError::denied(refusal.message)),
+                Vec::new(),
+            ),
+        };
+        let (outcome, events) = outcome;
         let response = Response {
             v: VERSION,
             id: request.call.id.clone(),
@@ -372,6 +406,9 @@ pub fn serve(bridge: Arc<Bridge>, bind: SocketAddr) -> anyhow::Result<Server> {
 
 fn handle_connection(bridge: Arc<Bridge>, mut stream: TcpStream, peer: SocketAddr) {
     let _ = stream.set_nodelay(true);
+    // A header is only a claim; who may make it is a property of the peer, and
+    // it is decided once here rather than re-derived per handler.
+    let loopback = peer.ip().is_loopback();
     let Ok((buffer, head_len)) = read_head(&stream) else {
         return;
     };
@@ -461,7 +498,7 @@ fn handle_connection(bridge: Arc<Bridge>, mut stream: TcpStream, peer: SocketAdd
             cors,
         ),
         ("OPTIONS", _) => respond(&mut stream, 204, "No Content", "text/plain", b"", cors),
-        ("POST", "/v1/call") => handle_call(&bridge, &mut stream, &body, cors),
+        ("POST", "/v1/call") => handle_call(&bridge, &mut stream, &head, loopback, &body, cors),
         ("POST", "/v1/provider/call") => handle_provider_call(&bridge, &mut stream, &body, cors),
         ("POST", "/v1/frame") => handle_frame(&bridge, &mut stream, &head, &body, cors),
         ("GET", "/v1/spore") => match bridge.package.as_ref() {
@@ -502,8 +539,8 @@ fn handle_connection(bridge: Arc<Bridge>, mut stream: TcpStream, peer: SocketAdd
                 ),
             }
         }
-        ("GET", "/v1/events") => handle_events(bridge.clone(), stream, &head, cors),
-        ("GET", "/v1/session") => handle_session(bridge.clone(), stream, buffer, &head),
+        ("GET", "/v1/events") => handle_events(bridge.clone(), stream, &head, loopback, cors),
+        ("GET", "/v1/session") => handle_session(bridge.clone(), stream, buffer, &head, loopback),
         _ => respond(
             &mut stream,
             404,
@@ -515,7 +552,28 @@ fn handle_connection(bridge: Arc<Bridge>, mut stream: TcpStream, peer: SocketAdd
     }
 }
 
-fn handle_call(bridge: &Bridge, stream: &mut TcpStream, body: &[u8], cors: Option<String>) {
+fn handle_call(
+    bridge: &Bridge,
+    stream: &mut TcpStream,
+    head: &Head,
+    loopback: bool,
+    body: &[u8],
+    cors: Option<String>,
+) {
+    let principal = match bridge.identify(head, loopback) {
+        Ok(principal) => principal,
+        Err(refusal) => {
+            respond(
+                stream,
+                401,
+                "Unauthorized",
+                "text/plain; charset=utf-8",
+                format!("{}\n", refusal.reason()).as_bytes(),
+                cors,
+            );
+            return;
+        }
+    };
     if body.is_empty() {
         respond_json(
             stream,
@@ -554,7 +612,7 @@ fn handle_call(bridge: &Bridge, stream: &mut TcpStream, body: &[u8], cors: Optio
         return;
     }
 
-    let (response, events) = bridge.dispatch(&request);
+    let (response, events) = bridge.dispatch(&request, principal.as_ref());
     for event in events {
         bridge.bus.publish(event);
     }
@@ -620,18 +678,43 @@ type SseRegistry = Arc<Mutex<BTreeMap<String, Arc<SseSession>>>>;
 type PendingCalls = Mutex<BTreeMap<String, (Instant, mpsc::SyncSender<Result<Value, CallError>>)>>;
 
 struct SseSession {
+    /// Who opened this stream. Every frame it sends is answered as them, so a
+    /// toggle in one tab cannot change the books under another.
+    principal: Option<Identity>,
     provider_tx: mpsc::SyncSender<ProviderCall>,
     /// Calls the host made: when to give up, and where the answer goes.
     pending: PendingCalls,
     registration: Mutex<Registration>,
 }
 
-fn handle_events(bridge: Arc<Bridge>, mut stream: TcpStream, _head: &Head, cors: Option<String>) {
+fn handle_events(
+    bridge: Arc<Bridge>,
+    mut stream: TcpStream,
+    head: &Head,
+    loopback: bool,
+    cors: Option<String>,
+) {
+    let principal = match bridge.identify(head, loopback) {
+        Ok(principal) => principal,
+        Err(refusal) => {
+            respond(
+                &mut stream,
+                401,
+                "Unauthorized",
+                "text/plain; charset=utf-8",
+                format!("{}\n", refusal.reason()).as_bytes(),
+                cors,
+            );
+            return;
+        }
+    };
+    let registry = bridge.bindings.registry(principal.as_ref()).ok();
     let id = format!("s{}", bridge.sse_seq.fetch_add(1, Ordering::Relaxed));
     let (event_tx, events) = mpsc::sync_channel(EVENT_CHANNEL);
     let subscription = bridge.bus.subscribe(event_tx);
     let (provider_tx, provider_rx) = mpsc::sync_channel(PROVIDER_QUEUE);
     let session = Arc::new(SseSession {
+        principal: principal.clone(),
         provider_tx: provider_tx.clone(),
         pending: Mutex::new(BTreeMap::new()),
         registration: Mutex::new(Registration {
@@ -665,7 +748,10 @@ fn handle_events(bridge: Arc<Bridge>, mut stream: TcpStream, _head: &Head, cors:
         event: Event::Ready {
             spore: bridge.spore.clone(),
             grants: bridge.grants.declared(),
-            interfaces: bridge.registry.describe(),
+            interfaces: registry
+                .as_ref()
+                .map(|registry| registry.describe())
+                .unwrap_or_default(),
             session: Some(id.clone()),
         },
     };
@@ -810,11 +896,12 @@ fn handle_frame(
         }
     };
 
+    let principal = session.principal.clone();
     match frame {
         Inbound::Frame(Frame::Call(request)) => {
             let result = match request.validate() {
                 Ok(()) => {
-                    let (response, events) = bridge.dispatch(&request);
+                    let (response, events) = bridge.dispatch(&request, principal.as_ref());
                     for event in events {
                         bridge.bus.publish(event);
                     }
@@ -896,7 +983,13 @@ fn handle_frame(
     }
 }
 
-fn handle_session(bridge: Arc<Bridge>, stream: TcpStream, buffer: Vec<u8>, head: &Head) {
+fn handle_session(
+    bridge: Arc<Bridge>,
+    stream: TcpStream,
+    buffer: Vec<u8>,
+    head: &Head,
+    loopback: bool,
+) {
     let upgrading = head
         .headers
         .get("upgrade")
@@ -947,6 +1040,21 @@ fn handle_session(bridge: Arc<Bridge>, stream: TcpStream, buffer: Vec<u8>, head:
     // a client that stalls mid-handshake must not hold a thread forever, and a
     // 50 ms budget during the handshake turns a slow packet into a failed
     // upgrade rather than a slow one.
+    let principal = match bridge.identify(head, loopback) {
+        Ok(principal) => principal,
+        Err(refusal) => {
+            let mut stream = stream;
+            respond(
+                &mut stream,
+                401,
+                "Unauthorized",
+                "text/plain; charset=utf-8",
+                format!("{}\n", refusal.reason()).as_bytes(),
+                None,
+            );
+            return;
+        }
+    };
     let _ = stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT));
     let stream = PrefixedStream {
         head: Cursor::new(buffer),
@@ -973,6 +1081,7 @@ fn handle_session(bridge: Arc<Bridge>, stream: TcpStream, buffer: Vec<u8>, head:
 
     Session {
         bridge: bridge.clone(),
+        principal,
         socket,
         events,
         provider_rx,
@@ -1072,6 +1181,9 @@ impl Drop for Registration {
 
 struct Session {
     bridge: Arc<Bridge>,
+    /// Who opened this session. Resolved once at the handshake: a socket is one
+    /// caller, and re-reading headers per frame would let the identity drift.
+    principal: Option<Identity>,
     socket: tungstenite::WebSocket<PrefixedStream>,
     events: mpsc::Receiver<Event>,
     provider_rx: mpsc::Receiver<ProviderCall>,
@@ -1081,12 +1193,18 @@ struct Session {
 
 impl Session {
     fn serve(mut self) {
+        let interfaces = self
+            .bridge
+            .bindings
+            .registry(self.principal.as_ref())
+            .map(|registry| registry.describe())
+            .unwrap_or_default();
         let ready = EventFrame {
             v: VERSION,
             event: Event::Ready {
                 spore: self.bridge.spore.clone(),
                 grants: self.bridge.grants.declared(),
-                interfaces: self.bridge.registry.describe(),
+                interfaces,
                 session: None,
             },
         };
@@ -1172,7 +1290,8 @@ impl Session {
             Inbound::Frame(Frame::Call(request)) => {
                 let response = match request.validate() {
                     Ok(()) => {
-                        let (response, events) = self.bridge.dispatch(&request);
+                        let (response, events) =
+                            self.bridge.dispatch(&request, self.principal.as_ref());
                         for event in events {
                             self.bridge.bus.publish(event);
                         }
