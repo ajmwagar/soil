@@ -298,7 +298,14 @@ impl CatalogHost for SporeCatalog {
             Some(host) => native_command(host, &installed.root, &path, id, surface)?,
             None => launch_command(&executable, &path, &self.launch),
         };
+        let log = log_launch_output(&mut command, &component_cache(&path), id);
         let mut child = command.spawn().map_err(|_| CatalogError::Io)?;
+        // A Spore that cannot start — a module built against an older contract,
+        // a host that is not there, a trap on the way up — dies in under a
+        // second, and until now nobody heard it: the guest had its answer, and
+        // the child's reason went to a null stderr. A window that never appears
+        // and an app that opened were the same thing from here.
+        watch_startup(&mut child, log.as_deref(), id)?;
         // Reap the child without blocking the launcher's event loop. Launch
         // Services hands the window to another process, so there is often
         // nothing to wait for; `open` exits as soon as the app is running.
@@ -316,13 +323,102 @@ impl CatalogHost for SporeCatalog {
     }
 }
 
+/// How long a launch is watched before the app is called started.
+///
+/// Long enough for a child to die of its own reasons, short enough that the
+/// launcher's own frame is not held back by it. Nothing is lost by waiting: the
+/// guest that asked for the launch cannot draw a frame until this call returns.
+const LAUNCH_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+const LAUNCH_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Wait out a launch long enough to learn that it failed.
+///
+/// Returns `Ok` when the child is still running at the end of the grace, which
+/// is what a window that opened looks like, and when it exited **zero** — that
+/// is Launch Services handing the window to another process and returning.
+fn watch_startup(
+    child: &mut std::process::Child,
+    log: Option<&std::path::Path>,
+    id: &str,
+) -> Result<(), CatalogError> {
+    let started = std::time::Instant::now();
+    while started.elapsed() < LAUNCH_GRACE {
+        match child.try_wait() {
+            Ok(Some(status)) if !status.success() => {
+                let reason = log.map(launch_failure).unwrap_or_default();
+                eprintln!(
+                    "canvas-winit: {id} exited {} before a window{reason}",
+                    status.code().unwrap_or(-1)
+                );
+                return Err(CatalogError::Io);
+            }
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => std::thread::sleep(LAUNCH_POLL),
+            Err(_) => return Ok(()),
+        }
+    }
+    Ok(())
+}
+
+/// Send a child's output to a file this machine can read afterwards.
+///
+/// The file is part of the answer, not a debugging aid: when a Spore dies on the
+/// way up, its reason is the only thing that says why, and the guest that asked
+/// for the launch has already been answered.
+fn log_launch_output(
+    command: &mut std::process::Command,
+    directory: &std::path::Path,
+    id: &str,
+) -> Option<std::path::PathBuf> {
+    let safe: String = id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '.' || character == '-' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let path = directory.join(format!("{safe}-launch.log"));
+    if let Some(directory) = path.parent() {
+        let _ = std::fs::create_dir_all(directory);
+    }
+    let file = std::fs::File::create(&path).ok()?;
+    let copy = file.try_clone().ok()?;
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(file))
+        .stderr(std::process::Stdio::from(copy));
+    Some(path)
+}
+
+/// The last few lines a child wrote, as a sentence to put after an exit code.
+fn launch_failure(log: &std::path::Path) -> String {
+    const TAIL: usize = 12;
+    let Ok(text) = std::fs::read_to_string(log) else {
+        return String::new();
+    };
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let tail = lines[lines.len().saturating_sub(TAIL)..].join("\n  ");
+    if tail.is_empty() {
+        format!("; nothing was written to {}", log.display())
+    } else {
+        format!(" ({}):\n  {tail}", log.display())
+    }
+}
+
 /// How one Spore opens another.
 ///
 /// A bundled app is started through Launch Services: it gets its own activation
 /// and its own session, so its window becomes key and its clicks and keys reach
 /// it. A binary run from a shell has no bundle to launch, so it re-executes
-/// itself — with a null stdin and stdout, because a Spore that inherits its
-/// parent's terminal inherits the wrong tty along with it.
+/// itself — with a null stdin, because a Spore that inherits its parent's
+/// terminal inherits the wrong tty along with it. Output is pointed at a file by
+/// [`log_launch_output`] once the command exists.
 fn launch_command(
     executable: &std::path::Path,
     module: &std::path::Path,
@@ -345,11 +441,7 @@ fn launch_command(
         return command;
     }
     let mut command = std::process::Command::new(executable);
-    command
-        .arg(module)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+    command.arg(module).stdin(std::process::Stdio::null());
     launch.append_args(&mut command);
     command
 }
@@ -374,9 +466,7 @@ fn native_command(
         .env("SOIL_SPORE_SURFACE", surface)
         .env("SOIL_SPORE_PACKAGE", package)
         .env("SOIL_SPORE_MODULE", module)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdin(std::process::Stdio::null());
     // The terminal host predates the generic environment and still reads its
     // own names. Keep both working until it moves to the contract.
     if program
@@ -2116,5 +2206,66 @@ mod native_launch_tests {
         assert!(text.contains(&package.join("module.wasm").display().to_string()));
         assert!(text.contains("native"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "canvas-winit-launch-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("scratch directory");
+        directory
+    }
+
+    /// A Spore that dies before its window is a launch that failed, and its own
+    /// words are what says why. This is the case the launcher used to swallow:
+    /// the child's stderr went nowhere and the guest had already been answered.
+    #[test]
+    fn a_child_that_dies_before_a_window_is_a_failed_launch() {
+        let directory = scratch("dies");
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "echo 'instance export `ls` has the wrong type' >&2; exit 3",
+        ]);
+        let log =
+            log_launch_output(&mut command, &directory, "dev.fungos.broken").expect("log path");
+        let mut child = command.spawn().expect("spawn");
+
+        assert!(
+            watch_startup(&mut child, Some(&log), "dev.fungos.broken").is_err(),
+            "a death before the window is a failed launch"
+        );
+        let said = std::fs::read_to_string(&log).expect("the child's output was kept");
+        assert!(said.contains("wrong type"), "{said}");
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// Still running at the end of the grace is what an opened window looks like.
+    #[test]
+    fn a_child_still_running_is_a_launch() {
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "sleep 5"]);
+        command.stdin(std::process::Stdio::null());
+        let mut child = command.spawn().expect("spawn");
+
+        assert!(watch_startup(&mut child, None, "dev.fungos.slow").is_ok());
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// Silence is a diagnosis too: it says where to look.
+    #[test]
+    fn a_silent_death_points_at_the_log() {
+        let directory = scratch("silent");
+        let log = directory.join("quiet-launch.log");
+        std::fs::write(&log, "\n\n").expect("empty log");
+
+        let said = launch_failure(&log);
+        assert!(said.contains("nothing was written"), "{said}");
+        assert!(said.contains("quiet-launch.log"), "{said}");
+        let _ = std::fs::remove_dir_all(&directory);
     }
 }
