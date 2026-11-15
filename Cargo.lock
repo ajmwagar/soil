@@ -7605,6 +7605,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "clap",
+ "hmac",
  "serde",
  "serde_json",
  "sha2 0.10.9",
