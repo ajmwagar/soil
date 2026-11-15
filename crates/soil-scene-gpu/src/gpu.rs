@@ -419,8 +419,8 @@ impl GpuState {
         let compute_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("soil-gpu dense compute"),
-                bind_group_layouts: &[&compute_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&compute_layout)],
+                immediate_size: 0,
             });
         let dense_compute = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("soil-gpu dense compute"),
@@ -436,23 +436,24 @@ impl GpuState {
         let points_module = shader(device, "soil-gpu points3d", POINTS_3D);
         let draw_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("soil-gpu dense draw"),
-            bind_group_layouts: &[&draw_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&draw_layout)],
+            immediate_size: 0,
         });
         let camera_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("soil-gpu 3d"),
-                bind_group_layouts: &[&camera_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&camera_layout)],
+                immediate_size: 0,
             });
 
         let dense_line = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            multiview_mask: None,
             label: Some("soil-gpu dense line"),
             layout: Some(&draw_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &dense_line_module,
                 entry_point: Some("vs_main"),
-                buffers: &[dense_vertex_layout(wgpu::VertexStepMode::Vertex)],
+                buffers: &[Some(dense_vertex_layout(wgpu::VertexStepMode::Vertex))],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -474,17 +475,17 @@ impl GpuState {
                 count: samples,
                 ..Default::default()
             },
-            multiview: None,
             cache: None,
         });
 
         let dense_scatter = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            multiview_mask: None,
             label: Some("soil-gpu dense scatter"),
             layout: Some(&draw_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &dense_scatter_module,
                 entry_point: Some("vs_main"),
-                buffers: &[dense_vertex_layout(wgpu::VertexStepMode::Instance)],
+                buffers: &[Some(dense_vertex_layout(wgpu::VertexStepMode::Instance))],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -503,21 +504,21 @@ impl GpuState {
                 count: samples,
                 ..Default::default()
             },
-            multiview: None,
             cache: None,
         });
 
         let points3d = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            multiview_mask: None,
             label: Some("soil-gpu points3d"),
             layout: Some(&camera_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &points_module,
                 entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<[f32; 4]>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32],
-                }],
+                })],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -536,7 +537,6 @@ impl GpuState {
                 count: samples,
                 ..Default::default()
             },
-            multiview: None,
             cache: None,
         });
 
@@ -893,12 +893,12 @@ fn dense_vertex_layout(step_mode: wgpu::VertexStepMode) -> wgpu::VertexBufferLay
 pub(crate) fn depth_state(depth_write: bool) -> wgpu::DepthStencilState {
     wgpu::DepthStencilState {
         format: DEPTH_FORMAT,
-        depth_write_enabled: depth_write,
-        depth_compare: if depth_write {
+        depth_write_enabled: Some(depth_write),
+        depth_compare: Some(if depth_write {
             wgpu::CompareFunction::Less
         } else {
             wgpu::CompareFunction::Always
-        },
+        }),
         stencil: wgpu::StencilState::default(),
         bias: wgpu::DepthBiasState::default(),
     }

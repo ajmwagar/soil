@@ -392,27 +392,50 @@ async fn supervise(
                 }
             }
         }
-        let mut due = false;
-        for book in &config.books {
-            for peer in &config.peers {
-                let store = store.lock().await;
-                let pending = store.pending_outbox(book, &peer.producer_id, now, 1)?;
-                due |= !pending.is_empty();
-            }
-        }
         let anti_entropy = now.saturating_sub(last_anti_entropy)
             >= interval.as_millis().min(u64::MAX as u128) as u64;
-        if due || anti_entropy {
+        if anti_entropy {
+            // The sweep reconciles every book with every peer, including the
+            // pairs with nothing queued. That is what makes it the backstop.
             for book in &config.books {
                 for peer in &config.peers {
                     sync_one(&config, &store, &transport, &verifier, book, peer).await;
                 }
             }
-            if anti_entropy {
-                last_anti_entropy = now_ms();
+            last_anti_entropy = now_ms();
+        } else {
+            // Between sweeps a single queued op used to start a session for
+            // every book against every peer. Only the pairs with something to
+            // send are worth a round trip.
+            for (book, peer) in pending_pairs(&config, &store, now).await? {
+                sync_one(&config, &store, &transport, &verifier, book, peer).await;
             }
         }
     }
+}
+
+/// The `(book, peer)` pairs with an op waiting to be sent.
+///
+/// The scheduler's decision, kept apart from the transport so it can be tested
+/// on its own: one lock, one `pending_outbox` probe per pair.
+async fn pending_pairs<'a>(
+    config: &'a SyncConfig,
+    store: &Arc<tokio::sync::Mutex<Store>>,
+    now: u64,
+) -> anyhow::Result<Vec<(&'a str, &'a PeerConfig)>> {
+    let mut due = Vec::new();
+    let store = store.lock().await;
+    for book in &config.books {
+        for peer in &config.peers {
+            if !store
+                .pending_outbox(book, &peer.producer_id, now, 1)?
+                .is_empty()
+            {
+                due.push((book.as_str(), peer));
+            }
+        }
+    }
+    Ok(due)
 }
 
 async fn sync_one(
@@ -695,4 +718,74 @@ fn set_owner_only(path: &Path) -> anyhow::Result<()> {
 #[cfg(not(unix))]
 fn set_owner_only(_: &Path) -> anyhow::Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(books: &[&str], peer: &str) -> SyncConfig {
+        serde_json::from_value(serde_json::json!({
+            "endpoint_key_file": "/tmp/endpoint.key",
+            "installation_id": "home",
+            "local_producer": "records.studio",
+            "audience": "unibus:soil-records",
+            "trust_file": "/tmp/trust.json",
+            "issuers": [],
+            "records_root": "/tmp/records",
+            "books": books,
+            "peers": [{
+                "producer_id": peer,
+                "endpoint_id": "973f61f53097944911023e559c46776fbf0b5fb2a0fc36cbc81a31ca515a32d5",
+                "direct_addresses": ["127.0.0.1:9"]
+            }],
+        }))
+        .expect("parses")
+    }
+
+    fn store_with_books(books: &[&str], peer: &str) -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store =
+            Store::open(&dir.path().join("records"), &dir.path().join("device")).expect("open");
+        for book in books {
+            store
+                .set_sync_peers(book, &[peer.to_string()])
+                .expect("sync peers");
+        }
+        (dir, store)
+    }
+
+    #[tokio::test]
+    async fn one_queued_op_is_one_session_not_every_pair() {
+        let (_dir, mut store) = store_with_books(&["book/a", "book/b"], "records.studio");
+        store
+            .put_record(
+                "book/a",
+                "one",
+                "test/record",
+                1,
+                serde_json::json!({"x": 1}),
+            )
+            .expect("put");
+        let store = Arc::new(tokio::sync::Mutex::new(store));
+
+        let config = config(&["book/a", "book/b"], "records.studio");
+        let due = pending_pairs(&config, &store, u64::MAX).await.expect("due");
+        assert_eq!(due.len(), 1, "only the book with a queued op is due");
+        assert_eq!(due[0].0, "book/a");
+        assert_eq!(due[0].1.producer_id, "records.studio");
+    }
+
+    #[tokio::test]
+    async fn a_pair_with_nothing_queued_is_not_due() {
+        let (_dir, store) = store_with_books(&["book/a", "book/b"], "records.studio");
+        let store = Arc::new(tokio::sync::Mutex::new(store));
+        let config = config(&["book/a", "book/b"], "records.studio");
+
+        let due = pending_pairs(&config, &store, u64::MAX).await.expect("due");
+        assert!(
+            due.is_empty(),
+            "an idle tick must not open a session for every pair"
+        );
+    }
 }
