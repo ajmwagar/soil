@@ -66,6 +66,9 @@ pub struct Request {
     pub framebuffer: Option<String>,
     /// An input device to read keys from, e.g. `/dev/input/event0`.
     pub input: Option<PathBuf>,
+    /// Where compiled Spores are cached, so a reload is a deserialize rather
+    /// than a compile.
+    pub cache: Option<PathBuf>,
     pub size: (u32, u32),
     /// Text delivered to the guest before it starts, for a capture that proves
     /// the input path.
@@ -97,6 +100,7 @@ impl Default for Request {
             frame: None,
             framebuffer: None,
             input: None,
+            cache: None,
             size: (1280, 800),
             keys: None,
             vfs_root: None,
@@ -509,9 +513,13 @@ fn present_framebuffer(
     device: &str,
 ) -> Result<()> {
     let bytes = std::fs::read(module).with_context(|| format!("read {}", module.display()))?;
-    let presenter =
-        soil_webgpu::fb::FramebufferPresenter::open(device, request.size.0, request.size.1)?;
-    let runtime = soil_webgpu::WebGpuRuntime::new()?;
+    let presenter = soil_webgpu::fb::FramebufferPresenter::open(
+        device,
+        request.size.0,
+        request.size.1,
+    )?;
+    let runtime = soil_webgpu::WebGpuRuntime::new()?
+        .with_component_cache(component_cache(request));
     let mut setup = soil_webgpu::HostSetup::capture(Box::new(presenter));
     // A framebuffer has no window system to deliver keys, so it either reads
     // the device itself or takes the keys it was handed: `--keys` is how a run
@@ -540,6 +548,22 @@ fn present_framebuffer(
         request.size.0, request.size.1
     );
     Ok(())
+}
+
+/// Where compiled components are kept.
+///
+/// Compiling a 21 MB Spore takes about 40 s on the phone and burns four cores
+/// while it does; deserializing the same one takes milliseconds. A cache is
+/// what makes reloading a Spore cheap enough to do lazily.
+fn component_cache(request: &Request) -> PathBuf {
+    if let Some(dir) = &request.cache {
+        return dir.clone();
+    }
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("soil").join("components")
 }
 
 /// `--keys a,b,c` as press/release pairs, in the order given.
