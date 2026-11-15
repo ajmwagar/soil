@@ -1908,11 +1908,13 @@ pub fn run(options: Options) -> Result<()> {
         hue_bridge,
         records_root,
         vfs_root: vfs_root.clone(),
-        records_book: match (records_book.clone(), records_collection.clone()) {
-            (Some(book), Some(collection)) => Some(BookGrant { collection, book }),
-            (None, None) => None,
-            _ => anyhow::bail!("--records-book and --records-collection are given together"),
-        },
+        // A collection is what the guest names; the book is where it is kept,
+        // and naming only the collection means "keep it in a book of the same
+        // name" — that is what a runner passing one grant has to be able to say.
+        records_book: records_collection.clone().map(|collection| BookGrant {
+            book: records_book.clone().unwrap_or_else(|| collection.clone()),
+            collection,
+        }),
         actor: actor.clone(),
     };
     let http = build_http(&launch)?;

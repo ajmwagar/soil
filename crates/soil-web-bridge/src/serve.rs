@@ -13,17 +13,26 @@ use anyhow::{Context, bail};
 
 use crate::{Auth, Bridge, GrantSet, RecordsCapability, Registry, Server};
 
+/// One book the bridge serves as one guest-facing collection.
+#[derive(Debug, Clone)]
+pub struct Records {
+    /// Root of the `fungos-records` store the bridge reads.
+    pub root: PathBuf,
+    /// Book served as this bridge's collection.
+    pub book: String,
+    /// Collection a client must name in `key.collection`.
+    pub collection: String,
+}
+
 /// What a bridge was asked to serve.
 #[derive(Debug, Clone)]
 pub struct Options {
     /// Directory containing the Spore's `spore.toml`.
     pub spore: PathBuf,
-    /// Root of the `fungos-records` store the bridge reads.
-    pub records_root: PathBuf,
-    /// Book served as this bridge's collection.
-    pub book: String,
-    /// Collection a client must name in `key.collection`.
-    pub collection: String,
+    /// The records book, when this Spore was granted `soil:records`. A Spore
+    /// that asks for no records still gets a bridge: an empty registry refuses
+    /// that call instead of the whole surface.
+    pub records: Option<Records>,
     pub bind: SocketAddr,
     /// Bearer token. Without one, only loopback clients are accepted.
     pub token: Option<String>,
@@ -34,8 +43,8 @@ pub struct Options {
 /// A running bridge, and what a caller should say about it.
 pub struct Served {
     pub spore: String,
-    pub collection: String,
-    pub book: String,
+    pub collection: Option<String>,
+    pub book: Option<String>,
     pub token: bool,
     pub origins: Vec<String>,
     /// The server stops when this is dropped.
@@ -60,16 +69,19 @@ pub fn serve(options: Options) -> anyhow::Result<Served> {
     let spore = manifest.spore.id.clone();
     let grants = GrantSet::from_manifest(&manifest);
 
-    let records =
-        RecordsCapability::open(&options.records_root, &options.book, &options.collection)
-            .with_context(|| {
-                format!(
-                    "open records book {:?} at {}",
-                    options.book,
-                    options.records_root.display()
-                )
-            })?;
-    let registry = Registry::new().with(records);
+    let mut registry = Registry::new();
+    if let Some(records) = &options.records {
+        registry = registry.with(
+            RecordsCapability::open(&records.root, &records.book, &records.collection)
+                .with_context(|| {
+                    format!(
+                        "open records book {:?} at {}",
+                        records.book,
+                        records.root.display()
+                    )
+                })?,
+        );
+    }
 
     let mut auth = match &options.token {
         Some(token) => Auth::with_token(token),
@@ -93,8 +105,8 @@ pub fn serve(options: Options) -> anyhow::Result<Served> {
     let server = bridge.serve(options.bind)?;
     Ok(Served {
         spore,
-        collection: options.collection,
-        book: options.book,
+        collection: options.records.as_ref().map(|records| records.collection.clone()),
+        book: options.records.as_ref().map(|records| records.book.clone()),
         token: options.token.is_some(),
         origins: options.origins,
         server,

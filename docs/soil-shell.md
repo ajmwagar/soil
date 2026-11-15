@@ -14,12 +14,17 @@ surfaces are `http` (the hosts the package claims in `[http]`), `window` (a real
 window and keyboard), `web` (a browser through the bridge), `frame` (one
 captured image) and `framebuffer` (straight onto a device).
 
-With no `--surface`, `soil` intersects what the package says it can be rendered
-as (`[launch] surfaces`) with what the machine can actually provide: a window
-when the session has a display, the web surface when the package declares one,
-and the claimed hosts. Naming a surface, a `--frame FILE` or an `--fb DEVICE`
-overrides the guess. Surfaces compose — a window on the desk *and* the bridge in
-a browser is one component and one grant set.
+With no `--surface`, `soil` runs the Spore however this machine can: a window
+when the session has a display, the hosts a `[http]` table claims, and the web
+bridge — because a machine with a browser can always serve one. That is the
+default composite, not a menu: `soil spore run ./doc-shell --collection
+comment.pending` opens the window *and* answers at `http://127.0.0.1:8795/`, one
+component with one grant set. Naming a surface, a `--frame FILE` or an `--fb
+DEVICE` overrides the guess.
+
+A Spore granted `soil:records` needs `--collection NAME` — the collection its
+guest addresses — and, unless `--records DIR` says otherwise, the host's own
+store at `~/.local/share/fungos/records` is opened read-write for it.
 
 ```sh
 soil spore run ./doc-shell --surface frame --frame doc.png \
