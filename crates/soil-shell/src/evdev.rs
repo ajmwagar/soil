@@ -60,8 +60,14 @@ pub fn spawn(path: &Path, queue: Queue) -> Result<()> {
                     continue;
                 }
                 let Some(key) = key_name(code) else {
+                    if std::env::var_os("SOIL_INPUT_TRACE").is_some() {
+                        eprintln!("soil-evdev: code={code} value={value} (unmapped)");
+                    }
                     continue;
                 };
+                if std::env::var_os("SOIL_INPUT_TRACE").is_some() {
+                    eprintln!("soil-evdev: code={code} name={key} value={value}");
+                }
                 let event = InputEvent::Key(InputKey {
                     key: key.to_string(),
                     text: None,
