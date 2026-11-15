@@ -57,8 +57,11 @@ const PINETIME_NAV_MAN_DIST: &str = "00010003-78fc-48fe-8e23-433b3a1942d0";
 const PINETIME_NAV_PROGRESS: &str = "00010004-78fc-48fe-8e23-433b3a1942d0";
 const PINETIME_WEATHER_SERVICE: &str = "00050000-78fc-48fe-8e23-433b3a1942d0";
 const PINETIME_WEATHER_DATA: &str = "00050001-78fc-48fe-8e23-433b3a1942d0";
-const RING_SERVICE: &str = "0000fff0-0000-1000-8000-00805f9b34fb";
-const RING_MEASUREMENT: &str = "0000fff1-0000-1000-8000-00805f9b34fb";
+/// COLMI ring (QRing) UART service: the central writes `QRING_WRITE` and the
+/// ring answers on `QRING_NOTIFY` in fixed 16-byte packets.
+const QRING_SERVICE: &str = "6e40fff0-b5a3-f393-e0a9-e50e24dcca9e";
+const QRING_WRITE: &str = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+const QRING_NOTIFY: &str = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 const OMI_AUDIO_SERVICE: &str = "19b10000-e8f2-537e-4f6c-d104768a1214";
 const OMI_AUDIO_DATA: &str = "19b10001-e8f2-537e-4f6c-d104768a1214";
 const OMI_CODEC: &str = "19b10002-e8f2-537e-4f6c-d104768a1214";
@@ -72,7 +75,7 @@ enum Source {
     Motion,
     MusicEvent,
     CallResponse,
-    RingMeasurement,
+    RingUart,
     OmiAudio,
 }
 
@@ -131,6 +134,9 @@ struct SimLink {
     /// The virtual radio dropped this link; queued events remain drainable,
     /// then the handle is refused.
     closed: bool,
+    /// Which real-time reading the ring is streaming, if any. Set by the
+    /// start/stop commands the guest writes, exactly like the hardware.
+    real_time: Option<u8>,
 }
 
 struct SimState {
@@ -286,6 +292,7 @@ impl Backend for SimBackend {
                 writes: HashMap::new(),
                 tick: 0,
                 closed: false,
+                real_time: None,
             },
         );
         Ok(link)
@@ -374,9 +381,13 @@ impl Backend for SimBackend {
                 characteristic.value = data.to_vec();
             }
         }
+        let is_qring = key == QRING_WRITE;
         linked_mut(&mut state, link)?
             .writes
             .insert(key, data.to_vec());
+        if is_qring {
+            ring_command(&mut state, link, data)?;
+        }
         Ok(())
     }
 
@@ -438,6 +449,7 @@ impl Backend for SimBackend {
         {
             let device = &state.devices[index];
             let subscribed = &linked(&state, link)?.subscribed;
+            let real_time = linked(&state, link)?.real_time;
             for service in &device.services {
                 for characteristic in &service.characteristics {
                     if !subscribed.contains(&characteristic.uuid) {
@@ -455,9 +467,18 @@ impl Backend for SimBackend {
                     if characteristic.source == Source::CallResponse && tick != 10 {
                         continue;
                     }
+                    let data = match characteristic.source {
+                        // The ring streams whatever reading was started; it
+                        // says nothing while no reading is running.
+                        Source::RingUart => match real_time {
+                            Some(kind) => ring_reading(kind, tick),
+                            None => continue,
+                        },
+                        _ => notify_value(device, characteristic, tick),
+                    };
                     generated.push(BleEvent::Notification {
                         char_uuid: characteristic.uuid.clone(),
-                        data: notify_value(device, characteristic, tick),
+                        data,
                     });
                 }
             }
@@ -470,6 +491,72 @@ impl Backend for SimBackend {
         }
         Ok(first)
     }
+}
+
+/// Handle one QRing request the guest wrote to the ring's write
+/// characteristic. The ring answers on its notify characteristic, and a
+/// real-time reading turns into a per-tick stream instead of a reply.
+fn ring_command(state: &mut SimState, link: LinkId, request: &[u8]) -> Result<()> {
+    if request.len() != 16 {
+        bail!("qring request is {} bytes, expected 16", request.len());
+    }
+    let sum = request[..15]
+        .iter()
+        .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+    if sum != request[15] {
+        bail!("qring request checksum does not match its contents");
+    }
+    let index = linked(state, link)?.device;
+    let percent = battery(&state.devices[index]);
+    match request[0] {
+        3 => battery_page(state, link, percent)?,
+        // 1 = start, 4 = stop, matching the reference command set.
+        105 if request[2] == 1 => linked_mut(state, link)?.real_time = Some(request[1]),
+        106 => linked_mut(state, link)?.real_time = None,
+        67 => steps_page(state, link)?,
+        other => eprintln!("sim-ring: ignoring unknown command {other}"),
+    }
+    Ok(())
+}
+
+/// A battery reply: `[3, percent, charging, ..]`.
+fn battery_page(state: &mut SimState, link: LinkId, percent: u8) -> Result<()> {
+    let mut packet = [0u8; 16];
+    packet[0] = 3;
+    packet[1] = percent;
+    packet[2] = 0;
+    queue_ring_packet(state, link, packet)
+}
+
+/// One dated activity bucket on the simulator's fixed virtual day. A real ring
+/// pages through several; one complete page is enough to exercise the parser.
+fn steps_page(state: &mut SimState, link: LinkId) -> Result<()> {
+    let mut packet = [0u8; 16];
+    packet[0] = 67;
+    packet[1] = 0x24; // 2024, BCD
+    packet[2] = 0x01; // January
+    packet[3] = 0x01; // the 1st
+    packet[4] = 0; // first quarter-hour bucket
+    packet[5] = 0; // page 0
+    packet[6] = 1; // of 1
+    packet[7] = 12; // 12 kcal
+    packet[9] = 0x59;
+    packet[10] = 0x01; // 345 steps
+    packet[11] = 0xfa; // 250 m
+    queue_ring_packet(state, link, packet)
+}
+
+fn queue_ring_packet(state: &mut SimState, link: LinkId, mut packet: [u8; 16]) -> Result<()> {
+    packet[15] = packet[..15]
+        .iter()
+        .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+    linked_mut(state, link)?
+        .events
+        .push_back(BleEvent::Notification {
+            char_uuid: QRING_NOTIFY.to_string(),
+            data: packet.to_vec(),
+        });
+    Ok(())
 }
 
 fn linked(state: &SimState, link: LinkId) -> Result<&SimLink> {
@@ -504,7 +591,9 @@ fn current_value(device: &SimDevice, characteristic: &SimCharacteristic, tick: u
         Source::Motion => motion(tick),
         Source::MusicEvent => music_event(tick),
         Source::CallResponse => call_response(tick),
-        Source::RingMeasurement => ring_measurement(device, tick),
+        // The real-time stream depends on the link's active reading, not on
+        // the characteristic, so it is generated in `next_event` instead.
+        Source::RingUart => Vec::new(),
         Source::OmiAudio => omi_audio(tick),
     }
 }
@@ -549,11 +638,24 @@ fn call_response(tick: u64) -> Vec<u8> {
     vec![(tick % 3) as u8]
 }
 
-fn ring_measurement(device: &SimDevice, tick: u64) -> Vec<u8> {
-    // Synthetic until the QRing protocol is mapped: HR, SpO2, battery.
-    let bpm: u8 = 60 + (tick % 30) as u8;
-    let spo2: u8 = 97;
-    vec![bpm, spo2, battery(device)]
+/// The ring's answer to "start real-time <kind>": one 16-byte packet per
+/// tick, the same shape the hardware sends.
+fn ring_reading(kind: u8, tick: u64) -> Vec<u8> {
+    let value = match kind {
+        1 => (60 + tick % 30) as u8,
+        3 => 97,
+        // Any other real-time kind is acknowledged but carries no reading.
+        _ => 0,
+    };
+    let mut packet = [0u8; 16];
+    packet[0] = 105;
+    packet[1] = kind;
+    packet[2] = 0;
+    packet[3] = value;
+    packet[15] = packet[..15]
+        .iter()
+        .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+    packet.to_vec()
 }
 
 fn omi_audio(tick: u64) -> Vec<u8> {
@@ -864,6 +966,9 @@ fn pine_time() -> SimDevice {
 }
 
 fn ring(id: &str, name: &str, battery_percent: f32, rssi: i16) -> SimDevice {
+    // A QRing exposes the standard Device Information service plus one UART
+    // service; there is no vendor-specific measurement characteristic, and no
+    // standard heart-rate or battery service on the rings this targets.
     SimDevice {
         id: id.to_string(),
         name: name.to_string(),
@@ -873,37 +978,55 @@ fn ring(id: &str, name: &str, battery_percent: f32, rssi: i16) -> SimDevice {
         faults: Faults::default(),
         services: vec![
             service(
-                HRS,
-                vec![characteristic(
-                    HR_MEASUREMENT,
-                    true,
-                    false,
-                    true,
-                    Vec::new(),
-                    Source::HeartRate,
-                )],
+                DIS,
+                vec![
+                    characteristic(
+                        DIS_MANUFACTURER,
+                        true,
+                        false,
+                        false,
+                        b"COLMI".to_vec(),
+                        Source::Static,
+                    ),
+                    characteristic(
+                        DIS_MODEL,
+                        true,
+                        false,
+                        false,
+                        b"COLMI Ring 2".to_vec(),
+                        Source::Static,
+                    ),
+                    characteristic(
+                        DIS_SERIAL,
+                        true,
+                        false,
+                        false,
+                        id.as_bytes().to_vec(),
+                        Source::Static,
+                    ),
+                    characteristic(
+                        DIS_FIRMWARE,
+                        true,
+                        false,
+                        false,
+                        b"sim-qring-1.0.0".to_vec(),
+                        Source::Static,
+                    ),
+                ],
             ),
             service(
-                BAS,
-                vec![characteristic(
-                    BATTERY_LEVEL,
-                    true,
-                    false,
-                    true,
-                    Vec::new(),
-                    Source::Battery,
-                )],
-            ),
-            service(
-                RING_SERVICE,
-                vec![characteristic(
-                    RING_MEASUREMENT,
-                    true,
-                    false,
-                    true,
-                    Vec::new(),
-                    Source::RingMeasurement,
-                )],
+                QRING_SERVICE,
+                vec![
+                    characteristic(QRING_WRITE, false, true, false, Vec::new(), Source::Static),
+                    characteristic(
+                        QRING_NOTIFY,
+                        false,
+                        false,
+                        true,
+                        Vec::new(),
+                        Source::RingUart,
+                    ),
+                ],
             ),
         ],
     }
@@ -1291,15 +1414,29 @@ mod tests {
         assert_eq!(sim.last_write(link, ALERT_LEVEL), Some(vec![2]));
     }
 
+    /// Build a QRing request: command, sub-data, additive checksum.
+    fn ring_packet(command: u8, sub: &[u8]) -> [u8; 16] {
+        let mut packet = [0u8; 16];
+        packet[0] = command;
+        packet[1..1 + sub.len()].copy_from_slice(sub);
+        packet[15] = packet[..15]
+            .iter()
+            .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+        packet
+    }
+
     /// The point of link handles: one device's traffic cannot appear on, or
-    /// delay, another device's queue.
+    /// delay, another device's queue. The ring here is driven the way the Spore
+    /// drives it: a start command, then one packet per tick.
     #[test]
     fn two_links_keep_separate_queues_and_clocks() {
         let mut sim = backend();
         let watch = sim.connect("sim-pinetime").expect("watch link");
         let ring = sim.connect("sim-ring").expect("ring link");
         sim.subscribe(watch, HR_MEASUREMENT).expect("watch hr");
-        sim.subscribe(ring, RING_MEASUREMENT).expect("ring hr");
+        sim.subscribe(ring, QRING_NOTIFY).expect("ring uart");
+        sim.write(ring, QRING_WRITE, &ring_packet(105, &[1, 1]))
+            .expect("start real-time hr");
 
         // Drain the watch hard; the ring's clock must not move.
         for _ in 0..6 {
@@ -1313,14 +1450,87 @@ mod tests {
             .expect("ring")
             .expect("ring event")
         {
-            BleEvent::Notification { char_uuid, .. } => assert_eq!(
-                char_uuid, RING_MEASUREMENT,
-                "the watch's notifications must not appear on the ring's queue"
-            ),
+            BleEvent::Notification { char_uuid, data } => {
+                assert_eq!(
+                    char_uuid, QRING_NOTIFY,
+                    "the watch's notifications must not appear on the ring's queue"
+                );
+                assert_eq!(data[0], 105);
+                assert_eq!(data[1], 1, "real-time heart rate");
+                assert_eq!(data[3], 61, "the ring's first sample");
+            }
             BleEvent::Disconnected { .. } => panic!("unexpected disconnect"),
         }
         assert_eq!(sim.link_tick(ring), Some(1));
         assert_eq!(sim.link_tick(watch), Some(6));
+    }
+
+    #[test]
+    fn ring_battery_and_steps_are_request_response() {
+        let mut sim = backend();
+        let link = sim.connect("sim-ring").expect("connect");
+        sim.subscribe(link, QRING_NOTIFY).expect("subscribe");
+
+        // Battery: the reply carries the device's own level.
+        sim.write(link, QRING_WRITE, &ring_packet(3, &[]))
+            .expect("battery request");
+        match sim.next_event(link, 100).expect("battery").expect("reply") {
+            BleEvent::Notification { data, .. } => {
+                assert_eq!(data.len(), 16);
+                assert_eq!(data[0], 3);
+                assert_eq!(data[1], 74, "the simulated ring's battery");
+                assert_eq!(
+                    data[..15]
+                        .iter()
+                        .fold(0u8, |sum, byte| sum.wrapping_add(*byte)),
+                    data[15],
+                    "the ring's reply carries its own checksum"
+                );
+            }
+            BleEvent::Disconnected { .. } => panic!("unexpected disconnect"),
+        }
+
+        // Steps: one complete page, dated on the simulator's virtual day.
+        sim.write(
+            link,
+            QRING_WRITE,
+            &ring_packet(67, &[0, 0x0f, 0x00, 0x5f, 0x01]),
+        )
+        .expect("steps request");
+        match sim.next_event(link, 100).expect("steps").expect("page") {
+            BleEvent::Notification { data, .. } => {
+                assert_eq!(data[0], 67);
+                assert_eq!(data[6], 1, "the page is complete in one packet");
+                assert_eq!(u16::from_le_bytes([data[9], data[10]]), 345);
+            }
+            BleEvent::Disconnected { .. } => panic!("unexpected disconnect"),
+        }
+
+        // Nothing streams until a reading is started, and stopping ends it.
+        assert!(sim.next_event(link, 100).expect("idle").is_none());
+        sim.write(link, QRING_WRITE, &ring_packet(105, &[1, 1]))
+            .expect("start");
+        assert!(sim.next_event(link, 100).expect("streaming").is_some());
+        sim.write(link, QRING_WRITE, &ring_packet(106, &[1, 0, 0]))
+            .expect("stop");
+        assert!(sim.next_event(link, 100).expect("stopped").is_none());
+    }
+
+    #[test]
+    fn a_corrupt_ring_request_is_refused() {
+        let mut sim = backend();
+        let link = sim.connect("sim-ring").expect("connect");
+        sim.subscribe(link, QRING_NOTIFY).expect("subscribe");
+        let mut request = ring_packet(3, &[]);
+        request[15] ^= 0xff;
+        let error = sim
+            .write(link, QRING_WRITE, &request)
+            .expect_err("bad checksum");
+        assert!(error.to_string().contains("checksum"), "{error}");
+        assert!(
+            sim.next_event(link, 100).expect("quiet").is_none(),
+            "a refused request produces no reply"
+        );
     }
 
     #[test]
