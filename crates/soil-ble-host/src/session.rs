@@ -69,8 +69,21 @@ pub struct Session {
     pub creds: Creds,
     #[serde(default, alias = "rings")]
     pub devices: Vec<DeviceIdentity>,
-    pub lease: Option<Lease>,
+    /// One live claim per device. A host may hold several at once; two hosts
+    /// may not hold the same device. Old session files carried a single
+    /// `lease`; it is dropped on read, and leases expire in minutes anyway.
+    #[serde(default)]
+    pub leases: Vec<Lease>,
     pub cursors: Vec<Cursor>,
+}
+
+impl Session {
+    /// The first live claim, for callers that only ever hold one device.
+    /// Multi-device hosts use [`Self::leases`] directly.
+    #[must_use]
+    pub fn lease(&self) -> Option<&Lease> {
+        self.leases.first()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -156,10 +169,12 @@ impl SessionStore {
         at: u64,
     ) -> Result<Lease> {
         self.reload()?;
-        if let Some(current) = &self.session.lease
-            && current.device_id == device_id
-            && current.host_id != host_id
-            && current.is_live(at)
+        self.session.leases.retain(|lease| lease.is_live(at));
+        if let Some(current) = self
+            .session
+            .leases
+            .iter()
+            .find(|lease| lease.device_id == device_id && lease.host_id != host_id)
         {
             anyhow::bail!(
                 "device {device_id} is leased by {} for another {} ms",
@@ -173,7 +188,12 @@ impl SessionStore {
             claimed_at_ms: at,
             expires_at_ms: at.saturating_add(ttl_ms),
         };
-        self.session.lease = Some(lease.clone());
+        // Replace this host's own claim for the device rather than stacking a
+        // second one; another host's claim was refused above.
+        self.session
+            .leases
+            .retain(|existing| existing.device_id != device_id || existing.host_id != host_id);
+        self.session.leases.push(lease.clone());
         self.save()?;
         Ok(lease)
     }
@@ -182,13 +202,9 @@ impl SessionStore {
         // Re-read first: a host that lost the lease must not wipe the winner's
         // claim with a stale in-memory copy.
         self.reload()?;
-        if self
-            .session
-            .lease
-            .as_ref()
-            .is_some_and(|l| l.host_id == host_id)
-        {
-            self.session.lease = None;
+        let before = self.session.leases.len();
+        self.session.leases.retain(|lease| lease.host_id != host_id);
+        if self.session.leases.len() != before {
             self.save()?;
         }
         Ok(())
@@ -257,8 +273,7 @@ mod tests {
         assert_eq!(
             first
                 .get()
-                .lease
-                .as_ref()
+                .lease()
                 .map(|lease| lease.host_id.as_str()),
             Some("host-b"),
             "a stale host must not clear the new holder's lease"
@@ -295,8 +310,7 @@ mod tests {
         assert_eq!(
             other
                 .get()
-                .lease
-                .as_ref()
+                .lease()
                 .map(|lease| lease.host_id.as_str()),
             Some("host-a"),
             "a credential write must not erase the live lease"
