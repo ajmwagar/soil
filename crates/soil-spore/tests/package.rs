@@ -1,5 +1,6 @@
 use soil_spore::{
-    Error, Manifest, check, compute_lock, pack, publish_blockers, verify, write_lock,
+    Error, Manifest, check, collect_package, compute_lock, pack, publish_blockers, verify,
+    write_lock,
 };
 use std::fs;
 use std::io::Cursor;
@@ -569,6 +570,54 @@ fn a_module_that_is_not_a_component_is_rejected_with_a_reason() {
     assert!(
         error.to_string().contains("component"),
         "the message should say why: {error}"
+    );
+}
+
+/// A real component that imports `fungos:actions`, which is not in the WASI baseline.
+const ACTIONS_COMPONENT: &[u8] =
+    include_bytes!("../../soil-canvas-actions-host/fixtures/list-actions.wasm");
+
+#[test]
+fn pack_refuses_an_import_the_manifest_does_not_declare() {
+    let root = fixture();
+    fs::write(root.join("module.wasm"), ACTIONS_COMPONENT).unwrap();
+
+    let error = pack(&root).unwrap_err();
+    assert!(
+        error.to_string().contains("fungos:actions"),
+        "pack must name the undeclared package: {error}"
+    );
+
+    // A capability-level grant declares the package it belongs to. The
+    // launcher declares `soil:spore.catalog`, not the whole `soil:spore`.
+    let manifest = MANIFEST.replace(
+        "\"soil:canvas\" = \"present the surface\"",
+        "\"soil:canvas\" = \"present the surface\"\n\"fungos:actions/catalog\" = \"read the host actions this view offers\"",
+    );
+    fs::write(root.join("spore.toml"), manifest).unwrap();
+
+    let bytes = pack(&root).unwrap();
+    verify(&bytes).unwrap();
+}
+
+#[test]
+fn verify_refuses_an_import_the_manifest_does_not_declare() {
+    let root = fixture();
+    fs::write(root.join("module.wasm"), ACTIONS_COMPONENT).unwrap();
+    let manifest = Manifest::load(&root).unwrap();
+    // Writing the lock directly skips `pack`'s gate, which is the shape of a
+    // tar built elsewhere and offered to `verify`/`soil-install`.
+    write_lock(&root).unwrap();
+
+    let mut files = collect_package(&root, &manifest).unwrap();
+    let lock = fs::read(root.join(soil_spore::LOCK_NAME)).unwrap();
+    files.push((soil_spore::LOCK_NAME.to_owned(), lock));
+    let bytes = build_tar(&files);
+
+    let error = verify(&bytes).unwrap_err();
+    assert!(
+        error.to_string().contains("fungos:actions"),
+        "verify must reject the same import check does: {error}"
     );
 }
 

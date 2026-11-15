@@ -2214,6 +2214,20 @@ pub const WASI_BASELINE: [&str; 5] = [
     "wasi:random",
 ];
 
+/// Does `grants` declare `package`?
+///
+/// A manifest grant may name the package itself (`soil:spore`) or one of its
+/// capabilities (`soil:spore.catalog`). Capability-level grants are the normal
+/// shape: the host enforces the capability, not the package, and a launcher
+/// that only lists and launches should not have to claim the whole package.
+fn declares_package(grants: &BTreeMap<String, String>, package: &str) -> bool {
+    grants.contains_key(package)
+        || grants.keys().any(|key| {
+            key.strip_prefix(package)
+                .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('/'))
+        })
+}
+
 fn undeclared_packages(
     imported: &BTreeSet<String>,
     grants: &BTreeMap<String, String>,
@@ -2221,9 +2235,27 @@ fn undeclared_packages(
     imported
         .iter()
         .filter(|package| !WASI_BASELINE.contains(&package.as_str()))
-        .filter(|package| !grants.contains_key(package.as_str()))
+        .filter(|package| !declares_package(grants, package))
         .cloned()
         .collect()
+}
+
+fn check_imported_grants(
+    face: &str,
+    module: &str,
+    bytes: &[u8],
+    grants: &BTreeMap<String, String>,
+) -> Result<()> {
+    let imported = imported_packages(bytes)?;
+    let undeclared = undeclared_packages(&imported, grants);
+    if !undeclared.is_empty() {
+        return Err(Error::Invalid(format!(
+            "{face} {module} imports {} but [grants] does not declare {}",
+            undeclared.join(", "),
+            if undeclared.len() == 1 { "it" } else { "them" },
+        )));
+    }
+    Ok(())
 }
 
 /// Run the module's real imports past the manifest.
@@ -2239,15 +2271,24 @@ fn check_declared_grants(root: &Path, manifest: &Manifest) -> Result<()> {
         let path = root.join(&module);
         let bytes =
             fs::read(&path).map_err(|error| Error::Io(format!("{}: {error}", path.display())))?;
-        let imported = imported_packages(&bytes)?;
-        let undeclared = undeclared_packages(&imported, &manifest.grants);
-        if !undeclared.is_empty() {
-            return Err(Error::Invalid(format!(
-                "{face} {module} imports {} but [grants] does not declare {}",
-                undeclared.join(", "),
-                if undeclared.len() == 1 { "it" } else { "them" },
-            )));
-        }
+        check_imported_grants(&face, &module, &bytes, &manifest.grants)?;
+    }
+    Ok(())
+}
+
+/// The same rule for a package that has already been read into memory.
+///
+/// `verify`, `unpack`, and therefore `soil-install` all go through
+/// `read_package`, so a tar that would fail `check` cannot be installed just
+/// because it arrived as bytes instead of a directory.
+fn check_package_imports(manifest: &Manifest, files: &BTreeMap<String, Vec<u8>>) -> Result<()> {
+    for (face, module) in manifest.declared_modules() {
+        let bytes = files.get(&module).ok_or_else(|| {
+            Error::Invalid(format!(
+                "{face} {module} is declared but missing from the package"
+            ))
+        })?;
+        check_imported_grants(&face, &module, bytes, &manifest.grants)?;
     }
     Ok(())
 }
@@ -2373,6 +2414,9 @@ pub fn write_lock(root: &Path) -> Result<Lock> {
 /// else.
 pub fn pack(root: &Path) -> Result<Vec<u8>> {
     let manifest = Manifest::load(root)?;
+    // Validate before writing the lock: packing is the last chance to catch a
+    // package that only fails on the machine that installs it.
+    check_declared_grants(root, &manifest)?;
     let lock = write_lock(root)?;
     tarball(root, &manifest, &lock)
 }
@@ -2556,6 +2600,7 @@ pub fn read_package(bytes: &[u8]) -> Result<(Manifest, Lock, BTreeMap<String, Ve
             "manifest identity does not match the lock".into(),
         ));
     }
+    check_package_imports(&manifest, &files)?;
     Ok((manifest, lock, files))
 }
 
