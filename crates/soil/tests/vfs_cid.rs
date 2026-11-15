@@ -1,7 +1,7 @@
 //! `soil:vfs-cid`: a photo's record names bytes, and this is the lookup that
 //! turns that name back into places inside the workspace.
 
-use soil_host::vfs_host::{NodeRole, VfsHost, cid, vfs_mut};
+use soil::vfs_host::{NodeRole, VfsHost, cid, vfs_mut};
 
 fn host() -> (tempfile::TempDir, VfsHost, tempfile::TempDir) {
     let root = tempfile::tempdir().unwrap();
