@@ -62,6 +62,8 @@ impl Format {
 
 pub struct FramebufferPresenter {
     file: File,
+    /// This panel's `/sys/class/graphics` directory.
+    sysfs: PathBuf,
     path: PathBuf,
     width: u32,
     height: u32,
@@ -103,14 +105,35 @@ impl FramebufferPresenter {
                 format.name()
             );
         }
-        Ok(Self {
+        let presenter = Self {
             file,
+            sysfs,
             path,
             width,
             height,
             stride,
             format,
-        })
+        };
+        // A panel nobody woke is a panel that shows nothing, whatever the
+        // framebuffer says.
+        presenter.wake()?;
+        Ok(presenter)
+    }
+
+    /// Unblank the panel, if it is blanked.
+    ///
+    /// Blanking is invisible from the host's side: a powered-down panel still
+    /// accepts writes and still reads back byte for byte, so a dark screen and
+    /// a correct frame are indistinguishable until someone looks at it. The VT
+    /// blank timer, and anything else that speaks fbdev, can power the panel
+    /// down long after we opened it, so this runs on every present and not just
+    /// once.
+    fn wake(&self) -> Result<()> {
+        let blank = self.sysfs.join("blank");
+        if read_u32(&blank).unwrap_or(0) == 0 {
+            return Ok(());
+        }
+        std::fs::write(&blank, "0").with_context(|| format!("unblank {}", self.path.display()))
     }
 }
 
@@ -128,6 +151,7 @@ impl CanvasGpuPresenter for FramebufferPresenter {
             frame.rgba.len() == (frame.width * frame.height * 4) as usize,
             "frame is not tightly packed RGBA8"
         );
+        self.wake()?;
         let mut buffer = vec![0u8; self.stride * self.height as usize];
         for y in 0..self.height {
             // Nearest neighbour, so a frame rendered at another extent still
