@@ -497,21 +497,22 @@ impl Renderer {
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("soil-dfm pipeline layout"),
-            bind_group_layouts: &[&bind_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_layout)],
+            immediate_size: 0,
         });
 
         let mesh_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            multiview_mask: None,
             label: Some("soil-dfm mesh"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_mesh"),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<MeshVert>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32],
-                }],
+                })],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -530,30 +531,30 @@ impl Renderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
             cache: None,
         });
 
         // Markers ignore depth so a pin is never swallowed by the part itself.
         let marker_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            multiview_mask: None,
             label: Some("soil-dfm markers"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_marker"),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<MarkVert>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &wgpu::vertex_attr_array![
                         0 => Float32x3, 1 => Float32x2, 2 => Float32, 3 => Float32
                     ],
-                }],
+                })],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -572,13 +573,12 @@ impl Renderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
             cache: None,
         });
 
@@ -685,6 +685,7 @@ impl Renderer {
     ) {
         let (marker_buffer, marker_count) = self.marker_buffer(active);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            multiview_mask: None,
             label: Some("soil-dfm pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: colour,
@@ -734,6 +735,7 @@ impl Renderer {
             self.overlay
                 .queue_screen(&self.queue, size.0 as f32, size.1 as f32);
             let mut ui_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                multiview_mask: None,
                 label: Some("soil-dfm overlay"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: colour,
@@ -824,8 +826,9 @@ fn write_bmp(path: &str, rgba: &[u8], width: u32, height: u32) -> Result<()> {
 }
 
 fn screenshot(scene: &Scene3d, path: &str, width: u32, height: u32, orbit: &Orbit) -> Result<()> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        apply_limit_buckets: false,
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
         force_fallback_adapter: false,
@@ -905,7 +908,7 @@ fn screenshot(scene: &Scene3d, path: &str, width: u32, height: u32, orbit: &Orbi
     device.poll(wgpu::PollType::wait_indefinitely())?;
     receiver.recv()??;
 
-    let data = slice.get_mapped_range();
+    let data = slice.get_mapped_range()?;
     let mut rgba = Vec::with_capacity((width * height * 4) as usize);
     for y in 0..height {
         let start = (y * padded) as usize;
@@ -955,9 +958,10 @@ impl App {
             .with_title(format!("soil-dfm — {}", self.scene.name))
             .with_inner_size(PhysicalSize::new(1280, 900));
         let window = Arc::new(event_loop.create_window(attrs)?);
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance.create_surface(window.clone())?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            apply_limit_buckets: false,
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
@@ -986,6 +990,7 @@ impl App {
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: caps.alpha_modes[0],
+            color_space: wgpu::SurfaceColorSpace::default(),
             view_formats: Vec::new(),
             desired_maximum_frame_latency: 2,
         };
@@ -1008,8 +1013,9 @@ impl App {
     fn redraw(&mut self) {
         let Some(s) = self.state.as_mut() else { return };
         let frame = match s.surface.get_current_texture() {
-            Ok(frame) => frame,
-            Err(_) => return,
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            _ => return,
         };
         let view = frame
             .texture
@@ -1032,7 +1038,7 @@ impl App {
             self.active,
         );
         s.renderer.queue.submit([encoder.finish()]);
-        frame.present();
+        s.renderer.queue.present(frame);
         s.window.request_redraw();
     }
 }
@@ -1476,20 +1482,21 @@ impl Overlay {
 
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("soil-dfm ui pipeline layout"),
-            bind_group_layouts: &[&atlas_layout, &screen_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&atlas_layout), Some(&screen_layout)],
+            immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            multiview_mask: None,
             label: Some("soil-dfm ui"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_ui"),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<UiVert>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4],
-                }],
+                })],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -1508,7 +1515,6 @@ impl Overlay {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
             cache: None,
         });
 

@@ -22,9 +22,10 @@ pub struct WindowRenderer {
 
 impl WindowRenderer {
     pub fn new(window: Arc<Window>, size: PhysicalSize<u32>) -> anyhow::Result<Self> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance.create_surface(window)?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            apply_limit_buckets: false,
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
@@ -52,6 +53,7 @@ impl WindowRenderer {
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: caps.alpha_modes[0],
+            color_space: wgpu::SurfaceColorSpace::default(),
             view_formats: Vec::new(),
             desired_maximum_frame_latency: 2,
         };
@@ -124,7 +126,14 @@ impl WindowRenderer {
 
     /// Draw directly into the current swapchain image.
     pub fn present(&mut self, scene: &soil_scene::Scene, theme: Theme) -> anyhow::Result<()> {
-        let output = self.surface.get_current_texture()?;
+        let output = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(texture)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                anyhow::bail!("the surface is out of date; reconfigure before drawing")
+            }
+            other => anyhow::bail!("no surface texture this frame: {other:?}"),
+        };
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -141,7 +150,7 @@ impl WindowRenderer {
             self.renderer
                 .draw_to(scene, self.config.width, self.config.height, theme, &view)?;
         }
-        output.present();
+        self.renderer.queue().present(output);
         Ok(())
     }
 }
