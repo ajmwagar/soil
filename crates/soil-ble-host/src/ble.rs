@@ -6,8 +6,7 @@
 
 use anyhow::Result;
 use soil_ble_api::{Backend, DeviceInfo, ServiceInfo};
-
-pub use soil_ble_api::BleEvent;
+pub use soil_ble_api::{BleEvent, Failure, LinkId};
 
 pub struct Ble {
     backend: Box<dyn Backend>,
@@ -47,31 +46,35 @@ impl Ble {
         self.backend.scan(timeout_ms)
     }
 
-    pub fn connect(&mut self, id: &str) -> Result<()> {
+    pub fn max_links(&self) -> usize {
+        self.backend.max_links()
+    }
+
+    pub fn connect(&mut self, id: &str) -> Result<LinkId> {
         self.backend.connect(id)
     }
 
-    pub fn disconnect(&mut self) -> Result<()> {
-        self.backend.disconnect()
+    pub fn disconnect(&mut self, link: LinkId) -> Result<()> {
+        self.backend.disconnect(link)
     }
 
-    pub fn services(&self) -> Result<Vec<ServiceInfo>> {
-        self.backend.services()
+    pub fn services(&self, link: LinkId) -> Result<Vec<ServiceInfo>> {
+        self.backend.services(link)
     }
 
-    pub fn read(&self, uuid: &str) -> Result<Vec<u8>> {
-        self.backend.read(uuid)
+    pub fn read(&self, link: LinkId, uuid: &str) -> Result<Vec<u8>> {
+        self.backend.read(link, uuid)
     }
 
-    pub fn write(&self, uuid: &str, data: &[u8]) -> Result<()> {
-        self.backend.write(uuid, data)
+    pub fn write(&self, link: LinkId, uuid: &str, data: &[u8]) -> Result<()> {
+        self.backend.write(link, uuid, data)
     }
 
-    pub fn subscribe(&self, uuid: &str) -> Result<()> {
-        self.backend.subscribe(uuid)
+    pub fn subscribe(&self, link: LinkId, uuid: &str) -> Result<()> {
+        self.backend.subscribe(link, uuid)
     }
 
-    pub fn next_event(&self, timeout_ms: u64) -> Result<Option<BleEvent>> {
-        self.backend.next_event(timeout_ms)
+    pub fn next_event(&self, link: LinkId, timeout_ms: u64) -> Result<Option<BleEvent>> {
+        self.backend.next_event(link, timeout_ms)
     }
 }

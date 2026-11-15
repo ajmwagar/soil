@@ -2,9 +2,14 @@
 //!
 //! The host calls these from synchronous wasm import calls, so everything is
 //! driven from one `tokio` runtime owned by the backend rather than the caller.
+//!
+//! Links are keyed by a Soil-issued handle, and each link owns its notification
+//! queue and pump. A guest draining one link therefore never reads another
+//! device's traffic, and a device that floods notifications cannot fill a
+//! shared queue that a quiet device then has to wait behind.
 
 use std::collections::HashMap;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -12,8 +17,18 @@ use btleplug::api::{
     Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
 };
 use btleplug::platform::{Adapter, Manager, Peripheral};
-use soil_ble_api::{Backend, BleEvent, CharInfo, DeviceInfo, ServiceInfo};
+use soil_ble_api::{Backend, BleEvent, CharInfo, DeviceInfo, Failure, LinkId, ServiceInfo, fail};
 use tokio::runtime::Runtime;
+
+/// Adapters do not report their connection ceiling. Four concurrent links is
+/// the conservative number that holds across the controllers this runs on; the
+/// host refuses the fifth before any handshake starts.
+const MAX_LINKS: usize = 4;
+
+/// Per-link queue depth. A guest that stops draining a chatty device blocks
+/// that link's pump — radio-side backpressure — instead of growing host memory
+/// or dropping notifications silently.
+const LINK_QUEUE: usize = 1024;
 
 /// Identity note: on macOS `Peripheral::address()` is hardcoded to all zeros,
 /// so `Peripheral::id()` is the only stable handle. Scanned peripherals are
@@ -25,6 +40,7 @@ struct Scanned {
 }
 
 struct Link {
+    device_id: String,
     periph: Peripheral,
     chars: HashMap<String, Characteristic>,
     rx: Receiver<BleEvent>,
@@ -35,7 +51,8 @@ pub struct BtleplugBackend {
     rt: Runtime,
     adapter: Option<Adapter>,
     scanned: Vec<Scanned>,
-    link: Option<Link>,
+    links: HashMap<LinkId, Link>,
+    next_link: LinkId,
 }
 
 /// Every transport call gets a deadline: btleplug awaits can hang forever on
@@ -69,7 +86,8 @@ impl BtleplugBackend {
             rt,
             adapter: Some(adapter),
             scanned: Vec::new(),
-            link: None,
+            links: HashMap::new(),
+            next_link: 1,
         })
     }
 
@@ -108,12 +126,22 @@ impl BtleplugBackend {
         })
     }
 
-    pub fn connect(&mut self, id: &str) -> Result<()> {
-        if self.link.is_some() {
-            self.disconnect()?;
+    pub fn connect(&mut self, id: &str) -> Result<LinkId> {
+        if let Some((link, _)) = self
+            .links
+            .iter()
+            .find(|(_, existing)| existing.device_id.eq_ignore_ascii_case(id))
+        {
+            return Ok(*link);
+        }
+        if self.links.len() >= MAX_LINKS {
+            return fail(Failure::OverBudget(format!(
+                "{id}: {} of {MAX_LINKS} links in use",
+                self.links.len()
+            )));
         }
         let adapter = self.adapter.as_ref().ok_or_else(|| anyhow!("no adapter"))?;
-        let (tx, rx): (Sender<BleEvent>, Receiver<BleEvent>) = channel();
+        let (tx, rx): (SyncSender<BleEvent>, Receiver<BleEvent>) = sync_channel(LINK_QUEUE);
 
         // resolve from the scan cache first (macOS addresses are zeros), then
         // fall back to a fresh enumeration
@@ -162,7 +190,7 @@ impl BtleplugBackend {
             Ok::<_, anyhow::Error>((periph, chars))
         })?;
 
-        // one pump for all notifications; the guest multiplexes by payload
+        // one pump per link; the guest drains it by link handle
         let pump = self.rt.spawn({
             let periph = periph.clone();
             async move {
@@ -174,6 +202,7 @@ impl BtleplugBackend {
                                 char_uuid: lower(n.uuid),
                                 data: n.value,
                             };
+                            // A full queue blocks this link only.
                             if tx.send(event).is_err() {
                                 return;
                             }
@@ -192,32 +221,39 @@ impl BtleplugBackend {
             }
         });
 
-        self.link = Some(Link {
-            periph,
-            chars,
-            rx,
-            pump: Some(pump),
-        });
-        Ok(())
+        let link = self.next_link;
+        self.next_link = self.next_link.wrapping_add(1).max(1);
+        self.links.insert(
+            link,
+            Link {
+                device_id: id.to_string(),
+                periph,
+                chars,
+                rx,
+                pump: Some(pump),
+            },
+        );
+        Ok(link)
     }
 
-    pub fn disconnect(&mut self) -> Result<()> {
-        let Some(mut link) = self.link.take() else {
-            return Ok(());
+    pub fn disconnect(&mut self, link: LinkId) -> Result<()> {
+        let Some(mut entry) = self.links.remove(&link) else {
+            return fail(Failure::NotConnected(link));
         };
-        if let Some(handle) = link.pump.take() {
+        if let Some(handle) = entry.pump.take() {
             handle.abort();
         }
+        // Dropping `rx` also unblocks a pump that is waiting on a full queue.
         self.rt
             .block_on(async {
-                let r = bound(5, link.periph.disconnect()).await?;
+                let r = bound(5, entry.periph.disconnect()).await?;
                 r.map_err(|e| anyhow!("{e}"))
             })
             .context("disconnect")
     }
 
-    pub fn services(&self) -> Result<Vec<ServiceInfo>> {
-        let link = self.link.as_ref().ok_or_else(|| anyhow!("not connected"))?;
+    pub fn services(&self, link: LinkId) -> Result<Vec<ServiceInfo>> {
+        let link = self.linked(link)?;
         let periph = link.periph.clone();
         self.rt.block_on(async {
             bound(10, periph.discover_services())
@@ -246,24 +282,24 @@ impl BtleplugBackend {
         })
     }
 
-    pub fn read(&self, uuid: &str) -> Result<Vec<u8>> {
-        let (ch, periph) = self.char(uuid)?;
+    pub fn read(&self, link: LinkId, uuid: &str) -> Result<Vec<u8>> {
+        let (ch, periph) = self.char(link, uuid)?;
         self.rt.block_on(async {
             let mut last = None;
             for _ in 0..3 {
                 if !periph.is_connected().await.unwrap_or(false) {
                     if let Err(e) = periph.connect().await {
                         last = Some(anyhow!("reconnect failed: {e}"));
-                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                        tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
                         continue;
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
                 }
                 match bound(5, periph.read(&ch)).await? {
                     Ok(v) => return Ok(v),
                     Err(e) => {
                         last = Some(anyhow!("{e}"));
-                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                        tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
                     }
                 }
             }
@@ -271,34 +307,41 @@ impl BtleplugBackend {
         })
     }
 
-    fn char(&self, uuid: &str) -> Result<(Characteristic, Peripheral)> {
-        let link = self.link.as_ref().ok_or_else(|| anyhow!("not connected"))?;
-        let ch = link
-            .chars
-            .get(uuid)
-            .cloned()
-            .ok_or_else(|| anyhow!("unknown characteristic {uuid}"))?;
+    fn linked(&self, link: LinkId) -> Result<&Link> {
+        self.links
+            .get(&link)
+            .ok_or_else(|| anyhow::Error::new(Failure::NotConnected(link)))
+    }
+
+    fn char(&self, link: LinkId, uuid: &str) -> Result<(Characteristic, Peripheral)> {
+        let link = self.linked(link)?;
+        let ch = link.chars.get(uuid).cloned().ok_or_else(|| {
+            anyhow::Error::new(Failure::NotFound(format!(
+                "characteristic {uuid} on link {}",
+                link.device_id
+            )))
+        })?;
         Ok((ch, link.periph.clone()))
     }
 
-    pub fn write(&self, uuid: &str, data: &[u8]) -> Result<()> {
-        let (ch, periph) = self.char(uuid)?;
+    pub fn write(&self, link: LinkId, uuid: &str, data: &[u8]) -> Result<()> {
+        let (ch, periph) = self.char(link, uuid)?;
         self.rt.block_on(async {
             let mut last = None;
             for _ in 0..3 {
                 if !periph.is_connected().await.unwrap_or(false) {
                     if let Err(e) = periph.connect().await {
                         last = Some(anyhow!("reconnect failed: {e}"));
-                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                        tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
                         continue;
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
                 }
                 match bound(5, periph.write(&ch, data, WriteType::WithoutResponse)).await? {
                     Ok(()) => return Ok(()),
                     Err(e) => {
                         last = Some(anyhow!("{e}"));
-                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                        tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
                     }
                 }
             }
@@ -306,8 +349,8 @@ impl BtleplugBackend {
         })
     }
 
-    pub fn subscribe(&self, uuid: &str) -> Result<()> {
-        let (ch, periph) = self.char(uuid)?;
+    pub fn subscribe(&self, link: LinkId, uuid: &str) -> Result<()> {
+        let (ch, periph) = self.char(link, uuid)?;
         self.rt
             .block_on(async move {
                 let r = bound(10, periph.subscribe(&ch)).await?;
@@ -317,13 +360,13 @@ impl BtleplugBackend {
     }
 
     /// `Ok(None)` = deadline expired, not a failure.
-    pub fn next_event(&self, timeout_ms: u64) -> Result<Option<BleEvent>> {
-        let link = self.link.as_ref().ok_or_else(|| anyhow!("not connected"))?;
-        match link.rx.recv_timeout(Duration::from_millis(timeout_ms)) {
+    pub fn next_event(&self, link: LinkId, timeout_ms: u64) -> Result<Option<BleEvent>> {
+        let entry = self.linked(link)?;
+        match entry.rx.recv_timeout(Duration::from_millis(timeout_ms)) {
             Ok(event) => Ok(Some(event)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                Err(anyhow!("notification pump stopped"))
+                fail(Failure::NotConnected(link))
             }
         }
     }
@@ -334,31 +377,35 @@ impl Backend for BtleplugBackend {
         BtleplugBackend::scan(self, timeout_ms)
     }
 
-    fn connect(&mut self, id: &str) -> Result<()> {
+    fn max_links(&self) -> usize {
+        MAX_LINKS
+    }
+
+    fn connect(&mut self, id: &str) -> Result<LinkId> {
         BtleplugBackend::connect(self, id)
     }
 
-    fn disconnect(&mut self) -> Result<()> {
-        BtleplugBackend::disconnect(self)
+    fn disconnect(&mut self, link: LinkId) -> Result<()> {
+        BtleplugBackend::disconnect(self, link)
     }
 
-    fn services(&self) -> Result<Vec<ServiceInfo>> {
-        BtleplugBackend::services(self)
+    fn services(&self, link: LinkId) -> Result<Vec<ServiceInfo>> {
+        BtleplugBackend::services(self, link)
     }
 
-    fn read(&self, uuid: &str) -> Result<Vec<u8>> {
-        BtleplugBackend::read(self, uuid)
+    fn read(&self, link: LinkId, uuid: &str) -> Result<Vec<u8>> {
+        BtleplugBackend::read(self, link, uuid)
     }
 
-    fn write(&self, uuid: &str, data: &[u8]) -> Result<()> {
-        BtleplugBackend::write(self, uuid, data)
+    fn write(&self, link: LinkId, uuid: &str, data: &[u8]) -> Result<()> {
+        BtleplugBackend::write(self, link, uuid, data)
     }
 
-    fn subscribe(&self, uuid: &str) -> Result<()> {
-        BtleplugBackend::subscribe(self, uuid)
+    fn subscribe(&self, link: LinkId, uuid: &str) -> Result<()> {
+        BtleplugBackend::subscribe(self, link, uuid)
     }
 
-    fn next_event(&self, timeout_ms: u64) -> Result<Option<BleEvent>> {
-        BtleplugBackend::next_event(self, timeout_ms)
+    fn next_event(&self, link: LinkId, timeout_ms: u64) -> Result<Option<BleEvent>> {
+        BtleplugBackend::next_event(self, link, timeout_ms)
     }
 }

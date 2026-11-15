@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
-use soil_ble_api::{Backend, BleEvent, CharInfo, DeviceInfo, ServiceInfo};
+use soil_ble_api::{Backend, BleEvent, CharInfo, DeviceInfo, Failure, LinkId, ServiceInfo, fail};
 
 const DIS: &str = "0000180a-0000-1000-8000-00805f9b34fb";
 const HRS: &str = "0000180d-0000-1000-8000-00805f9b34fb";
@@ -115,13 +115,29 @@ pub struct SimDevice {
     services: Vec<SimService>,
 }
 
-struct SimState {
-    devices: Vec<SimDevice>,
-    link: Option<usize>,
+/// Default concurrent links. Chosen to match the conservative controller
+/// ceiling the real backend states, so a guest that plans against the
+/// simulator does not discover a smaller budget on hardware.
+pub const DEFAULT_CAPACITY: usize = 3;
+
+/// One live link. Its clock, subscriptions, queue and command writes are its
+/// own: two links in one guest are as independent as two separate centrals.
+struct SimLink {
+    device: usize,
     subscribed: HashSet<String>,
     events: VecDeque<BleEvent>,
     writes: HashMap<String, Vec<u8>>,
     tick: u64,
+    /// The virtual radio dropped this link; queued events remain drainable,
+    /// then the handle is refused.
+    closed: bool,
+}
+
+struct SimState {
+    devices: Vec<SimDevice>,
+    links: HashMap<LinkId, SimLink>,
+    next_link: LinkId,
+    capacity: usize,
     /// Optional real-time delay per generated tick. Tests use 0; the desktop
     /// dev host uses a small value so a 1 s guest run does not produce hundreds
     /// of samples.
@@ -138,7 +154,18 @@ impl SimBackend {
     }
 
     pub fn builtin_paced(pacing: Duration) -> Result<Self> {
-        Ok(Self::with_pacing(vec![pine_time(), ring(), omi()], pacing))
+        // The wearer carries two rings, a watch and a necklace; four devices and
+        // three links is the smallest set that exercises the budget honestly.
+        Ok(Self::with_capacity(
+            vec![
+                pine_time(),
+                ring("sim-ring", "COLMI Ring 2", 74.0, -62),
+                ring("sim-ring-2", "COLMI Ring 2", 68.0, -71),
+                omi(),
+            ],
+            DEFAULT_CAPACITY,
+            pacing,
+        ))
     }
 
     pub fn with_devices(devices: Vec<SimDevice>) -> Self {
@@ -146,22 +173,45 @@ impl SimBackend {
     }
 
     pub fn with_pacing(devices: Vec<SimDevice>, pacing: Duration) -> Self {
+        Self::with_capacity(devices, DEFAULT_CAPACITY, pacing)
+    }
+
+    pub fn with_capacity(devices: Vec<SimDevice>, capacity: usize, pacing: Duration) -> Self {
         Self {
             state: Mutex::new(SimState {
                 devices,
-                link: None,
-                subscribed: HashSet::new(),
-                events: VecDeque::new(),
-                writes: HashMap::new(),
-                tick: 0,
+                links: HashMap::new(),
+                next_link: 1,
+                capacity,
                 pacing,
             }),
         }
     }
 
-    /// Current virtual tick. Tests use this instead of sleeping.
+    /// Newest virtual tick across live links. Per-link clocks are exposed by
+    /// [`Self::link_tick`]; tests with two links should use that.
     pub fn tick(&self) -> u64 {
-        self.state.lock().expect("sim state").tick
+        self.state
+            .lock()
+            .expect("sim state")
+            .links
+            .values()
+            .map(|link| link.tick)
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub fn link_tick(&self, link: LinkId) -> Option<u64> {
+        self.state
+            .lock()
+            .expect("sim state")
+            .links
+            .get(&link)
+            .map(|entry| entry.tick)
+    }
+
+    pub fn link_count(&self) -> usize {
+        self.state.lock().expect("sim state").links.len()
     }
 
     /// Battery of one virtual device, for assertions.
@@ -175,13 +225,14 @@ impl SimBackend {
             .map(|device| device.battery_percent)
     }
 
-    /// Last value written to a characteristic, for command-channel tests.
-    pub fn last_write(&self, uuid: &str) -> Option<Vec<u8>> {
+    /// Last value written to a characteristic on this link.
+    pub fn last_write(&self, link: LinkId, uuid: &str) -> Option<Vec<u8>> {
         self.state
             .lock()
             .expect("sim state")
-            .writes
-            .get(uuid)
+            .links
+            .get(&link)
+            .and_then(|entry| entry.writes.get(uuid))
             .cloned()
     }
 }
@@ -200,31 +251,58 @@ impl Backend for SimBackend {
             .collect())
     }
 
-    fn connect(&mut self, id: &str) -> Result<()> {
+    fn max_links(&self) -> usize {
+        self.state.lock().expect("sim state").capacity
+    }
+
+    fn connect(&mut self, id: &str) -> Result<LinkId> {
         let mut state = self.state.lock().expect("sim state");
+        if let Some((link, _)) = state
+            .links
+            .iter()
+            .find(|(_, entry)| state.devices[entry.device].id.eq_ignore_ascii_case(id))
+        {
+            return Ok(*link);
+        }
         let index = state
             .devices
             .iter()
             .position(|device| device.id.eq_ignore_ascii_case(id))
-            .ok_or_else(|| anyhow!("unknown simulated device {id}"))?;
-        state.link = Some(index);
-        state.subscribed.clear();
-        state.events.clear();
-        state.tick = 0;
-        Ok(())
+            .ok_or_else(|| anyhow::Error::new(Failure::NotFound(format!("device {id}"))))?;
+        if state.links.len() >= state.capacity {
+            let (used, capacity) = (state.links.len(), state.capacity);
+            return fail(Failure::OverBudget(format!(
+                "{id}: {used} of {capacity} links in use"
+            )));
+        }
+        let link = state.next_link;
+        state.next_link = state.next_link.wrapping_add(1).max(1);
+        state.links.insert(
+            link,
+            SimLink {
+                device: index,
+                subscribed: HashSet::new(),
+                events: VecDeque::new(),
+                writes: HashMap::new(),
+                tick: 0,
+                closed: false,
+            },
+        );
+        Ok(link)
     }
 
-    fn disconnect(&mut self) -> Result<()> {
+    fn disconnect(&mut self, link: LinkId) -> Result<()> {
         let mut state = self.state.lock().expect("sim state");
-        state.link = None;
-        state.subscribed.clear();
-        state.events.clear();
-        Ok(())
+        state
+            .links
+            .remove(&link)
+            .map(|_| ())
+            .ok_or_else(|| anyhow::Error::new(Failure::NotConnected(link)))
     }
 
-    fn services(&self) -> Result<Vec<ServiceInfo>> {
+    fn services(&self, link: LinkId) -> Result<Vec<ServiceInfo>> {
         let state = self.state.lock().expect("sim state");
-        let device = linked(&state)?;
+        let device = &state.devices[linked(&state, link)?.device];
         Ok(device
             .services
             .iter()
@@ -244,9 +322,10 @@ impl Backend for SimBackend {
             .collect())
     }
 
-    fn read(&self, uuid: &str) -> Result<Vec<u8>> {
+    fn read(&self, link: LinkId, uuid: &str) -> Result<Vec<u8>> {
         let state = self.state.lock().expect("sim state");
-        let device = linked(&state)?;
+        let entry = linked(&state, link)?;
+        let device = &state.devices[entry.device];
         let characteristic = find_characteristic(device, uuid)?;
         if !characteristic.readable {
             bail!("characteristic {uuid} is not readable");
@@ -262,18 +341,21 @@ impl Backend for SimBackend {
         if device
             .faults
             .stale_after
-            .is_some_and(|after| state.tick > after)
+            .is_some_and(|after| entry.tick > after)
         {
             bail!("characteristic {uuid} is stale");
         }
-        Ok(current_value(device, characteristic, state.tick))
+        Ok(current_value(device, characteristic, entry.tick))
     }
 
-    fn write(&self, uuid: &str, data: &[u8]) -> Result<()> {
+    fn write(&self, link: LinkId, uuid: &str, data: &[u8]) -> Result<()> {
+        if data.len() > 512 {
+            bail!("write exceeds 512 bytes");
+        }
         let mut state = self.state.lock().expect("sim state");
+        let index = linked(&state, link)?.device;
         let (key, is_static) = {
-            let device = linked_mut(&mut state)?;
-            let characteristic = find_characteristic(device, uuid)?;
+            let characteristic = find_characteristic(&state.devices[index], uuid)?;
             if !characteristic.writable {
                 bail!("characteristic {uuid} is not writable");
             }
@@ -282,12 +364,8 @@ impl Backend for SimBackend {
                 characteristic.source == Source::Static,
             )
         };
-        if data.len() > 512 {
-            bail!("write exceeds 512 bytes");
-        }
         if is_static {
-            let device = linked_mut(&mut state)?;
-            if let Some(characteristic) = device
+            if let Some(characteristic) = state.devices[index]
                 .services
                 .iter_mut()
                 .flat_map(|service| service.characteristics.iter_mut())
@@ -296,15 +374,17 @@ impl Backend for SimBackend {
                 characteristic.value = data.to_vec();
             }
         }
-        state.writes.insert(key, data.to_vec());
+        linked_mut(&mut state, link)?
+            .writes
+            .insert(key, data.to_vec());
         Ok(())
     }
 
-    fn subscribe(&self, uuid: &str) -> Result<()> {
+    fn subscribe(&self, link: LinkId, uuid: &str) -> Result<()> {
         let mut state = self.state.lock().expect("sim state");
+        let index = linked(&state, link)?.device;
         let canonical = {
-            let device = linked(&state)?;
-            let characteristic = find_characteristic(device, uuid)?;
+            let characteristic = find_characteristic(&state.devices[index], uuid)?;
             if !characteristic.notifiable {
                 bail!("characteristic {uuid} is not notifiable");
             }
@@ -313,63 +393,78 @@ impl Backend for SimBackend {
         // A real peripheral does not replay its current value merely because a
         // central subscribed. Notifications arrive on change; tests drive the
         // virtual clock with `next_event`.
-        state.subscribed.insert(canonical);
+        linked_mut(&mut state, link)?.subscribed.insert(canonical);
         Ok(())
     }
 
-    fn next_event(&self, _timeout_ms: u64) -> Result<Option<BleEvent>> {
+    fn next_event(&self, link: LinkId, _timeout_ms: u64) -> Result<Option<BleEvent>> {
         let mut state = self.state.lock().expect("sim state");
-        if let Some(event) = state.events.pop_front() {
-            return Ok(Some(event));
+        {
+            let entry = linked_mut(&mut state, link)?;
+            if let Some(event) = entry.events.pop_front() {
+                return Ok(Some(event));
+            }
+            if entry.closed {
+                return fail(Failure::NotConnected(link));
+            }
+            entry.tick = entry.tick.saturating_add(1);
         }
-        let link = state.link.ok_or_else(|| anyhow!("not connected"))?;
-        state.tick = state.tick.saturating_add(1);
-        let tick = state.tick;
 
-        let device = &mut state.devices[link];
-        device.battery_percent = (device.battery_percent - device.drain_per_tick).max(0.0);
-        let disconnect_at = device.faults.disconnect_at;
-        let drop_every = device.faults.drop_every;
+        let index = linked(&state, link)?.device;
+        let tick = linked(&state, link)?.tick;
+        {
+            let device = &mut state.devices[index];
+            device.battery_percent = (device.battery_percent - device.drain_per_tick).max(0.0);
+        }
+        let (disconnect_at, drop_every) = {
+            let device = &state.devices[index];
+            (device.faults.disconnect_at, device.faults.drop_every)
+        };
         if disconnect_at.is_some_and(|at| tick >= at) {
-            state.link = None;
-            state.subscribed.clear();
-            state.events.clear();
-            return Ok(Some(BleEvent::Disconnected {
+            let entry = linked_mut(&mut state, link)?;
+            entry.closed = true;
+            entry.subscribed.clear();
+            entry.events.clear();
+            entry.events.push_back(BleEvent::Disconnected {
                 reason: format!("simulated disconnect at tick {tick}"),
-            }));
+            });
+            return Ok(entry.events.pop_front());
         }
-
         if drop_every.is_some_and(|every| every > 0 && tick % every == 0) {
             return Ok(None);
         }
 
-        let device = &state.devices[link];
         let mut generated = Vec::new();
-        for service in &device.services {
-            for characteristic in &service.characteristics {
-                if !state.subscribed.contains(&characteristic.uuid) {
-                    continue;
+        {
+            let device = &state.devices[index];
+            let subscribed = &linked(&state, link)?.subscribed;
+            for service in &device.services {
+                for characteristic in &service.characteristics {
+                    if !subscribed.contains(&characteristic.uuid) {
+                        continue;
+                    }
+                    if characteristic.source == Source::Battery && tick % 10 != 0 {
+                        continue;
+                    }
+                    // Button-driven events are one-shot scripts, not a value that
+                    // changes every tick. A music event at tick 5 and a call
+                    // response at tick 10 are enough to exercise both paths.
+                    if characteristic.source == Source::MusicEvent && tick != 5 {
+                        continue;
+                    }
+                    if characteristic.source == Source::CallResponse && tick != 10 {
+                        continue;
+                    }
+                    generated.push(BleEvent::Notification {
+                        char_uuid: characteristic.uuid.clone(),
+                        data: notify_value(device, characteristic, tick),
+                    });
                 }
-                if characteristic.source == Source::Battery && tick % 10 != 0 {
-                    continue;
-                }
-                // Button-driven events are one-shot scripts, not a value that
-                // changes every tick. A music event at tick 5 and a call
-                // response at tick 10 are enough to exercise both paths.
-                if characteristic.source == Source::MusicEvent && tick != 5 {
-                    continue;
-                }
-                if characteristic.source == Source::CallResponse && tick != 10 {
-                    continue;
-                }
-                generated.push(BleEvent::Notification {
-                    char_uuid: characteristic.uuid.clone(),
-                    data: notify_value(device, characteristic, tick),
-                });
             }
         }
-        let first = generated.first().cloned();
-        state.events.extend(generated.into_iter().skip(1));
+        let mut generated = generated.into_iter();
+        let first = generated.next();
+        linked_mut(&mut state, link)?.events.extend(generated);
         if state.pacing > Duration::ZERO {
             std::thread::sleep(state.pacing);
         }
@@ -377,18 +472,18 @@ impl Backend for SimBackend {
     }
 }
 
-fn linked(state: &SimState) -> Result<&SimDevice> {
+fn linked(state: &SimState, link: LinkId) -> Result<&SimLink> {
     state
-        .link
-        .and_then(|index| state.devices.get(index))
-        .ok_or_else(|| anyhow!("not connected"))
+        .links
+        .get(&link)
+        .ok_or_else(|| anyhow::Error::new(Failure::NotConnected(link)))
 }
 
-fn linked_mut(state: &mut SimState) -> Result<&mut SimDevice> {
+fn linked_mut(state: &mut SimState, link: LinkId) -> Result<&mut SimLink> {
     state
-        .link
-        .and_then(|index| state.devices.get_mut(index))
-        .ok_or_else(|| anyhow!("not connected"))
+        .links
+        .get_mut(&link)
+        .ok_or_else(|| anyhow::Error::new(Failure::NotConnected(link)))
 }
 
 fn find_characteristic<'a>(device: &'a SimDevice, uuid: &str) -> Result<&'a SimCharacteristic> {
@@ -604,7 +699,14 @@ fn pine_time() -> SimDevice {
             service(
                 PINETIME_NAV_SERVICE,
                 vec![
-                    characteristic(PINETIME_NAV_FLAGS, true, true, false, Vec::new(), Source::Static),
+                    characteristic(
+                        PINETIME_NAV_FLAGS,
+                        true,
+                        true,
+                        false,
+                        Vec::new(),
+                        Source::Static,
+                    ),
                     characteristic(
                         PINETIME_NAV_NARRATIVE,
                         true,
@@ -761,12 +863,12 @@ fn pine_time() -> SimDevice {
     }
 }
 
-fn ring() -> SimDevice {
+fn ring(id: &str, name: &str, battery_percent: f32, rssi: i16) -> SimDevice {
     SimDevice {
-        id: "sim-ring".to_string(),
-        name: "COLMI Ring 2".to_string(),
-        rssi: -62,
-        battery_percent: 74.0,
+        id: id.to_string(),
+        name: name.to_string(),
+        rssi,
+        battery_percent,
         drain_per_tick: 0.004,
         faults: Faults::default(),
         services: vec![
@@ -891,22 +993,29 @@ mod tests {
             .filter_map(|device| device.name.as_deref())
             .collect();
         assert!(names.contains(&"PineTime"));
-        assert!(names.contains(&"COLMI Ring 2"));
         assert!(names.contains(&"Omi"));
+        assert_eq!(
+            names.iter().filter(|name| **name == "COLMI Ring 2").count(),
+            2,
+            "the wearer carries two rings; they share a name and differ by id"
+        );
+        let ids: Vec<_> = devices.iter().map(|device| device.id.as_str()).collect();
+        assert!(ids.contains(&"sim-ring"));
+        assert!(ids.contains(&"sim-ring-2"));
     }
 
     #[test]
     fn connect_read_and_subscribe() {
         let mut sim = backend();
-        sim.connect("sim-pinetime").expect("connect");
-        let services = sim.services().expect("services");
+        let link = sim.connect("sim-pinetime").expect("connect");
+        let services = sim.services(link).expect("services");
         assert!(services.iter().any(|service| service.uuid == HRS));
-        let serial = sim.read(DIS_SERIAL).expect("serial");
+        let serial = sim.read(link, DIS_SERIAL).expect("serial");
         assert_eq!(serial, b"sim-pinetime-0001");
-        let battery = sim.read(BATTERY_LEVEL).expect("battery");
+        let battery = sim.read(link, BATTERY_LEVEL).expect("battery");
         assert_eq!(battery.len(), 1);
-        sim.subscribe(HR_MEASUREMENT).expect("subscribe");
-        let event = sim.next_event(100).expect("event").expect("some");
+        sim.subscribe(link, HR_MEASUREMENT).expect("subscribe");
+        let event = sim.next_event(link, 100).expect("event").expect("some");
         match event {
             BleEvent::Notification { char_uuid, data } => {
                 assert_eq!(char_uuid, HR_MEASUREMENT);
@@ -924,12 +1033,12 @@ mod tests {
             device.faults.drop_every = Some(2);
             device
         }]);
-        sim.connect("sim-pinetime").expect("connect");
-        sim.subscribe(HR_MEASUREMENT).expect("subscribe");
+        let link = sim.connect("sim-pinetime").expect("connect");
+        sim.subscribe(link, HR_MEASUREMENT).expect("subscribe");
         // Tick 1 succeeds, tick 2 drops, tick 3 succeeds.
-        assert!(sim.next_event(100).expect("tick 1").is_some());
-        assert!(sim.next_event(100).expect("tick 2").is_none());
-        assert!(sim.next_event(100).expect("tick 3").is_some());
+        assert!(sim.next_event(link, 100).expect("tick 1").is_some());
+        assert!(sim.next_event(link, 100).expect("tick 2").is_none());
+        assert!(sim.next_event(link, 100).expect("tick 3").is_some());
     }
 
     #[test]
@@ -939,12 +1048,12 @@ mod tests {
             device.faults.disconnect_at = Some(2);
             device
         }]);
-        sim.connect("sim-pinetime").expect("connect");
-        sim.subscribe(HR_MEASUREMENT).expect("subscribe");
-        let _ = sim.next_event(100).expect("tick 1");
-        let event = sim.next_event(100).expect("tick 2").expect("event");
+        let link = sim.connect("sim-pinetime").expect("connect");
+        sim.subscribe(link, HR_MEASUREMENT).expect("subscribe");
+        let _ = sim.next_event(link, 100).expect("tick 1");
+        let event = sim.next_event(link, 100).expect("tick 2").expect("event");
         assert!(matches!(event, BleEvent::Disconnected { .. }));
-        assert!(sim.next_event(100).is_err());
+        assert!(sim.next_event(link, 100).is_err());
     }
 
     #[test]
@@ -955,20 +1064,20 @@ mod tests {
             device.faults.denied.push(DIS_MODEL.to_string());
             device
         }]);
-        sim.connect("sim-pinetime").expect("connect");
+        let link = sim.connect("sim-pinetime").expect("connect");
         // Denial takes precedence and is an error, never a zero.
-        assert!(sim.read(DIS_MODEL).is_err());
+        assert!(sim.read(link, DIS_MODEL).is_err());
         // Advance the virtual clock past the stale bound.
-        let _ = sim.next_event(100);
-        assert!(sim.read(DIS_SERIAL).is_err());
+        let _ = sim.next_event(link, 100);
+        assert!(sim.read(link, DIS_SERIAL).is_err());
     }
 
     #[test]
     fn omi_audio_has_header_and_payload() {
         let mut sim = backend();
-        sim.connect("sim-omi").expect("connect");
-        sim.subscribe(OMI_AUDIO_DATA).expect("subscribe");
-        let event = sim.next_event(100).expect("event").expect("some");
+        let link = sim.connect("sim-omi").expect("connect");
+        sim.subscribe(link, OMI_AUDIO_DATA).expect("subscribe");
+        let event = sim.next_event(link, 100).expect("event").expect("some");
         match event {
             BleEvent::Notification { char_uuid, data } => {
                 assert_eq!(char_uuid, OMI_AUDIO_DATA);
@@ -982,8 +1091,8 @@ mod tests {
     #[test]
     fn pine_time_exposes_the_real_infinitime_services() {
         let mut sim = backend();
-        sim.connect("sim-pinetime").expect("connect");
-        let services = sim.services().expect("services");
+        let link = sim.connect("sim-pinetime").expect("connect");
+        let services = sim.services(link).expect("services");
         let uuids: Vec<_> = services
             .iter()
             .map(|service| service.uuid.as_str())
@@ -1007,24 +1116,24 @@ mod tests {
             motion
                 .characteristics
                 .iter()
-                .any(|c| c.uuid == PINETIME_STEPS)
+                .any(|characteristic| characteristic.uuid == PINETIME_STEPS)
         );
         assert!(
             motion
                 .characteristics
                 .iter()
-                .any(|c| c.uuid == PINETIME_MOTION)
+                .any(|characteristic| characteristic.uuid == PINETIME_MOTION)
         );
     }
 
     #[test]
     fn steps_and_motion_are_distinct_values() {
         let mut sim = backend();
-        sim.connect("sim-pinetime").expect("connect");
-        let steps = sim.read(PINETIME_STEPS).expect("steps");
+        let link = sim.connect("sim-pinetime").expect("connect");
+        let steps = sim.read(link, PINETIME_STEPS).expect("steps");
         assert_eq!(steps.len(), 4, "uint32 step count");
         assert_eq!(u32::from_le_bytes(steps.as_slice().try_into().unwrap()), 0);
-        let motion = sim.read(PINETIME_MOTION).expect("motion");
+        let motion = sim.read(link, PINETIME_MOTION).expect("motion");
         assert_eq!(motion.len(), 6, "three int16 axes");
         // A step count is not an axis sum and the simulator never fabricates a
         // combined total.
@@ -1034,22 +1143,25 @@ mod tests {
     #[test]
     fn notification_and_music_writes_reach_the_device() {
         let mut sim = backend();
-        sim.connect("sim-pinetime").expect("connect");
+        let link = sim.connect("sim-pinetime").expect("connect");
 
-        sim.write(ALERT_NEW, &[0x03, 0x01, b'h', b'i'])
+        sim.write(link, ALERT_NEW, &[0x03, 0x01, b'h', b'i'])
             .expect("ANS write");
         assert_eq!(
-            sim.last_write(ALERT_NEW),
+            sim.last_write(link, ALERT_NEW),
             Some(vec![0x03, 0x01, b'h', b'i'])
         );
 
-        sim.write(PINETIME_MUSIC_STATUS, &[1])
+        sim.write(link, PINETIME_MUSIC_STATUS, &[1])
             .expect("music status");
-        assert_eq!(sim.read(PINETIME_MUSIC_STATUS).expect("status"), vec![1]);
-        sim.write(PINETIME_MUSIC_ARTIST, b"Autechre")
+        assert_eq!(
+            sim.read(link, PINETIME_MUSIC_STATUS).expect("status"),
+            vec![1]
+        );
+        sim.write(link, PINETIME_MUSIC_ARTIST, b"Autechre")
             .expect("artist");
         assert_eq!(
-            sim.read(PINETIME_MUSIC_ARTIST).expect("artist"),
+            sim.read(link, PINETIME_MUSIC_ARTIST).expect("artist"),
             b"Autechre"
         );
     }
@@ -1058,13 +1170,13 @@ mod tests {
     fn replay_is_deterministic_and_golden() {
         fn trace() -> Vec<(u64, String, Vec<u8>)> {
             let mut sim = backend();
-            sim.connect("sim-pinetime").expect("connect");
+            let link = sim.connect("sim-pinetime").expect("connect");
             for uuid in [HR_MEASUREMENT, PINETIME_STEPS, PINETIME_MOTION] {
-                sim.subscribe(uuid).expect("subscribe");
+                sim.subscribe(link, uuid).expect("subscribe");
             }
             let mut out = Vec::new();
             for _ in 0..6 {
-                match sim.next_event(100).expect("event") {
+                match sim.next_event(link, 100).expect("event") {
                     Some(BleEvent::Notification { char_uuid, data }) => {
                         out.push((sim.tick(), char_uuid, data));
                     }
@@ -1103,12 +1215,12 @@ mod tests {
         for (uuid, expected_tick) in [(PINETIME_MUSIC_EVENT, 5), (PINETIME_NOTIFICATION_EVENT, 10)]
         {
             let mut sim = backend();
-            sim.connect("sim-pinetime").expect("connect");
-            sim.subscribe(uuid).expect("subscribe");
+            let link = sim.connect("sim-pinetime").expect("connect");
+            sim.subscribe(link, uuid).expect("subscribe");
             let mut seen = 0;
             for _ in 0..12 {
                 if let Some(BleEvent::Notification { char_uuid, .. }) =
-                    sim.next_event(100).expect("event")
+                    sim.next_event(link, 100).expect("event")
                 {
                     assert_eq!(char_uuid, uuid);
                     assert_eq!(sim.tick(), expected_tick);
@@ -1127,18 +1239,19 @@ mod tests {
             device.drain_per_tick = 0.01;
             device
         }]);
-        sim.connect("sim-pinetime").expect("connect");
+        let link = sim.connect("sim-pinetime").expect("connect");
         for _ in 0..5 {
-            let _ = sim.next_event(100);
+            let _ = sim.next_event(link, 100);
         }
         assert_eq!(sim.battery("sim-pinetime"), Some(0.0));
     }
+
     #[test]
     fn battery_drains_deterministically() {
         let mut sim = backend();
-        sim.connect("sim-pinetime").expect("connect");
+        let link = sim.connect("sim-pinetime").expect("connect");
         let before = sim.battery("sim-pinetime").expect("battery");
-        let _ = sim.next_event(100);
+        let _ = sim.next_event(link, 100);
         let after = sim.battery("sim-pinetime").expect("battery");
         assert!(after < before);
         assert_eq!(sim.tick(), 1);
@@ -1151,9 +1264,9 @@ mod tests {
             device.faults.stale_after = Some(0);
             device
         }]);
-        sim.connect("sim-pinetime").expect("connect");
-        let _ = sim.next_event(100);
-        let result = sim.read(PINETIME_STEPS);
+        let link = sim.connect("sim-pinetime").expect("connect");
+        let _ = sim.next_event(link, 100);
+        let result = sim.read(link, PINETIME_STEPS);
         assert!(result.is_err(), "stale must not become a zero reading");
         assert!(result.unwrap_err().to_string().contains("stale"));
     }
@@ -1161,17 +1274,109 @@ mod tests {
     #[test]
     fn disconnect_releases_the_gatt_tree() {
         let mut sim = backend();
-        sim.connect("sim-pinetime").expect("connect");
-        assert!(sim.services().is_ok());
-        sim.disconnect().expect("release");
-        assert!(sim.services().is_err(), "a released link has no GATT tree");
+        let link = sim.connect("sim-pinetime").expect("connect");
+        assert!(sim.services(link).is_ok());
+        sim.disconnect(link).expect("release");
+        assert!(
+            sim.services(link).is_err(),
+            "a released link has no GATT tree"
+        );
     }
 
     #[test]
     fn writes_are_recorded() {
         let mut sim = backend();
-        sim.connect("sim-pinetime").expect("connect");
-        sim.write(ALERT_LEVEL, &[2]).expect("write");
-        assert_eq!(sim.last_write(ALERT_LEVEL), Some(vec![2]));
+        let link = sim.connect("sim-pinetime").expect("connect");
+        sim.write(link, ALERT_LEVEL, &[2]).expect("write");
+        assert_eq!(sim.last_write(link, ALERT_LEVEL), Some(vec![2]));
+    }
+
+    /// The point of link handles: one device's traffic cannot appear on, or
+    /// delay, another device's queue.
+    #[test]
+    fn two_links_keep_separate_queues_and_clocks() {
+        let mut sim = backend();
+        let watch = sim.connect("sim-pinetime").expect("watch link");
+        let ring = sim.connect("sim-ring").expect("ring link");
+        sim.subscribe(watch, HR_MEASUREMENT).expect("watch hr");
+        sim.subscribe(ring, RING_MEASUREMENT).expect("ring hr");
+
+        // Drain the watch hard; the ring's clock must not move.
+        for _ in 0..6 {
+            assert!(sim.next_event(watch, 100).expect("watch").is_some());
+        }
+        assert_eq!(sim.link_tick(watch), Some(6));
+        assert_eq!(sim.link_tick(ring), Some(0));
+
+        match sim
+            .next_event(ring, 100)
+            .expect("ring")
+            .expect("ring event")
+        {
+            BleEvent::Notification { char_uuid, .. } => assert_eq!(
+                char_uuid, RING_MEASUREMENT,
+                "the watch's notifications must not appear on the ring's queue"
+            ),
+            BleEvent::Disconnected { .. } => panic!("unexpected disconnect"),
+        }
+        assert_eq!(sim.link_tick(ring), Some(1));
+        assert_eq!(sim.link_tick(watch), Some(6));
+    }
+
+    #[test]
+    fn fourth_link_is_refused_before_a_handshake() {
+        let mut sim = backend();
+        for id in ["sim-pinetime", "sim-ring", "sim-ring-2"] {
+            sim.connect(id).expect("within budget");
+        }
+        assert_eq!(sim.max_links(), 3);
+        assert_eq!(sim.link_count(), 3);
+
+        let error = sim.connect("sim-omi").expect_err("budget is spent");
+        match error.downcast_ref::<Failure>() {
+            Some(Failure::OverBudget(text)) => assert!(
+                text.contains("3 of 3 links"),
+                "the refusal names the budget: {text}"
+            ),
+            other => panic!("expected over-budget, got {other:?}"),
+        }
+        assert_eq!(sim.link_count(), 3, "a refused link is not half-opened");
+        assert!(
+            sim.read(1, HR_MEASUREMENT).is_ok(),
+            "existing links survive"
+        );
+    }
+
+    #[test]
+    fn closing_a_link_frees_the_budget() {
+        let mut sim = backend();
+        let watch = sim.connect("sim-pinetime").expect("watch");
+        sim.connect("sim-ring").expect("ring");
+        sim.connect("sim-ring-2").expect("second ring");
+        sim.disconnect(watch).expect("close the watch");
+        sim.connect("sim-omi")
+            .expect("a closed link gives its slot back");
+        assert_eq!(sim.link_count(), 3);
+    }
+
+    #[test]
+    fn a_stale_link_handle_is_refused() {
+        let mut sim = backend();
+        let link = sim.connect("sim-pinetime").expect("connect");
+        sim.disconnect(link).expect("close");
+        let error = sim.read(link, DIS_SERIAL).expect_err("closed link");
+        assert!(matches!(
+            error.downcast_ref::<Failure>(),
+            Some(Failure::NotConnected(stale)) if *stale == link
+        ));
+    }
+
+    #[test]
+    fn reconnecting_to_one_device_returns_the_same_link() {
+        let mut sim = backend();
+        let first = sim.connect("sim-pinetime").expect("connect");
+        let second = sim.connect("sim-pinetime").expect("reconnect");
+        assert_eq!(first, second, "one device, one link");
+        assert_eq!(sim.link_count(), 1);
     }
 }

@@ -55,6 +55,27 @@ impl Lease {
     }
 }
 
+/// Another host holds this device's lease. Typed so a host maps it to the
+/// guest's `leased` error instead of matching on message text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Leased {
+    pub device_id: String,
+    pub host_id: String,
+    pub remaining_ms: u64,
+}
+
+impl std::fmt::Display for Leased {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "device {} is leased by {} for another {} ms",
+            self.device_id, self.host_id, self.remaining_ms
+        )
+    }
+}
+
+impl std::error::Error for Leased {}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cursor {
     #[serde(alias = "ring_id")]
@@ -176,11 +197,11 @@ impl SessionStore {
             .iter()
             .find(|lease| lease.device_id == device_id && lease.host_id != host_id)
         {
-            anyhow::bail!(
-                "device {device_id} is leased by {} for another {} ms",
-                current.host_id,
-                current.expires_at_ms.saturating_sub(at)
-            );
+            return Err(anyhow::Error::new(Leased {
+                device_id: device_id.to_string(),
+                host_id: current.host_id.clone(),
+                remaining_ms: current.expires_at_ms.saturating_sub(at),
+            }));
         }
         let lease = Lease {
             host_id: host_id.to_string(),
@@ -199,15 +220,56 @@ impl SessionStore {
     }
 
     pub fn release(&mut self, host_id: &str) -> Result<()> {
-        // Re-read first: a host that lost the lease must not wipe the winner's
-        // claim with a stale in-memory copy.
+        self.release_where(|lease| lease.host_id == host_id)
+    }
+
+    /// Give up one device's lease without touching this host's other links.
+    pub fn release_device(&mut self, device_id: &str, host_id: &str) -> Result<()> {
+        self.release_where(|lease| lease.device_id == device_id && lease.host_id == host_id)
+    }
+
+    /// Re-read first: a host that lost the lease must not wipe the winner's
+    /// claim with a stale in-memory copy.
+    fn release_where(&mut self, matches: impl Fn(&Lease) -> bool) -> Result<()> {
         self.reload()?;
         let before = self.session.leases.len();
-        self.session.leases.retain(|lease| lease.host_id != host_id);
+        self.session.leases.retain(|lease| !matches(lease));
         if self.session.leases.len() != before {
             self.save()?;
         }
         Ok(())
+    }
+
+    /// Heartbeat a live link's lease. The lease is a rolling claim, not a lock:
+    /// a connected host keeps renewing, a crashed one stops and expires.
+    ///
+    /// Writes only once half the TTL is gone, or re-claims when the lease
+    /// lapsed. `Err` means another host took the device while this one held it.
+    pub fn renew(&mut self, device_id: &str, host_id: &str, ttl_ms: u64) -> Result<Lease> {
+        self.renew_at(device_id, host_id, ttl_ms, now_ms())
+    }
+
+    /// Deterministic form of [`renew`] for tests and simulated clocks.
+    pub fn renew_at(
+        &mut self,
+        device_id: &str,
+        host_id: &str,
+        ttl_ms: u64,
+        at: u64,
+    ) -> Result<Lease> {
+        self.reload()?;
+        if let Some(current) = self
+            .session
+            .leases
+            .iter()
+            .find(|lease| lease.device_id == device_id && lease.host_id == host_id)
+        {
+            // Renew at the halfway point, not after the lease is gone.
+            if current.expires_at_ms.saturating_sub(at) > ttl_ms / 2 {
+                return Ok(current.clone());
+            }
+        }
+        self.claim_at(device_id, host_id, ttl_ms, at)
     }
 
     pub fn cursor_for(&self, device_id: &str, stream: &str) -> Option<u64> {
@@ -271,10 +333,7 @@ mod tests {
             .release("host-a")
             .expect("release is a no-op for a lost lease");
         assert_eq!(
-            first
-                .get()
-                .lease()
-                .map(|lease| lease.host_id.as_str()),
+            first.get().lease().map(|lease| lease.host_id.as_str()),
             Some("host-b"),
             "a stale host must not clear the new holder's lease"
         );
@@ -308,13 +367,81 @@ mod tests {
             .expect("upsert");
 
         assert_eq!(
-            other
-                .get()
-                .lease()
-                .map(|lease| lease.host_id.as_str()),
+            other.get().lease().map(|lease| lease.host_id.as_str()),
             Some("host-a"),
             "a credential write must not erase the live lease"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn temp_session(tag: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "soil-ble-session-{tag}-{}-{}.json",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn closing_one_link_keeps_the_others_lease() {
+        let path = temp_session("multi");
+        let mut store = SessionStore::open(&path).expect("store");
+        store
+            .claim_at("sim-pinetime", "host-a", 60_000, 1_000)
+            .expect("claim pinetime");
+        store
+            .claim_at("sim-ring", "host-a", 60_000, 1_000)
+            .expect("claim ring");
+        assert_eq!(store.get().leases.len(), 2, "one lease per device");
+
+        store
+            .release_device("sim-pinetime", "host-a")
+            .expect("release pinetime");
+        let held: Vec<_> = store
+            .get()
+            .leases
+            .iter()
+            .map(|lease| lease.device_id.as_str())
+            .collect();
+        assert_eq!(
+            held,
+            vec!["sim-ring"],
+            "closing one link must not drop another link's lease"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn lease_refusal_is_typed_and_renewable() {
+        let path = temp_session("renew");
+        let mut host_a = SessionStore::open(&path).expect("host a");
+        let mut host_b = SessionStore::open(&path).expect("host b");
+        host_a
+            .claim_at("sim-pinetime", "host-a", 10_000, 1_000)
+            .expect("claim");
+
+        // Half the TTL is gone, so the heartbeat re-claims from `at`.
+        let renewed = host_a
+            .renew_at("sim-pinetime", "host-a", 10_000, 6_000)
+            .expect("renew");
+        assert_eq!(renewed.expires_at_ms, 16_000);
+
+        // A healthy lease is not rewritten on every heartbeat.
+        let untouched = host_a
+            .renew_at("sim-pinetime", "host-a", 10_000, 7_000)
+            .expect("renew");
+        assert_eq!(untouched.expires_at_ms, 16_000);
+
+        host_b
+            .claim_at("sim-pinetime", "host-b", 10_000, 20_000)
+            .expect("claim after expiry");
+        let error = host_a
+            .renew_at("sim-pinetime", "host-a", 10_000, 20_500)
+            .expect_err("a lost lease must not be renewed silently");
+        let leased = error.downcast_ref::<Leased>().expect("typed lease refusal");
+        assert_eq!(leased.host_id, "host-b");
         let _ = std::fs::remove_file(&path);
     }
 }

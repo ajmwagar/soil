@@ -206,10 +206,11 @@ pub const CONTRACTS: &[Contract] = &[
     Contract {
         file: "wit/soil-ble.wit",
         source: include_str!("../../../wit/soil-ble.wit"),
-        package: "soil:ble@1.0.0",
+        package: "soil:ble@1.1.0",
         interfaces: &[(
             "ble",
             &[
+                "max-links",
                 "scan",
                 "connect",
                 "disconnect",

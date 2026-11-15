@@ -13,12 +13,13 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, bail};
-use soil_ble_host::ble as ble_host;
-use soil_ble_host::session;
 use ::soil::http_host::{self, HttpHost, HttpPolicy};
 use ::soil::records_host::{self, Namespace, NamespacedRecordsHost, records};
 use ::soil::{MemoryBus, WasiHost, WasiHostBuilder, WasiHostPolicy, unibus::bus};
+use anyhow::{Context, Result, bail};
+use soil_ble_host::ble as ble_host;
+use soil_ble_host::links;
+use soil_ble_host::session;
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtxView, WasiView};
@@ -38,8 +39,7 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct DevHost {
     ble: ble_host::Ble,
-    session: session::SessionStore,
-    host_id: String,
+    links: links::Links,
     /// One-based handles into the last scan result.
     devices: Vec<String>,
     records: NamespacedRecordsHost,
@@ -162,6 +162,14 @@ impl DevHost {
         self.time_origin_ms
             .saturating_add(u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX))
     }
+
+    fn device_id(&self, handle: u32) -> std::result::Result<String, BleError> {
+        usize::try_from(handle)
+            .ok()
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| self.devices.get(index).cloned())
+            .ok_or(BleError::NotFound)
+    }
 }
 
 impl crate::soil::ble::ble::Host for DevHost {
@@ -182,38 +190,23 @@ impl crate::soil::ble::ble::Host for DevHost {
             .collect())
     }
 
-    fn connect(&mut self, device: u32) -> std::result::Result<(), BleError> {
-        let index = usize::try_from(device)
-            .ok()
-            .and_then(|handle| handle.checked_sub(1))
-            .ok_or(BleError::NotFound)?;
-        let id = self.devices.get(index).cloned().ok_or(BleError::NotFound)?;
-
-        let lease = self
-            .session
-            .claim(&id, &self.host_id, LEASE_TTL_MS)
-            .map_err(claim_error)?;
-        eprintln!(
-            "lease: {id} held by {} until {}",
-            lease.host_id, lease.expires_at_ms
-        );
-        if let Err(error) = self.ble.connect(&id) {
-            let _ = self.session.release(&self.host_id);
-            return Err(io_error(error));
-        }
-        Ok(())
+    fn max_links(&mut self) -> u32 {
+        u32::try_from(self.ble.max_links()).unwrap_or(u32::MAX)
     }
 
-    fn disconnect(&mut self) -> std::result::Result<(), BleError> {
-        let result = self.ble.disconnect().map_err(io_error);
-        if let Err(error) = self.session.release(&self.host_id) {
-            eprintln!("lease release failed: {error:#}");
-        }
-        result
+    fn connect(&mut self, device: u32) -> std::result::Result<ble_host::LinkId, BleError> {
+        let id = self.device_id(device)?;
+        // The budget is checked and one device lease is taken before the
+        // handshake starts; opening a second link never releases the first.
+        self.links.open(&mut self.ble, &id).map_err(wit_error)
     }
 
-    fn services(&mut self) -> std::result::Result<Vec<Service>, BleError> {
-        let services = self.ble.services().map_err(io_error)?;
+    fn disconnect(&mut self, link: ble_host::LinkId) -> std::result::Result<(), BleError> {
+        self.links.close(&mut self.ble, link).map_err(wit_error)
+    }
+
+    fn services(&mut self, link: ble_host::LinkId) -> std::result::Result<Vec<Service>, BleError> {
+        let services = self.ble.services(link).map_err(wit_error)?;
         Ok(services
             .into_iter()
             .map(|service| Service {
@@ -234,6 +227,7 @@ impl crate::soil::ble::ble::Host for DevHost {
 
     fn read(
         &mut self,
+        link: ble_host::LinkId,
         char_uuid: String,
         max_bytes: u32,
     ) -> std::result::Result<Vec<u8>, BleError> {
@@ -243,30 +237,45 @@ impl crate::soil::ble::ble::Host for DevHost {
         if max_bytes == 0 || max_bytes > MAX_READ_BYTES {
             return Err(BleError::OverBudget);
         }
-        let data = self.ble.read(&char_uuid).map_err(io_error)?;
+        let data = self.ble.read(link, &char_uuid).map_err(wit_error)?;
         Ok(data.into_iter().take(max_bytes as usize).collect())
     }
 
-    fn write(&mut self, char_uuid: String, data: Vec<u8>) -> std::result::Result<(), BleError> {
+    fn write(
+        &mut self,
+        link: ble_host::LinkId,
+        char_uuid: String,
+        data: Vec<u8>,
+    ) -> std::result::Result<(), BleError> {
         if char_uuid.is_empty() {
             return Err(BleError::Invalid);
         }
         if data.len() > MAX_WRITE_BYTES {
             return Err(BleError::OverBudget);
         }
-        self.ble.write(&char_uuid, &data).map_err(io_error)
+        self.ble.write(link, &char_uuid, &data).map_err(wit_error)
     }
 
-    fn subscribe(&mut self, char_uuid: String) -> std::result::Result<(), BleError> {
+    fn subscribe(
+        &mut self,
+        link: ble_host::LinkId,
+        char_uuid: String,
+    ) -> std::result::Result<(), BleError> {
         if char_uuid.is_empty() {
             return Err(BleError::Invalid);
         }
-        self.ble.subscribe(&char_uuid).map_err(io_error)
+        self.ble.subscribe(link, &char_uuid).map_err(wit_error)
     }
 
-    fn next_event(&mut self, timeout_ms: u32) -> std::result::Result<Option<Event>, BleError> {
+    fn next_event(
+        &mut self,
+        link: ble_host::LinkId,
+        timeout_ms: u32,
+    ) -> std::result::Result<Option<Event>, BleError> {
         let timeout_ms = u64::from(timeout_ms.min(MAX_EVENT_WAIT_MS));
-        match self.ble.next_event(timeout_ms).map_err(io_error)? {
+        // Listening is this host's lease heartbeat for the link.
+        self.links.heartbeat(link).map_err(wit_error)?;
+        match self.ble.next_event(link, timeout_ms).map_err(wit_error)? {
             Some(ble_host::BleEvent::Notification { char_uuid, data }) => {
                 Ok(Some(Event::Notification(Notification { char_uuid, data })))
             }
@@ -304,12 +313,15 @@ fn io_error(error: anyhow::Error) -> BleError {
     BleError::Io
 }
 
-fn claim_error(error: anyhow::Error) -> BleError {
-    let text = format!("{error:#}");
-    if text.contains("is leased by") {
-        BleError::Leased
-    } else {
-        io_error(error)
+/// Map a typed failure to the guest's error enum; anything untyped is `io`.
+fn wit_error(error: anyhow::Error) -> BleError {
+    match error.downcast_ref::<ble_host::Failure>() {
+        Some(ble_host::Failure::NotFound(_)) => BleError::NotFound,
+        Some(ble_host::Failure::NotConnected(_)) => BleError::NotConnected,
+        Some(ble_host::Failure::Invalid(_)) => BleError::Invalid,
+        Some(ble_host::Failure::OverBudget(_)) => BleError::OverBudget,
+        Some(ble_host::Failure::Leased { .. }) => BleError::Leased,
+        None => io_error(error),
     }
 }
 
@@ -389,8 +401,7 @@ fn main() -> Result<()> {
 
     let state = DevHost {
         ble,
-        session,
-        host_id,
+        links: links::Links::new(session, host_id, LEASE_TTL_MS),
         devices: Vec::new(),
         records,
         http: HttpHost::new(policy),
@@ -424,7 +435,11 @@ fn main() -> Result<()> {
     let bindings = Runner::instantiate(&mut store, &component, &linker)
         .map_err(anyhow::Error::from)
         .context("instantiate guest")?;
-    match bindings.call_run(&mut store, &guest_args) {
+    let run_result = bindings.call_run(&mut store, &guest_args);
+    // Release every link and lease before snapshotting or exiting.
+    let state = store.data_mut();
+    state.links.close_all(&mut state.ble);
+    match run_result {
         Ok(Ok(())) => {}
         Ok(Err(message)) => bail!("guest failed: {message}"),
         Err(error) => bail!("guest trapped: {error:#}"),
