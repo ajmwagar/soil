@@ -334,6 +334,35 @@ fn load_or_create_origin(path: &Path) -> Result<u64> {
     Ok(value)
 }
 
+/// Wearer names become book paths, so they are validated here rather than
+/// trusted from a command line or an environment variable.
+fn parse_wearers(raw: &str) -> Result<Vec<String>> {
+    let mut wearers: Vec<String> = Vec::new();
+    for token in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    {
+        if !token
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        {
+            return Err(anyhow::anyhow!(
+                "--wearers: {token:?} must be lowercase letters, digits, '-' or '_'"
+            ));
+        }
+        if !wearers.iter().any(|wearer| wearer == token) {
+            wearers.push(token.to_string());
+        }
+    }
+    if wearers.is_empty() {
+        return Err(anyhow::anyhow!(
+            "--wearers: at least one wearer is required"
+        ));
+    }
+    Ok(wearers)
+}
+
 fn io_error(error: anyhow::Error) -> BleError {
     eprintln!("ble: {error:#}");
     BleError::Io
@@ -361,6 +390,9 @@ fn main() -> Result<()> {
         .ok()
         .or_else(|| std::env::var("HOSTNAME").ok())
         .unwrap_or_else(|| "dev-host".to_string());
+    // Every wearer gets their own records book. A Spore selects one by naming
+    // a `<collection>:<wearer>` namespace; a wearer not listed here is denied.
+    let mut wearers_raw = std::env::var("SOIL_WEARERS").unwrap_or_else(|_| "owner".to_string());
 
     let mut origins: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
@@ -373,9 +405,10 @@ fn main() -> Result<()> {
             "--records-dir" => records_dir = args.next().context("--records-dir needs a path")?,
             "--session" => session_path = args.next().context("--session needs a path")?,
             "--host-id" => host_id = args.next().context("--host-id needs a value")?,
+            "--wearers" => wearers_raw = args.next().context("--wearers needs a list")?,
             "--help" | "-h" => {
                 println!(
-                    "usage: soil-dev-host [--real] [--allow-origin URL]... [--records-dir DIR] [--session FILE] [--host-id ID] <guest.wasm> [guest args...]"
+                    "usage: soil-dev-host [--real] [--allow-origin URL]... [--records-dir DIR] [--session FILE] [--host-id ID] [--wearers LIST] <guest.wasm> [guest args...]"
                 );
                 return Ok(());
             }
@@ -388,7 +421,7 @@ fn main() -> Result<()> {
         }
     }
     let guest_path = guest_path.context(
-        "usage: soil-dev-host [--real] [--allow-origin URL]... [--records-dir DIR] [--session FILE] [--host-id ID] <guest.wasm> [guest args...]",
+        "usage: soil-dev-host [--real] [--allow-origin URL]... [--records-dir DIR] [--session FILE] [--host-id ID] [--wearers LIST] <guest.wasm> [guest args...]",
     )?;
 
     let ble = if real {
@@ -398,18 +431,36 @@ fn main() -> Result<()> {
     };
     let session = session::SessionStore::open(&session_path)
         .with_context(|| format!("open session {session_path}"))?;
-    let records = NamespacedRecordsHost::open(
-        &records_dir,
-        vec![
-            Namespace::write("signal", "dev/personal/telemetry", "signal"),
-            Namespace::write("device.state", "dev/personal/telemetry", "device.state"),
-            Namespace::write("vitals.summary", "dev/personal/telemetry", "vitals.summary"),
-            Namespace::write("vitals.latest", "dev/personal/telemetry", "vitals.latest"),
-            Namespace::write("vitals.view", "dev/personal/telemetry", "vitals.view"),
-            Namespace::write("weather.current", "dev/personal/weather", "weather.current"),
-        ],
-    )
-    .with_context(|| format!("open records {records_dir}"))?;
+    let wearers = parse_wearers(&wearers_raw)?;
+    let mut namespaces = Vec::new();
+    for wearer in &wearers {
+        // One book per wearer, so two people's rings cannot land in one store
+        // even if a Spore asks for the wrong namespace: the grant simply does
+        // not exist and the write is denied.
+        let book = format!("personal/{wearer}/telemetry");
+        for collection in [
+            "signal",
+            "device.state",
+            "vitals.summary",
+            "vitals.latest",
+            "vitals.view",
+        ] {
+            namespaces.push(Namespace::write(
+                format!("{collection}:{wearer}"),
+                &book,
+                collection,
+            ));
+        }
+    }
+    // Weather is where the wearer is, not who they are.
+    namespaces.push(Namespace::write(
+        "weather.current",
+        "dev/personal/weather",
+        "weather.current",
+    ));
+    eprintln!("records: wearers {}", wearers.join(", "));
+    let records = NamespacedRecordsHost::open(&records_dir, namespaces)
+        .with_context(|| format!("open records {records_dir}"))?;
     let time_origin_ms = load_or_create_origin(&Path::new(&records_dir).join("time-origin-ms"))?;
     let policy = HttpPolicy::new(origins, MAX_HTTP_BYTES, HTTP_TIMEOUT).context("http policy")?;
     let allowed: Vec<&str> = policy.origins().collect();

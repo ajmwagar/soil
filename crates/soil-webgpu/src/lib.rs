@@ -581,13 +581,21 @@ impl RecordsAccess {
         }
     }
 
-    /// The read-only namespace the vitals renderer uses.
+    /// The read-only namespace the vitals renderer uses for the default
+    /// wearer. A renderer that shows more than one person asks for
+    /// [`Self::vitals_for`] instead.
     pub fn vitals(root: impl Into<PathBuf>) -> Self {
+        Self::vitals_for(root, "owner")
+    }
+
+    /// The read-only namespace for one wearer's view. Records live one book per
+    /// wearer, so the wearer is part of both the namespace and the book.
+    pub fn vitals_for(root: impl Into<PathBuf>, wearer: &str) -> Self {
         Self {
             root: root.into(),
             namespaces: vec![Namespace::read(
-                "vitals.view",
-                "dev/personal/telemetry",
+                format!("vitals.view:{wearer}"),
+                format!("personal/{wearer}/telemetry"),
                 "vitals.view",
             )],
         }
