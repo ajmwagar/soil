@@ -277,6 +277,9 @@ pub fn grants(request: &Request, manifest: &Manifest) -> Result<soil_webgpu::Gra
             &collection,
         ));
     }
+    if let Some(root) = &request.spores {
+        grants = grants.with_catalog_roots(vec![root.clone()]);
+    }
     grants.principal = match &request.actor {
         Some(actor) => soil_webgpu::Grants::new().actor(actor.clone()).principal,
         // A local run is the person at this machine: there is one desktop user,

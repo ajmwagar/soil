@@ -1739,6 +1739,20 @@ pub struct Grants {
 }
 
 impl Grants {
+    /// Offer `soil:spore/catalog` rooted at `roots`.
+    ///
+    /// A launcher lists what is installed, and a capture of a launcher has to
+    /// see the same machine a window does — so the roots are a grant, not a
+    /// property of the window surface.
+    pub fn with_catalog_roots(self, roots: Vec<std::path::PathBuf>) -> Self {
+        Self {
+            catalog: Some(Box::new(InstallCatalog::with_roots(roots))),
+            ..self
+        }
+    }
+}
+
+impl Grants {
     pub fn new() -> Self {
         Self::default()
     }
