@@ -44,7 +44,7 @@ pub use protocol::{
     VERSION,
 };
 pub use records::RecordsCapability;
-pub use serve::{Options as ServeOptions, Served, serve as serve_spore};
+pub use serve::{Options as ServeOptions, Records as ServeRecords, Served, serve as serve_spore};
 pub use server::{Auth, Bridge, Server, serve};
 pub use transport::SessionTransport;
 

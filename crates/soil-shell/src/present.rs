@@ -140,8 +140,17 @@ pub fn plan(request: &Request, manifest: &Manifest) -> Result<Vec<Surface>> {
     if draws && display_available() {
         chosen.push(Surface::Window);
     }
-    if declared.iter().any(|kind| kind == "web") {
+    // The browser is a surface this machine can always provide, so `run` offers
+    // it whenever the bridge can be built at all — that is what makes the same
+    // Spore reachable from a browser tab while the window is open.
+    if web_grant(request, manifest).is_ok() {
         chosen.push(Surface::Web);
+    } else if declared.iter().any(|kind| kind == "web") {
+        bail!(
+            "{} asks for a web surface, but the bridge cannot be built: {}",
+            manifest.spore.id,
+            web_grant(request, manifest).unwrap_err()
+        );
     }
     if chosen.is_empty() && request.frame.is_some() {
         chosen.push(Surface::Headless);
@@ -173,11 +182,59 @@ pub fn display_available() -> bool {
     }
 }
 
+/// The records store a host writes to when nobody named one.
+pub fn default_records_root() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share/fungos/records"))
+}
+
+/// The book the bridge serves, or why it cannot.
+///
+/// A Spore that was granted `soil:records` needs a store and the collection its
+/// guest names; one that was not still gets a bridge, with an empty registry
+/// that refuses the call instead of the whole surface.
+pub fn web_grant(
+    request: &Request,
+    manifest: &Manifest,
+) -> Result<Option<soil_web_bridge::ServeRecords>> {
+    let granted = manifest
+        .grants
+        .keys()
+        .any(|grant| grant.starts_with("soil:records"));
+    if !granted {
+        return Ok(None);
+    }
+    let collection = request.collection.clone().context(
+        "the Spore is granted soil:records, so --collection NAME says which collection the \
+         browser may address",
+    )?;
+    let root = request
+        .records_root
+        .clone()
+        .or_else(default_records_root)
+        .context("no records store: pass --records DIR")?;
+    let book = request.book.clone().unwrap_or_else(|| collection.clone());
+    Ok(Some(soil_web_bridge::ServeRecords {
+        root,
+        book,
+        collection,
+    }))
+}
+
 /// The grants every surface shares: one workspace, one book, one identity.
-pub fn grants(request: &Request) -> Result<soil_webgpu::Grants> {
+pub fn grants(request: &Request, manifest: &Manifest) -> Result<soil_webgpu::Grants> {
     let mut grants = soil_webgpu::Grants::new();
     grants.vfs = request.vfs_root.clone();
-    if let Some(root) = &request.records_root {
+    // A granted records book is opened where the host keeps them unless the
+    // caller named another store.
+    let granted = manifest
+        .grants
+        .keys()
+        .any(|grant| grant.starts_with("soil:records"));
+    if let Some(root) = request
+        .records_root
+        .clone()
+        .or_else(|| if granted { default_records_root() } else { None })
+    {
         let Some(collection) = request.collection.clone() else {
             bail!("--records needs --collection: the guest names a collection");
         };
@@ -226,18 +283,7 @@ pub fn show(
     if surfaces.contains(&Surface::Web) {
         let serve = soil_web_bridge::ServeOptions {
             spore: root.to_path_buf(),
-            records_root: request
-                .records_root
-                .clone()
-                .context("--surface web needs --records DIR")?,
-            book: request
-                .book
-                .clone()
-                .unwrap_or_else(|| manifest.spore.id.clone()),
-            collection: request
-                .collection
-                .clone()
-                .context("--surface web needs --collection NAME")?,
+            records: web_grant(request, manifest)?,
             bind: request
                 .bind
                 .clone()
@@ -249,10 +295,9 @@ pub fn show(
         };
         let served = soil_web_bridge::serve_spore(serve)?;
         println!("soil: {} on the web", served.spore);
-        println!(
-            "  collection {} in book {}",
-            served.collection, served.book
-        );
+        if let (Some(collection), Some(book)) = (&served.collection, &served.book) {
+            println!("  collection {collection} in book {book}");
+        }
         println!("  demo    http://{}/", served.server.addr());
         println!("  session ws://{}/v1/session", served.server.addr());
         servers.push(Box::new(served) as Box<dyn std::any::Any>);
@@ -279,13 +324,21 @@ pub fn show(
             .framebuffer
             .clone()
             .context("--surface framebuffer needs --fb DEVICE")?;
-        present_framebuffer(&module, request, &device)?;
+        present_framebuffer(&module, manifest, request, &device)?;
     } else if surfaces.contains(&Surface::Headless) {
-        capture(&module, request)?;
+        capture(&module, manifest, request)?;
     }
 
     // The servers stay alive exactly as long as they are wanted: dropping them
-    // is what closes the sockets.
+    // is what closes the sockets. When nothing else is holding the process open
+    // — a window blocks until it closes — serving *is* the run, so wait here
+    // instead of starting a listener and exiting.
+    if !servers.is_empty() && !surfaces.contains(&Surface::Window) {
+        println!("soil: serving; interrupt to stop");
+        loop {
+            std::thread::park();
+        }
+    }
     drop(servers);
     Ok(())
 }
@@ -305,13 +358,13 @@ pub fn resolve_module(root: &Path, manifest: &Manifest) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn capture(module: &Path, request: &Request) -> Result<()> {
+fn capture(module: &Path, manifest: &Manifest, request: &Request) -> Result<()> {
     let frame = request
         .frame
         .clone()
         .context("--surface frame needs --frame FILE")?;
     let bytes = std::fs::read(module).with_context(|| format!("read {}", module.display()))?;
-    let grants = grants(request)?;
+    let grants = grants(request, manifest)?;
     let (status, captured) =
         soil_webgpu::run_component_capture_with_grants(&bytes, request.size.0, request.size.1, grants)?;
     anyhow::ensure!(status == 0, "guest returned status {status}");
@@ -326,7 +379,12 @@ fn capture(module: &Path, request: &Request) -> Result<()> {
     Ok(())
 }
 
-fn present_framebuffer(module: &Path, request: &Request, device: &str) -> Result<()> {
+fn present_framebuffer(
+    module: &Path,
+    manifest: &Manifest,
+    request: &Request,
+    device: &str,
+) -> Result<()> {
     let bytes = std::fs::read(module).with_context(|| format!("read {}", module.display()))?;
     let presenter = soil_webgpu::fb::FramebufferPresenter::open(
         device,
@@ -335,7 +393,7 @@ fn present_framebuffer(module: &Path, request: &Request, device: &str) -> Result
     )?;
     let runtime = soil_webgpu::WebGpuRuntime::new()?;
     let mut setup = soil_webgpu::HostSetup::capture(Box::new(presenter));
-    let grants = grants(request)?;
+    let grants = grants(request, manifest)?;
     setup.vfs = grants.vfs;
     setup.records = grants.records;
     setup.principal = grants.principal;
