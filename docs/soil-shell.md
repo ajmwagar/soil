@@ -37,6 +37,10 @@ soil spore run ./worklog --surface window --surface web --bind 127.0.0.1:8795 \
 `--vfs-root`, `--records`/`--collection`/`--book` and `--actor` are the grants a
 Spore is given; a surface that was not given one denies it.
 
+The `web` surface can be put behind an SSO ingress: `--actor-secret-env NAME`
+verifies Palisade's signed actor and gives each signed-in person their own records
+book. See [bridge-identity.md](bridge-identity.md).
+
 ## A VFS workspace
 
 `soil` is also a small front door to a VFS workspace:

@@ -207,6 +207,14 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
                 run.present.token = Some(value(index + 1)?);
                 index += 2;
             }
+            "--actor-secret-env" => {
+                run.present.actor_secret_env = Some(value(index + 1)?);
+                index += 2;
+            }
+            "--per-principal" => {
+                run.present.per_principal = true;
+                index += 1;
+            }
             other => bail!("unknown option `{other}`"),
         }
     }

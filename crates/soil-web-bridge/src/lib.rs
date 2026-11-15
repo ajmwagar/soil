@@ -31,14 +31,18 @@
 //! over `fetch`, `soil:audio` over `getUserMedia` — the same `call`/`result`
 //! frames travel the other way over the same session.
 
+pub mod bindings;
 pub mod grants;
+pub mod identity;
 pub mod protocol;
 pub mod records;
 pub mod serve;
 pub mod server;
 pub mod transport;
 
+pub use bindings::{Bindings, Fixed, PerPrincipal};
 pub use grants::GrantSet;
+pub use identity::{Identity, Refusal, Trust};
 pub use protocol::{
     Call, CallError, Code, Event, Frame, Outcome, Provide, ProvideRequest, Request, Response,
     VERSION,
