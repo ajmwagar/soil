@@ -14,7 +14,7 @@ pub mod shared;
 
 pub use composite::CompositeAgents;
 pub use fixture::FixtureAgents;
-pub use shared::SharedAgents;
+pub use shared::{Live, SharedAgents};
 
 /// Bus kind: a person asked for new work. Body is flat JSON with `text`,
 /// `harness` and `environment`; the dispatcher owns the mapping to a session.
