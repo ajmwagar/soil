@@ -69,6 +69,8 @@ pub mod time;
 pub mod dispatch;
 #[cfg(feature = "wasi")]
 pub mod unibus;
+#[cfg(feature = "work")]
+pub mod work;
 #[cfg(feature = "vfs")]
 pub mod vfs_host;
 
