@@ -148,6 +148,23 @@ A Desktop also records `mount`, where this device projects it for host tools
 it, and they are separate because a Desktop follows a principal across machines
 while each device projects it somewhere different.
 
+A Desktop remembers the checkouts it works on as `[[project]]` rows:
+
+```toml
+[[project]]
+project = "github.com/mycelium-linux/soil"
+path = "/Users/me/src/soil"
+```
+
+A row is a **reference**: the project's identity and where the checkout is on
+this device. The tree is never copied into the VFS — [Desktops](desktop.md) rules
+out copied project directories, and git already answers what a project contains.
+One Desktop can hold many checkouts, and one project can be attached to more than
+one Desktop. See [attaching a checkout](#attaching-a-checkout).
+
+`mush desktop list --json` and `mush desktop show ID --json` print the same row
+shape as `mush attach --json`, so a script reads one schema.
+
 ### Origin
 
 `mush origin` answers "which Desktop owns this caller?" from the only two hints
@@ -168,9 +185,15 @@ repo: soil
 desktop: personal
 vfs root: /Users/me/.local/share/fungos/desktops/personal
 mount: /Users/me/mnt/personal [mounted]
-project: /Users/me/mnt/personal/projects/soil
+project: github.com/mycelium-linux/soil
+path: /Users/me/mnt/personal/projects/soil
 status: ready
 ```
+
+`project` is the identity `mush attach` records — one spelling across mush,
+Operator and Agentsmith — and `path` is the checkout it resolves to. When the
+Desktop attached a real checkout, `status` is `ready` as soon as that path
+exists; a projection still has to be mounted.
 
 `status` is honest about what is actually there:
 
@@ -189,6 +212,80 @@ When no `--root`, `--desktop`, `MUSH_DESKTOP`, or `desktop` config names a
 Desktop, `mush` selects the one its origin resolves to and says so on stderr.
 A caller that wants the default root or a specific Desktop passes one
 explicitly, which always wins.
+
+### The JSON envelope
+
+`mush origin --json`, `mush attach --json`, `mush detach --json` and
+`mush desktop list|show --json` all print one envelope, so a consumer reads one
+schema instead of three:
+
+```json
+{"ok": true, "desktop": "acme", "project": "github.com/owner/repo",
+ "path": "/abs/path", "branch": "main", "commit": "…", "base": "…", "role": "primary"}
+```
+
+| field | meaning |
+|---|---|
+| `ok` | the command produced a usable row (`origin`: the resolution is `ready`) |
+| `desktop` | Desktop id, or `null` when nothing owns the path |
+| `project` | identity: `github.com/owner/repo`, or `path:<checkout>` with no remote |
+| `path` | the checkout on this device |
+| `branch` / `commit` | read from the checkout when reported, never stored |
+| `base` | the commit it forked from: merge-base with the upstream default branch |
+| `role` | `primary` for a repository, `worktree` for a linked tree, `none` otherwise |
+
+`origin --json` adds its own context (`cwd`, `thread`, `delta_worktree`,
+`worktree`, `marble_project`, `repo`, `desktop_root`, `mount`, `readiness`) and
+keeps every row key present, `null` where nothing is known, so a consumer never
+has to branch on the shape.
+
+### Attaching a checkout
+
+```sh
+mush attach PATH [--desktop ID] [--approve] [--json]
+mush detach PATH [--desktop ID] [--json]
+```
+
+`attach` records a checkout **where it already lives**: identity, path, and the
+git facts it reports. Nothing is copied, moved, or committed, and the checkout is
+not frozen — re-attaching the same path refreshes the row rather than adding a
+second one.
+
+Identity follows the checkout's `origin` (then its first remote), which is what
+Operator's `roots::normalize_remote` produces:
+
+| spelling | identity |
+|---|---|
+| `git@github.com:Owner/Repo.git` | `github.com/owner/repo` |
+| `https://github.com/owner/repo` | `github.com/owner/repo` |
+| `ssh://git@github.com:22/owner/repo` | `github.com/owner/repo` |
+| a checkout with no remote | `path:<real checkout path>` |
+
+So a repository and the worktrees cut from it share one identity, and two
+spellings of one remote collapse. A path that is not a git checkout is refused:
+there would be nothing to record.
+
+**Attaching is a human decision.** Without `--approve`, `attach` asks on the
+terminal and refuses when there is no terminal to ask:
+
+```text
+$ mush attach . --desktop acme < /dev/null
+mush: refusing to attach github.com/owner/repo (/src/repo) to Desktop acme:
+  there is no terminal to ask, so pass --approve
+```
+
+| exit | meaning |
+|---|---|
+| `0` | attached |
+| `1` | `PATH` is not a checkout, or the Desktop does not exist |
+| `4` | refused: `approval-required`, `not-approved`, or `not-attached` (detach) |
+
+`detach` removes the row and nothing else: no VFS deletion, no git mutation. A
+path inside a checkout names the checkout, so `mush detach .` works from a
+subdirectory.
+
+`mush desktop add-project` (which imported a copy of a tree) is gone in favour of
+`mush attach`: one way to attach, and it does not copy.
 
 ## Service mode
 
@@ -876,24 +973,32 @@ mush projects --json
 ```
 
 ```text
-project                  source    branch         state   remote
-missing-repo             missing   -              -       
-plain-dir                found     -              -       
-repo-a                   declared  master         dirty   [marbles]
+project                          source    branch         state   hosts      remote
+                                                                
+plain-dir                        found     -              -       
+repo-a                           declared  master         dirty   [marbles]
 ```
+
+The first column is the project **identity** when something has read a remote
+for it (`github.com/owner/repo`), and the directory name only for a claim that
+has not been materialized yet. Two checkouts of one project therefore read as
+one name, which is the point of the identity.
 
 `source` is the difference between the declared list and what is on disk:
 
 | source | meaning |
 |---|---|
-| `declared` | named in the Desktop config and present |
-| `missing` | named in the config, nothing on the projection |
-| `found` | on the projection, not named in the config |
+| `declared` | a row on the Desktop, and present |
+| `missing` | a row on the Desktop, nothing at its path |
+| `found` | on the projection, not a row on the Desktop |
 
-Branch, dirtiness, and remote come from the host `git` in the projection, so
+Branch, dirtiness, and remote come from the host `git` at each row's path, so
 this describes what you can actually work on. A project without `.git` reports
-`-` rather than a guess, which is how the current NFS projection behaves: its
+`-` rather than a guess, which is how an NFS projection behaves when its
 projects are directories, not checkouts.
+
+`mush projects --json` adds `ok` and `project_id` per row (the same identity
+spelled above), so the rows join `mush origin --json` on the same key.
 
 `[marbles]` marks a project carrying a `.marbles` or `.marbles-local` directory.
 
@@ -929,9 +1034,10 @@ ajmwagar.github.io       -         -        -       github       [archived]
 Without `GITEA_URL`/`GITEA_TOKEN` the mirror is simply absent -- that is a
 configuration state, not an error.
 
-`--claim` writes names into the Desktop's `projects` list. It declares, it does
-not clone: a claimed repository that is not on the projection reports `missing`
-until something materializes it, which keeps the declaration honest.
+`--claim` writes a row for a name inside the Desktop's own `projects/`
+directory. It declares, it does not clone: a claimed repository that is not
+materialized reports `missing` until something creates it, which keeps the
+declaration honest.
 
 ### Materializing a project
 
@@ -941,7 +1047,10 @@ mush project add NAME --desktop acme --worktree w1   # plus a CoW worktree
 ```
 
 The clone is `--depth 1` on purpose: a starting point for work, not an archive.
-The worktree is a copy-on-write copy of that clone:
+After cloning, the clone's own remote is recorded as the project identity, so a
+later `mush origin` answers with the spelling Operator uses instead of guessing
+from a directory name. A `--worktree` copies that clone with a copy-on-write
+primitive:
 
 | platform | primitive | cost |
 |---|---|---|
@@ -971,7 +1080,8 @@ marble project: agent
 repo: addict
 desktop: personal
 mount: /Users/me/mnt/personal [mounted]
-project: /Users/me/mnt/personal/projects/addict
+project: github.com/acme/addict
+path: /Users/me/mnt/personal/projects/addict
 ```
 
 `worktree` is the label of the tree the agent is inside, `repo` is what it is a

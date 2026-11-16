@@ -19,6 +19,7 @@ use anyhow::Result;
 use serde_json::json;
 
 use crate::desktop::{self, Desktop};
+use crate::project::ProjectRef;
 
 struct Git {
     branch: String,
@@ -26,13 +27,14 @@ struct Git {
     remote: Option<String>,
 }
 
-struct Project {
+struct Entry {
     name: String,
     declared: bool,
     present: bool,
     git: Option<Git>,
     marbles: bool,
     path: Option<PathBuf>,
+    identity: Option<String>,
     github: Option<String>,
     gitea: Option<String>,
     archived: bool,
@@ -67,36 +69,51 @@ fn git_info(path: &Path) -> Option<Git> {
     })
 }
 
-fn discover(desktop: &Desktop) -> Vec<Project> {
-    let mut names: Vec<String> = desktop.projects.clone();
+fn discover(desktop: &Desktop) -> Vec<Entry> {
+    // Declared rows first, then anything else sitting in the projection: a
+    // checkout named here is what the Desktop says it works on, and a directory
+    // it does not name is a finding worth reporting.
+    let mut rows: Vec<(ProjectRef, bool)> = desktop
+        .projects
+        .iter()
+        .cloned()
+        .map(|row| (row, true))
+        .collect();
     let projects_dir = desktop.mount.join("projects");
     if let Ok(entries) = std::fs::read_dir(&projects_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if !name.starts_with('.') && !names.contains(&name) {
-                names.push(name);
+            if name.starts_with('.') {
+                continue;
+            }
+            let path = projects_dir.join(&name);
+            let known = rows.iter().any(|(row, _)| {
+                crate::project::normalized(&row.path) == crate::project::normalized(&path)
+            });
+            if !known {
+                rows.push((ProjectRef::new(path), false));
             }
         }
     }
-    names.sort();
-    names.dedup();
+    rows.sort_by(|a, b| a.0.path.cmp(&b.0.path));
 
-    names
-        .into_iter()
-        .map(|name| {
-            let path = projects_dir.join(&name);
-            let present = path.is_dir();
-            let declared = desktop.projects.iter().any(|project| project == &name);
-            let git = present.then(|| git_info(&path)).flatten();
-            let marbles =
-                present && (path.join(".marbles").exists() || path.join(".marbles-local").exists());
-            Project {
-                name,
+    rows.into_iter()
+        .map(|(row, declared)| {
+            let present = row.path.is_dir();
+            let git = present.then(|| git_info(&row.path)).flatten();
+            let marbles = present
+                && (row.path.join(".marbles").exists() || row.path.join(".marbles-local").exists());
+            Entry {
+                name: row
+                    .name()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| row.path.display().to_string()),
                 declared,
                 present,
                 git,
                 marbles,
-                path: present.then_some(path),
+                path: present.then(|| row.path.clone()),
+                identity: row.identity(),
                 github: None,
                 gitea: None,
                 archived: false,
@@ -247,7 +264,7 @@ fn remotes() -> Result<BTreeMap<String, Remote>> {
     Ok(merged)
 }
 
-fn render(projects: &[Project], json_output: bool) {
+fn render(projects: &[Entry], json_output: bool) {
     if json_output {
         let rows: Vec<_> = projects
             .iter()
@@ -256,6 +273,7 @@ fn render(projects: &[Project], json_output: bool) {
                     "name": project.name,
                     "declared": project.declared,
                     "present": project.present,
+                    "project_id": project.identity,
                     "path": project.path.as_ref().map(|path| path.display().to_string()),
                     "branch": project.git.as_ref().map(|git| git.branch.clone()),
                     "dirty": project.git.as_ref().map(|git| git.dirty),
@@ -269,7 +287,7 @@ fn render(projects: &[Project], json_output: bool) {
             .collect();
         println!(
             "{}",
-            serde_json::to_string(&json!({ "projects": rows })).unwrap_or_default()
+            serde_json::to_string(&json!({ "ok": true, "projects": rows })).unwrap_or_default()
         );
         return;
     }
@@ -278,10 +296,16 @@ fn render(projects: &[Project], json_output: bool) {
         return;
     }
     println!(
-        "{:<24} {:<9} {:<14} {:<7} {:<10} {}",
+        "{:<36} {:<9} {:<14} {:<7} {:<10} {}",
         "project", "source", "branch", "state", "hosts", "remote"
     );
     for project in projects {
+        // The identity is the same spelling `mush origin` and `mush attach`
+        // report, so two checkouts of one project read as one name.
+        let label = match &project.identity {
+            Some(identity) if !identity.starts_with("path:") => identity.clone(),
+            _ => project.name.clone(),
+        };
         let source = match (project.declared, project.present) {
             (true, true) => "declared",
             (true, false) => "missing",
@@ -313,8 +337,8 @@ fn render(projects: &[Project], json_output: bool) {
             hosts.push("gitea");
         }
         println!(
-            "{:<24} {:<9} {:<14} {:<7} {:<10} {}{}",
-            project.name,
+            "{:<36} {:<9} {:<14} {:<7} {:<10} {}{}",
+            label,
             source,
             branch,
             state,
@@ -340,14 +364,7 @@ pub fn run(config: &crate::config::Config, mut args: Vec<String>) -> Result<()> 
         Some(index) => args.split_off(index + 1),
         None => Vec::new(),
     };
-    let desktop_id = crate::take_option(&mut args, "--desktop")
-        .or_else(|| std::env::var("MUSH_DESKTOP").ok())
-        .or_else(|| config.desktop.clone())
-        .or_else(|| {
-            // No Desktop named: ask the caller's origin, exactly as `mush` does.
-            let cwd = std::env::current_dir().ok()?;
-            crate::origin::resolve(&cwd).desktop
-        });
+    let desktop_id = desktop::selected(config, &mut args);
     let Some(id) = desktop_id else {
         println!("no Desktop selected and this directory belongs to none");
         std::process::exit(3);
@@ -356,7 +373,7 @@ pub fn run(config: &crate::config::Config, mut args: Vec<String>) -> Result<()> 
 
     if !claims.is_empty() {
         for name in &claims {
-            desktop::add_project(&id, name)?;
+            desktop::claim(&id, name)?;
         }
         println!("claimed {} in {id}", claims.join(", "));
         return Ok(());
@@ -379,13 +396,14 @@ pub fn run(config: &crate::config::Config, mut args: Vec<String>) -> Result<()> 
             if seen.contains(&key) {
                 continue;
             }
-            projects.push(Project {
+            projects.push(Entry {
                 name: remote.name,
                 declared: false,
                 present: false,
                 git: None,
                 marbles: false,
                 path: None,
+                identity: None,
                 github: remote.github,
                 gitea: remote.gitea,
                 archived: remote.archived,
@@ -408,13 +426,7 @@ pub fn run(config: &crate::config::Config, mut args: Vec<String>) -> Result<()> 
 pub fn add(config: &crate::config::Config, mut args: Vec<String>) -> Result<()> {
     let worktree = crate::take_option(&mut args, "--worktree");
     args.retain(|arg| arg != "--json");
-    let desktop_id = crate::take_option(&mut args, "--desktop")
-        .or_else(|| std::env::var("MUSH_DESKTOP").ok())
-        .or_else(|| config.desktop.clone())
-        .or_else(|| {
-            let cwd = std::env::current_dir().ok()?;
-            crate::origin::resolve(&cwd).desktop
-        })
+    let desktop_id = desktop::selected(config, &mut args)
         .ok_or_else(|| anyhow::anyhow!("no Desktop selected; pass --desktop ID"))?;
     let desktop = desktop::load(&desktop_id)?;
     let Some(name) = args.first().cloned() else {
@@ -426,7 +438,7 @@ pub fn add(config: &crate::config::Config, mut args: Vec<String>) -> Result<()> 
         .map_err(|error| anyhow::anyhow!("create {}: {error}", projects.display()))?;
     let target = projects.join(&name);
 
-    desktop::add_project(&desktop_id, &name)?;
+    desktop::claim(&desktop_id, &name)?;
     println!("claimed {name} in {desktop_id}");
 
     if target.join(".git").exists() {
@@ -446,6 +458,16 @@ pub fn add(config: &crate::config::Config, mut args: Vec<String>) -> Result<()> 
             anyhow::bail!("gh repo clone {name} failed with {status}");
         }
         println!("cloned (depth 1): {}", target.display());
+    }
+
+    // The clone's own remote names the project. Recording it here means a later
+    // `mush origin` answers with the spelling Operator uses, instead of
+    // guessing from a directory name.
+    if target.join(".git").exists() {
+        let attached = crate::project::attach(&desktop_id, &target)?;
+        if let Some(identity) = attached.identity() {
+            println!("project: {identity}");
+        }
     }
 
     if let Some(label) = worktree {

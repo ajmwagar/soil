@@ -784,6 +784,14 @@ fn run() -> Result<()> {
         args.remove(0);
         return origin::run(args);
     }
+    if args.first().map(String::as_str) == Some("attach") {
+        args.remove(0);
+        return project::run_attach(&config, args);
+    }
+    if args.first().map(String::as_str) == Some("detach") {
+        args.remove(0);
+        return project::run_detach(&config, args);
+    }
     if args.first().map(String::as_str) == Some("projects") {
         args.remove(0);
         return projects::run(&config, args);
@@ -1229,8 +1237,15 @@ fn usage() -> String {
          \x20 mush --serve --socket PATH --root DIR [--foreground] [OPTIONS]\n\
          \x20 mush mcp [--listen ADDR] [--foreground] [OPTIONS]\n\
          \x20 mush origin [--cwd PATH] [--json]\n\
+         \x20 mush attach <path> [--desktop ID] [--approve] [--json]\n\
+         \x20 mush detach <path> [--desktop ID] [--json]\n\
+         \x20 mush desktop <list|show|create> [--json] [OPTIONS] [ID]\n\
+         \x20 mush projects [--desktop ID] [--remote] [--claim NAME...] [--json]\n\
          \x20 mush jobs [--json]\n\
          \x20 mush job ID [--json]\n\n\
+         `attach` records a checkout on a Desktop where it already lives and\n\
+         never copies the tree; without --approve it asks, and refuses when\n\
+         there is no terminal to ask. `detach` removes the row and nothing else.\n\n\
          The Mush Spore is embedded; --wasm overrides it for development.\n\n\
          Options:\n\
          \x20 --root DIR                 VFS root (mutually exclusive with --desktop)\n\
@@ -1263,12 +1278,20 @@ fn usage() -> String {
 }
 
 fn run_desktop(mut args: Vec<String>) -> Result<()> {
+    let as_json = args.iter().any(|arg| arg == "--json");
+    args.retain(|arg| arg != "--json");
     let Some(subcommand) = args.first().map(String::as_str) else {
-        anyhow::bail!("usage: mush desktop <list|show|create> [OPTIONS] [ID]");
+        anyhow::bail!("usage: mush desktop <list|show|create> [--json] [OPTIONS] [ID]");
     };
     match subcommand {
         "list" => {
-            for desktop in desktop::list()? {
+            let desktops = desktop::list()?;
+            if as_json {
+                let rows: Vec<_> = desktops.iter().map(desktop_json).collect();
+                println!("{}", serde_json::json!({ "ok": true, "desktops": rows }));
+                return Ok(());
+            }
+            for desktop in desktops {
                 println!(
                     "{}\t{}\t{}\tmount={}\ttheme={}",
                     desktop.id,
@@ -1282,14 +1305,27 @@ fn run_desktop(mut args: Vec<String>) -> Result<()> {
         "show" => {
             let id = args
                 .get(1)
-                .ok_or_else(|| anyhow::anyhow!("usage: mush desktop show ID"))?;
+                .ok_or_else(|| anyhow::anyhow!("usage: mush desktop show ID [--json]"))?;
             let desktop = desktop::load(id)?;
+            if as_json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "ok": true, "desktop": desktop_json(&desktop) })
+                );
+                return Ok(());
+            }
             println!("id: {}", desktop.id);
             println!("name: {}", desktop.name);
             println!("root: {}", desktop.root.display());
             println!("mount: {}", desktop.mount.display());
             println!("theme: {}", desktop.theme);
-            println!("projects: {}", desktop.projects.join(", "));
+            for project in &desktop.projects {
+                println!(
+                    "project: {} {}",
+                    project.identity().as_deref().unwrap_or("(identity unknown)"),
+                    project.path.display()
+                );
+            }
         }
         "create" => {
             let id = args
@@ -1306,30 +1342,31 @@ fn run_desktop(mut args: Vec<String>) -> Result<()> {
             let desktop = desktop::create(&id, &name, &theme, mount.as_deref())?;
             println!("{}", desktop.id);
         }
-        "add-project" => {
-            let desktop_id = args
-                .get(1)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("usage: mush desktop add-project DESKTOP PROJECT --from PATH")
-                })?
-                .clone();
-            let project = args
-                .get(2)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("usage: mush desktop add-project DESKTOP PROJECT --from PATH")
-                })?
-                .clone();
-            let from = take_option(&mut args, "--from")
-                .or_else(|| args.get(3).cloned())
-                .ok_or_else(|| {
-                    anyhow::anyhow!("usage: mush desktop add-project DESKTOP PROJECT --from PATH")
-                })?;
-            let (files, bytes) = project::attach(&desktop_id, &project, &from)?;
-            println!("projects/{project} ({files} files, {bytes} bytes)");
-        }
-        other => anyhow::bail!("unknown desktop subcommand {other:?}"),
+        "add-project" => anyhow::bail!(
+            "`mush desktop add-project` imported a copy of a tree and is gone; \
+             use `mush attach <path> --desktop ID`, which records the checkout in place"
+        ),
+        other => anyhow::bail!("unknown desktop subcommand {other:?}; try `list`, `show` or `create`"),
     }
     Ok(())
+}
+
+/// One Desktop in the shape `desktop list|show --json` prints: its own fields,
+/// then the same project row `mush attach --json` writes.
+fn desktop_json(desktop: &desktop::Desktop) -> serde_json::Value {
+    let projects: Vec<_> = desktop
+        .projects
+        .iter()
+        .map(|project| project.to_json(&desktop.id))
+        .collect();
+    serde_json::json!({
+        "id": &desktop.id,
+        "name": &desktop.name,
+        "root": desktop.root.display().to_string(),
+        "mount": desktop.mount.display().to_string(),
+        "theme": &desktop.theme,
+        "projects": projects,
+    })
 }
 
 /// Stop a job by id: queued work is dropped, running work is interrupted.
