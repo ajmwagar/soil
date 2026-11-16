@@ -53,11 +53,12 @@ jobs:
       - name: Clippy
         run: cargo clippy -p soil -p soil-agent-host -p soil-vt -p soil-webgpu --all-targets --locked -- -D warnings
 
-      # A capability a host opts into is still code. `dispatch` is not in
-      # `soil`'s default features, so a pass over defaults never compiles it —
-      # and a module CI cannot see is the one place dead code hides safely.
+      # A capability a host opts into is still code. `dispatch` and `acp` are
+      # not in `soil`'s default features, so a pass over defaults never compiles
+      # them — and a module CI cannot see is the one place dead code hides
+      # safely.
       - name: Clippy (host features)
-        run: cargo clippy -p soil --features dispatch --all-targets --locked -- -D warnings
+        run: cargo clippy -p soil --features dispatch,acp --all-targets --locked -- -D warnings
 
       # `soil`'s own suite joins this step once it is green: three
       # `records_host` tests (upsert_get_scan_and_delete and two neighbours)
