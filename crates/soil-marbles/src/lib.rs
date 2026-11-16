@@ -11,11 +11,15 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// For the calls that are supposed to be small: one issue, the ready queue, a
+/// rollup. Bounds a runaway, not a product limit.
 const MAX_OUTPUT: usize = 4 * 1024 * 1024;
 
-/// `list --all` returns every issue with its description: six thousand issues
-/// is twelve megabytes of JSON, which is a normal project rather than a
-/// runaway. The default cap is for the calls that are supposed to be small.
+/// `list` and `list --all` are whole-tracker snapshots, not paged calls: the
+/// live tracker answers `list` with 2856 issues / 5.2 MB and `--all` with
+/// 11.7 MB, which is a normal project rather than a runaway. Holding these to
+/// the small-call limit turns a big tracker into what looks like a failed
+/// command.
 const MAX_FULL_LIST: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -121,7 +125,9 @@ impl MarblesClient {
     }
 
     pub fn list(&self) -> Result<Vec<Issue>> {
-        self.run_json(&["list"])
+        // A whole-tracker snapshot, not a small call: `mb list` returns every
+        // open issue with its description.
+        self.run_json_capped(&["list"], MAX_FULL_LIST)
     }
 
     pub fn ready(&self) -> Result<Vec<Issue>> {
@@ -260,18 +266,21 @@ impl MarblesClient {
         T: for<'de> Deserialize<'de>,
     {
         let output = self.command(args).output().context("run mb")?;
-        if !output.status.success() || output.stdout.len() > max {
+        let verb = args.first().map(String::as_str).unwrap_or("call");
+        if !output.status.success() {
             anyhow::bail!(
-                "mb {} failed",
-                args.first().map(String::as_str).unwrap_or("call")
+                "mb {verb} failed ({}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
             );
         }
-        serde_json::from_slice(&output.stdout).with_context(|| {
-            format!(
-                "parse mb {} json",
-                args.first().map(String::as_str).unwrap_or("call")
-            )
-        })
+        if output.stdout.len() > max {
+            anyhow::bail!(
+                "mb {verb} printed {} bytes, over the {max} byte cap",
+                output.stdout.len()
+            );
+        }
+        serde_json::from_slice(&output.stdout).with_context(|| format!("parse mb {verb} json"))
     }
 
     fn command(&self, args: &[String]) -> Command {
