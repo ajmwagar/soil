@@ -26,4 +26,5 @@ soil-agent-host = { path = "../soil-agent-host" }
 soil-spore = { path = "../soil-spore" }
 soil-vt = { path = "../soil-vt" }
 soil-webgpu = { path = "../soil-webgpu" }
+soil-agent-records = { path = "../soil-agent-records" }
 winit = "0.30"

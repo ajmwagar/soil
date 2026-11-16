@@ -22,6 +22,7 @@ soil-web-bridge = { path = "../soil-web-bridge" }
 # framebuffer. Each is a library the runner composes, never a binary of its own.
 canvas-winit = { path = "../canvas-winit" }
 soil-webgpu = { path = "../soil-webgpu" }
+soil-agent-records = { path = "../soil-agent-records" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "0.4"
 http = "1"

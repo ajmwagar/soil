@@ -199,6 +199,13 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
                 run.present.spores = Some(PathBuf::from(value(index + 1)?));
                 index += 2;
             }
+            // Present one recorded transcript as the agent set: the book a
+            // harness wrote (`fungos/agents/<session>`), read back through
+            // `soil:agents`. Needs `--records ROOT` beside it.
+            "--agent-session" => {
+                run.present.agent_session = Some(value(index + 1)?);
+                index += 2;
+            }
             "--bind" => {
                 run.present.bind = Some(value(index + 1)?);
                 index += 2;

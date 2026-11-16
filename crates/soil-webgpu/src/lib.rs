@@ -1965,6 +1965,9 @@ pub struct Grants {
     pub principal: Option<PrincipalHost>,
     pub http: Option<HttpAccess>,
     pub catalog: Option<Box<dyn CatalogHost>>,
+    /// The agents this surface may see. `None` denies `soil:agents`, which is
+    /// the honest answer for a Spore that only draws.
+    pub agents: Option<Box<dyn AgentBackend>>,
 }
 
 impl Grants {
@@ -2027,9 +2030,10 @@ pub fn run_component_capture_with_grants(
     setup.records = grants.records;
     setup.principal = grants.principal;
     setup.http = grants.http;
-    if let Some(catalog) = grants.catalog {
-        setup.catalog = catalog;
-    }
+    setup.catalog = grants.catalog.unwrap_or(setup.catalog);
+    // A recorded transcript read back as an agent: the guest holds the
+    // contract and never learns which harness wrote the book.
+    setup.agents = grants.agents.unwrap_or(setup.agents);
     let status = pollster::block_on(runtime.run_component_with(bytes, setup))?;
     Ok((status, capture.take()))
 }

@@ -74,6 +74,9 @@ pub struct Request {
     pub collection: Option<String>,
     pub actor: Option<String>,
     pub spores: Option<PathBuf>,
+    /// One recorded transcript to present as the agent set: a session id whose
+    /// book lives under `records_root` (`fungos/agents/<session>`).
+    pub agent_session: Option<String>,
     /// Where the web surface listens; loopback by default.
     pub bind: Option<String>,
     pub token: Option<String>,
@@ -99,6 +102,7 @@ impl Default for Request {
             collection: None,
             actor: None,
             spores: None,
+            agent_session: None,
             bind: None,
             token: None,
             hue_bridge: None,
@@ -262,26 +266,55 @@ pub fn grants(request: &Request, manifest: &Manifest) -> Result<soil_webgpu::Gra
         .grants
         .keys()
         .any(|grant| grant.starts_with("soil:records"));
-    if let Some(root) = request.records_root.clone().or_else(|| {
-        if granted {
-            default_records_root()
-        } else {
-            None
+    if let Some(root) = request
+        .records_root
+        .clone()
+        .or_else(|| if granted { default_records_root() } else { None })
+    {
+        // The store root is a path; a *book grant* is a collection. Naming
+        // `--records` without one is how a run binds a transcript
+        // (`--agent-session`) without also handing the guest `soil:records`.
+        match request.collection.clone() {
+            Some(collection) => {
+                let book = request.book.clone().unwrap_or_else(|| collection.clone());
+                grants.records = Some(soil_webgpu::RecordsAccess::book(
+                    root,
+                    &collection,
+                    &book,
+                    &collection,
+                ));
+            }
+            None if granted => {
+                bail!("--records needs --collection: the guest names a collection")
+            }
+            None => {}
         }
-    }) {
-        let Some(collection) = request.collection.clone() else {
-            bail!("--records needs --collection: the guest names a collection");
-        };
-        let book = request.book.clone().unwrap_or_else(|| collection.clone());
-        grants.records = Some(soil_webgpu::RecordsAccess::book(
-            root,
-            &collection,
-            &book,
-            &collection,
-        ));
     }
-    if let Some(root) = &request.spores {
-        grants = grants.with_catalog_roots(vec![root.clone()]);
+    if let Some(spores_root) = &request.spores {
+        grants = grants.with_catalog_roots(vec![spores_root.clone()]);
+    }
+    // A recorded transcript is a different authority from a `soil:records`
+    // grant: the guest asks `soil:agents` for an agent and never sees a book.
+    // Binding one is how a capture shows what a harness actually recorded.
+    if let Some(session) = &request.agent_session {
+        let root = request
+            .records_root
+            .clone()
+            .or_else(default_records_root)
+            .context("--agent-session needs --records ROOT: the book has to live somewhere")?;
+        // `all` is the wall: every session this store holds. One id is one
+        // agent, which is what a window opened for a conversation wants.
+        grants.agents = Some(if session == "all" {
+            Box::new(
+                soil_agent_records::RecordedSessions::open(&root)
+                    .with_context(|| format!("open the recorded sessions in {}", root.display()))?,
+            )
+        } else {
+            Box::new(
+                soil_agent_records::RecordsAgents::open(&root, session)
+                    .with_context(|| format!("open the transcript of {session}"))?,
+            )
+        });
     }
     grants.principal = match &request.actor {
         Some(actor) => soil_webgpu::Grants::new().actor(actor.clone()).principal,
@@ -375,6 +408,7 @@ pub fn show(
             records_book: request.book.clone(),
             records_collection: request.collection.clone(),
             actor: request.actor.clone(),
+            agent_session: request.agent_session.clone(),
             // The grants are the run's, not the surface's: a window that
             // refused `soil:http` while the bridge allowed it would make the
             // same Spore behave differently depending on where it was watched.
