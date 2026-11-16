@@ -15,7 +15,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ::soil::http_host::{self, HttpHost, HttpPolicy};
 use ::soil::records_host::{self, Namespace, NamespacedRecordsHost, records};
-use ::soil::{MemoryBus, WasiHost, WasiHostBuilder, WasiHostPolicy, unibus::bus};
+use ::soil::{
+    MemoryBus, WasiHost, WasiHostBuilder, WasiHostPolicy,
+    unibus::{Bus, bus},
+};
 use anyhow::{Context, Result, bail};
 use soil_ble_host::ble as ble_host;
 use soil_ble_host::links;
@@ -24,7 +27,17 @@ use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtxView, WasiView};
 
-wasmtime::component::bindgen!({ path: "wit", world: "runner" });
+wasmtime::component::bindgen!({
+    path: "wit",
+    world: "runner",
+    // The notify host already implements these interfaces; map them to its
+    // types so this host forwards instead of re-deriving the tray.
+    with: {
+        "soil:notify/types": soil_notify_host::api::types,
+        "soil:notify/publisher": soil_notify_host::api::publisher,
+        "soil:notify/focus": soil_notify_host::api::focus,
+    },
+});
 
 use crate::soil::ble::ble::Error as BleError;
 use crate::soil::ble::types::{Characteristic, Device, Event, Notification, Service};
@@ -47,7 +60,13 @@ struct Scanned {
 
 struct DevHost {
     ble: ble_host::Ble,
+    /// Optional platform-id filter, so a bench host cannot accidentally write
+    /// to the second watch in radio range.
+    ble_device: Option<String>,
     links: links::Links,
+    /// Tray broker for Spores that publish notifications. The host owns focus
+    /// and holding policy; a Spore only classifies and publishes.
+    notify: soil_notify_host::NotifyComponent,
     /// One-based handles into the last scan result.
     devices: Vec<Scanned>,
     records: NamespacedRecordsHost,
@@ -172,11 +191,75 @@ impl DevHost {
     }
 }
 
+impl soil_notify_host::api::publisher::Host for DevHost {
+    fn publish(
+        &mut self,
+        notification: soil_notify_host::api::publisher::Notification,
+    ) -> Result<String, soil_notify_host::api::types::Error> {
+        <soil_notify_host::NotifyComponent as soil_notify_host::api::publisher::Host>::publish(
+            &mut self.notify,
+            notification,
+        )
+    }
+
+    fn update(
+        &mut self,
+        id: String,
+        notification: soil_notify_host::api::publisher::Notification,
+    ) -> Result<(), soil_notify_host::api::types::Error> {
+        <soil_notify_host::NotifyComponent as soil_notify_host::api::publisher::Host>::update(
+            &mut self.notify,
+            id,
+            notification,
+        )
+    }
+
+    fn withdraw(&mut self, id: String) -> Result<(), soil_notify_host::api::types::Error> {
+        <soil_notify_host::NotifyComponent as soil_notify_host::api::publisher::Host>::withdraw(
+            &mut self.notify,
+            id,
+        )
+    }
+}
+
+impl soil_notify_host::api::focus::Host for DevHost {
+    fn get(
+        &mut self,
+    ) -> Result<Option<soil_notify_host::api::focus::Profile>, soil_notify_host::api::types::Error>
+    {
+        <soil_notify_host::NotifyComponent as soil_notify_host::api::focus::Host>::get(&mut self.notify)
+    }
+
+    fn set(
+        &mut self,
+        profile: soil_notify_host::api::focus::Profile,
+    ) -> Result<(), soil_notify_host::api::types::Error> {
+        <soil_notify_host::NotifyComponent as soil_notify_host::api::focus::Host>::set(
+            &mut self.notify,
+            profile,
+        )
+    }
+
+    fn clear(&mut self) -> Result<(), soil_notify_host::api::types::Error> {
+        <soil_notify_host::NotifyComponent as soil_notify_host::api::focus::Host>::clear(
+            &mut self.notify,
+        )
+    }
+}
+
 impl crate::soil::ble::ble::Host for DevHost {
     fn scan(&mut self, timeout_ms: u32) -> std::result::Result<Vec<Device>, BleError> {
         let timeout_ms = u64::from(timeout_ms.min(30_000));
         let found = self.ble.scan(timeout_ms).map_err(io_error)?;
-        let found: Vec<_> = found.into_iter().take(MAX_DEVICES).collect();
+        let found: Vec<_> = found
+            .into_iter()
+            .filter(|device| {
+                self.ble_device
+                    .as_ref()
+                    .is_none_or(|wanted| device.id.eq_ignore_ascii_case(wanted))
+            })
+            .take(MAX_DEVICES)
+            .collect();
         self.devices.clear();
         let mut out = Vec::with_capacity(found.len());
         for (index, device) in found.into_iter().enumerate() {
@@ -380,6 +463,33 @@ fn wit_error(error: anyhow::Error) -> BleError {
     }
 }
 
+/// Preload the in-memory bus from JSON Lines. This is how a device Spore is
+/// exercised without a live Unibus: one frame per line, `{kind, body}`.
+fn load_bus_fixture(bus: &MemoryBus, path: &str) -> Result<()> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("read bus fixture {path}"))?;
+    for (index, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(line)
+            .with_context(|| format!("bus fixture {path}:{}: JSON", index + 1))?;
+        let kind = value
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .with_context(|| format!("bus fixture {path}:{}: kind", index + 1))?;
+        let body = match value.get("body") {
+            Some(serde_json::Value::String(text)) => text.clone().into_bytes(),
+            Some(body) => serde_json::to_vec(body)
+                .with_context(|| format!("bus fixture {path}:{}: body JSON", index + 1))?,
+            None => bail!("bus fixture {path}:{}: body", index + 1),
+        };
+        bus.publish(kind, &body, None, 60_000)
+            .map_err(|error| anyhow::anyhow!("bus fixture {path}:{}: {error}", index + 1))?;
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let mut real = false;
     let mut records_dir =
@@ -393,6 +503,9 @@ fn main() -> Result<()> {
     // Every wearer gets their own records book. A Spore selects one by naming
     // a `<collection>:<wearer>` namespace; a wearer not listed here is denied.
     let mut wearers_raw = std::env::var("SOIL_WEARERS").unwrap_or_else(|_| "owner".to_string());
+    let mut focus_mode: Option<String> = None;
+    let mut bus_fixture = None;
+    let mut ble_device = std::env::var("SOIL_BLE_DEVICE").ok();
 
     let mut origins: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
@@ -406,9 +519,16 @@ fn main() -> Result<()> {
             "--session" => session_path = args.next().context("--session needs a path")?,
             "--host-id" => host_id = args.next().context("--host-id needs a value")?,
             "--wearers" => wearers_raw = args.next().context("--wearers needs a list")?,
+            "--focus" => focus_mode = Some(args.next().context("--focus needs a mode")?),
+            "--bus-fixture" => {
+                bus_fixture = Some(args.next().context("--bus-fixture needs a path")?)
+            }
+            "--ble-device" => {
+                ble_device = Some(args.next().context("--ble-device needs a platform id")?)
+            }
             "--help" | "-h" => {
                 println!(
-                    "usage: soil-dev-host [--real] [--allow-origin URL]... [--records-dir DIR] [--session FILE] [--host-id ID] [--wearers LIST] <guest.wasm> [guest args...]"
+                    "usage: soil-dev-host [--real] [--allow-origin URL]... [--records-dir DIR] [--session FILE] [--host-id ID] [--wearers LIST] [--focus MODE] [--bus-fixture FILE] [--ble-device ID] <guest.wasm> [guest args...]"
                 );
                 return Ok(());
             }
@@ -421,7 +541,7 @@ fn main() -> Result<()> {
         }
     }
     let guest_path = guest_path.context(
-        "usage: soil-dev-host [--real] [--allow-origin URL]... [--records-dir DIR] [--session FILE] [--host-id ID] [--wearers LIST] <guest.wasm> [guest args...]",
+        "usage: soil-dev-host [--real] [--allow-origin URL]... [--records-dir DIR] [--session FILE] [--host-id ID] [--wearers LIST] [--focus MODE] [--bus-fixture FILE] [--ble-device ID] <guest.wasm> [guest args...]",
     )?;
 
     let ble = if real {
@@ -444,6 +564,12 @@ fn main() -> Result<()> {
             "vitals.summary",
             "vitals.latest",
             "vitals.view",
+            // Inbox triage: raw messages in, one decision per message out.
+            "inbox.raw",
+            "inbox",
+            "brief",
+            // The watch bridge's active decision and dedupe set.
+            "bridge",
         ] {
             namespaces.push(Namespace::write(
                 format!("{collection}:{wearer}"),
@@ -470,15 +596,40 @@ fn main() -> Result<()> {
         eprintln!("http: allowing {}", allowed.join(", "));
     }
     let bus = Arc::new(MemoryBus::default());
+    if let Some(path) = &bus_fixture {
+        load_bus_fixture(&bus, path)?;
+    }
     let wasi = WasiHostBuilder::new(WasiHostPolicy::default())
         .inherit_stdio(true)
         .bus(bus.clone())
         .build()
         .context("build WASI state")?;
 
+    let notify = soil_notify_host::NotifyComponent::new(
+        soil_notify_host::NotifyBroker::in_memory("dev-host")
+            .map_err(|error| anyhow::anyhow!("notify broker: {error:?}"))?,
+        "dev.host",
+    );
+    if let Some(mode) = focus_mode {
+        notify
+            .broker()
+            .set_focus(soil_notify_host::FocusProfile {
+                mode: mode.clone(),
+                until_ms: None,
+                allow_apps: Vec::new(),
+                allow_categories: Vec::new(),
+                allow_threads: Vec::new(),
+                breakthrough: Vec::new(),
+                rollup_held: true,
+            })
+            .map_err(|error| anyhow::anyhow!("focus: {error:?}"))?;
+        eprintln!("notify: focus {mode}, held items roll up");
+    }
     let state = DevHost {
         ble,
+        ble_device,
         links: links::Links::new(session, host_id, LEASE_TTL_MS),
+        notify,
         devices: Vec::new(),
         records,
         http: HttpHost::new(policy),
@@ -503,6 +654,17 @@ fn main() -> Result<()> {
         .map_err(anyhow::Error::from)
         .context("link soil:time")?;
     records_host::add_to_linker::<DevHost>(&mut linker).context("link soil:records")?;
+    soil_notify_host::api::publisher::add_to_linker::<DevHost, HasSelf<DevHost>>(
+        &mut linker,
+        |state| state,
+    )
+    .map_err(anyhow::Error::from)
+    .context("link soil:notify/publisher")?;
+    soil_notify_host::api::focus::add_to_linker::<DevHost, HasSelf<DevHost>>(&mut linker, |state| {
+        state
+    })
+    .map_err(anyhow::Error::from)
+    .context("link soil:notify/focus")?;
     http_host::api::add_to_linker::<DevHost, HasSelf<DevHost>>(&mut linker, |state| state)
         .map_err(anyhow::Error::from)
         .context("link soil:http")?;
@@ -525,6 +687,28 @@ fn main() -> Result<()> {
         Ok(Ok(bytes)) => println!("{}", String::from_utf8_lossy(&bytes)),
         Ok(Err(message)) => eprintln!("snapshot failed: {message}"),
         Err(error) => eprintln!("snapshot trapped: {error:#}"),
+    }
+    let filter = soil_notify_host::Filter {
+        include_held: true,
+        include_read: true,
+        limit: 50,
+        ..Default::default()
+    };
+    match store.data().notify.broker().inbox(&filter) {
+        Ok(items) if !items.is_empty() => {
+            for item in items {
+                println!(
+                    "notify [{:?}] {}: {} — {}{}",
+                    item.envelope.priority,
+                    item.envelope.category,
+                    item.envelope.title,
+                    item.envelope.body,
+                    if item.envelope.sensitive { " (sensitive)" } else { "" }
+                );
+            }
+        }
+        Ok(_) => {}
+        Err(error) => eprintln!("notify: {error:?}"),
     }
     for frame in store.data().bus.frames() {
         println!(

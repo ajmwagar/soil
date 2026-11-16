@@ -10,6 +10,10 @@ publish = false
 name = "canvas_winit"
 path = "src/lib.rs"
 
+[[bin]]
+name = "canvas-winit"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -17,10 +21,10 @@ pollster = "0.4"
 portable-pty = "0.9"
 softbuffer = "0.4"
 url = "2"
-soil = { path = "../soil", default-features = false, features = ["http", "principal", "vfs"] }
+soil = { path = "../soil", default-features = false, features = ["http", "principal", "vfs", "wasi"] }
+soil-agent-host = { path = "../soil-agent-host" }
 soil-spore = { path = "../soil-spore" }
 soil-vt = { path = "../soil-vt" }
 soil-webgpu = { path = "../soil-webgpu" }
-soil-agent-host = { path = "../soil-agent-host" }
 soil-agent-records = { path = "../soil-agent-records" }
 winit = "0.30"

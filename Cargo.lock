@@ -7094,6 +7094,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "soil-agent-host",
+ "soil-marbles",
  "tempfile",
  "tiny_http",
  "tokio",
@@ -7325,8 +7327,10 @@ name = "soil-dev-host"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde_json",
  "soil",
  "soil-ble-host",
+ "soil-notify-host",
  "wasmtime",
  "wasmtime-wasi",
 ]
@@ -7697,6 +7701,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unibus",
+ "url",
 ]
 
 [[package]]

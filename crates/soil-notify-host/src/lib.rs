@@ -19,6 +19,7 @@ mod component;
 mod peer;
 
 pub use component::{NotifyComponent, NotifyRuntime, add_to_linker};
+pub use component::api;
 pub use peer::NotifyPeerAdapter;
 use serde::{Deserialize, Serialize};
 

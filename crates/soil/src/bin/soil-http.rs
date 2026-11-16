@@ -7,7 +7,7 @@
 use std::{env, fs, process::ExitCode, sync::Arc, time::Duration};
 
 #[cfg(unix)]
-use soil::http_host::GeodeCredentials;
+use soil::creds::{GeodeCredentials, HostHandle};
 use soil::http_host::{BearerCredential, HttpHost, HttpPolicy, HttpRuntime};
 
 fn main() -> ExitCode {
@@ -26,6 +26,9 @@ fn run() -> Result<(), String> {
     let mut bearer = None;
     let mut geode_socket = None;
     let mut geode_purpose = None;
+    let mut geode_reference = None;
+    let mut geode_handle = String::from("default");
+    let mut geode_header = String::from("authorization");
     while let Some(arg) = args.peek() {
         match arg.as_str() {
             "--allow" => {
@@ -47,19 +50,43 @@ fn run() -> Result<(), String> {
                 args.next();
                 geode_purpose = Some(args.next().ok_or("--geode-purpose requires a PURPOSE")?);
             }
+            "--geode-reference" => {
+                args.next();
+                geode_reference = Some(
+                    args.next()
+                        .ok_or("--geode-reference requires a geode://… REFERENCE")?,
+                );
+            }
+            "--geode-handle" => {
+                args.next();
+                geode_handle = args.next().ok_or("--geode-handle requires a NAME")?;
+            }
+            "--geode-header" => {
+                args.next();
+                geode_header = args.next().ok_or("--geode-header requires a NAME")?;
+            }
             _ => break,
         }
     }
     if origins.is_empty() {
         return Err(
-            "usage: soil-http --allow ORIGIN [--allow ORIGIN]... [--bearer-env VARIABLE | --geode-socket PATH --geode-purpose PURPOSE] COMPONENT.wasm [ARGS...]".into(),
+            "usage: soil-http --allow ORIGIN [--allow ORIGIN]...\n\
+             \x20      [--bearer-env VARIABLE\n\
+             \x20       | --geode-socket PATH --geode-reference REF --geode-purpose PURPOSE\n\
+             \x20         [--geode-handle NAME] [--geode-header NAME]]\n\
+             \x20      COMPONENT.wasm [ARGS...]"
+                .into(),
         );
     }
     if bearer.is_some() && geode_socket.is_some() {
         return Err("--bearer-env and --geode-socket are mutually exclusive".into());
     }
-    if geode_socket.is_some() != geode_purpose.is_some() {
-        return Err("--geode-socket and --geode-purpose must be used together".into());
+    if geode_socket.is_some() != geode_purpose.is_some()
+        || geode_socket.is_some() != geode_reference.is_some()
+    {
+        return Err(
+            "--geode-socket, --geode-reference and --geode-purpose are used together".into(),
+        );
     }
     let path = args.next().ok_or("missing COMPONENT.wasm")?;
     let guest_args: Vec<String> = args.collect();
@@ -69,10 +96,25 @@ fn run() -> Result<(), String> {
     let runtime = HttpRuntime::new().map_err(|error| format!("runtime: {error:#}"))?;
     let host = if let Some(credential) = bearer {
         HttpHost::new(policy).with_credentials(Arc::new(credential))
-    } else if let (Some(socket), Some(purpose)) = (geode_socket, geode_purpose) {
+    } else if let (Some(socket), Some(reference), Some(purpose)) =
+        (geode_socket, geode_reference, geode_purpose)
+    {
         #[cfg(unix)]
         {
-            HttpHost::new(policy).with_credentials(Arc::new(GeodeCredentials::new(socket, purpose)))
+            // The guest names a handle. The reference, the purpose and whether the
+            // bytes become a header or a path segment stay host configuration, so
+            // a Spore cannot address a slot by spelling it.
+            let credentials =
+                GeodeCredentials::new(socket, "", purpose.clone(), Duration::from_secs(60))
+                    .with_host_handle(
+                        geode_handle,
+                        HostHandle {
+                            reference,
+                            purpose,
+                            header: Some(geode_header),
+                        },
+                    );
+            HttpHost::new(policy).with_credentials(Arc::new(credentials))
         }
         #[cfg(not(unix))]
         {

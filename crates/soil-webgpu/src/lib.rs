@@ -12,14 +12,15 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
-use ::soil::principal_host::PrincipalHost;
-use ::soil::vfs_host::VfsHost;
 use ::soil::http_host::{
     self, CredentialProvider, DirectTransport, HttpPolicy, HttpTransport, NoCredentials,
     Request as HttpRequest,
 };
+use ::soil::principal_host::PrincipalHost;
 use ::soil::records_host::{self, Namespace, NamespacedRecordsHost};
+use ::soil::unibus::{Bus, MemoryBus};
+use ::soil::vfs_host::VfsHost;
+use anyhow::{Context, Result};
 use wasi_webgpu_wasmtime::reexports::{wgpu_core, wgpu_types};
 use wasi_webgpu_wasmtime::{WasiWebGpuCtx, WasiWebGpuCtxView, WasiWebGpuOptions};
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
@@ -28,6 +29,7 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use crate::soil::present::input;
 use soil_agent_host::{AgentBackend, Answer, Binding, Page};
+use ::soil::dispatch::{Dispatch, DispatchRole};
 
 pub mod fb;
 
@@ -185,11 +187,57 @@ pub enum CatalogError {
     Io,
 }
 
+/// A catalogue call that did not happen, in the two pieces a window shows: what
+/// kind of failure it was, and the host's sentence about it.
+///
+/// The enum is what a program branches on; the sentence is what a person reads.
+/// A host is the only party that knows which import it does not link or which
+/// file a package claims but does not carry, and none of that survives an enum,
+/// so every launch and stop carries both.
+#[derive(Clone, Debug)]
+pub struct CatalogFailure {
+    pub code: CatalogError,
+    pub detail: String,
+}
+
+impl CatalogFailure {
+    pub fn new(code: CatalogError, detail: impl Into<String>) -> Self {
+        Self {
+            code,
+            detail: detail.into(),
+        }
+    }
+}
+
+impl From<CatalogError> for CatalogFailure {
+    fn from(code: CatalogError) -> Self {
+        Self {
+            code,
+            detail: String::new(),
+        }
+    }
+}
+
 /// The host's installed-Spore catalogue. `launch` is host-owned: the guest
 /// asks, the host starts the process or opens the window.
 pub trait CatalogHost: Send {
     fn entries(&mut self) -> Result<Vec<CatalogEntry>, CatalogError>;
-    fn launch(&mut self, id: &str, surface: &str) -> Result<CatalogLaunched, CatalogError>;
+    fn launch(&mut self, id: &str, surface: &str) -> Result<CatalogLaunched, CatalogFailure>;
+    /// The ids this host started and has not seen exit.
+    ///
+    /// The host is what starts and reaps a Spore, so it is the only thing that
+    /// knows this. A default keeps a catalogue that launches nothing honest
+    /// instead of pretending every tile is running.
+    fn running(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+    /// End a Spore this host started. `not-found` when it is not running one.
+    fn stop(&mut self, id: &str) -> Result<(), CatalogFailure> {
+        Err(CatalogFailure::new(
+            CatalogError::NotFound,
+            format!("{id} is not running"),
+        ))
+    }
 }
 
 struct NoCatalog;
@@ -199,8 +247,11 @@ impl CatalogHost for NoCatalog {
         Ok(Vec::new())
     }
 
-    fn launch(&mut self, _id: &str, _surface: &str) -> Result<CatalogLaunched, CatalogError> {
-        Err(CatalogError::NotFound)
+    fn launch(&mut self, id: &str, _surface: &str) -> Result<CatalogLaunched, CatalogFailure> {
+        Err(CatalogFailure::new(
+            CatalogError::NotFound,
+            format!("{id} is not installed"),
+        ))
     }
 }
 
@@ -296,12 +347,15 @@ impl CatalogHost for InstallCatalog {
                 });
             }
         }
-        found.sort_by(|left, right| left.title.to_lowercase().cmp(&right.title.to_lowercase()));
+        found.sort_by_key(|entry| entry.title.to_lowercase());
         Ok(found)
     }
 
-    fn launch(&mut self, _id: &str, _surface: &str) -> Result<CatalogLaunched, CatalogError> {
-        Err(CatalogError::Unsupported)
+    fn launch(&mut self, id: &str, _surface: &str) -> Result<CatalogLaunched, CatalogFailure> {
+        Err(CatalogFailure::new(
+            CatalogError::Unsupported,
+            format!("this host presents frames, so it cannot open {id} in a window"),
+        ))
     }
 }
 
@@ -507,7 +561,58 @@ pub struct WebGpuHost {
     agents: Box<dyn AgentBackend>,
     terminal: Box<dyn TerminalHost>,
     cursor: Option<Box<dyn CursorHost>>,
+    /// Where this host is in the notice stream, and what it does with each one.
+    dispatch: Dispatch,
     clipboard: Option<Box<dyn ClipboardHost>>,
+    /// The Unibus this Spore publishes to and polls. In-process: the notices a
+    /// surface emits are for surfaces on this machine, and a popup is one.
+    bus: Arc<MemoryBus>,
+    /// Frame accounting for `SOIL_WEBGPU_STATS=1`.
+    stats: FrameStats,
+}
+
+/// Frame accounting for `SOIL_WEBGPU_STATS=1`: how often the Spore presents, and
+/// how long the host spends lifting each frame off the GPU.
+///
+/// That number is what makes the rest of the pipeline legible: at 1000x700 the
+/// host readback is 5-12 ms and the blit 16-20 ms of a ~128 ms frame, so ~100 ms
+/// is the Spore's own round trip (screenshot to CPU, upload back to a texture),
+/// not the window.
+struct FrameStats {
+    frames: u64,
+    readback_ms: f64,
+    since: Instant,
+}
+
+impl FrameStats {
+    fn new() -> Self {
+        Self {
+            frames: 0,
+            readback_ms: 0.0,
+            since: Instant::now(),
+        }
+    }
+
+    /// Records one presented frame, and returns the line to print once the window
+    /// is at least a second old — starting a new window. `None` before that, so a
+    /// caller prints at most once a second no matter how fast frames arrive.
+    fn record(&mut self, readback: Duration, now: Instant) -> Option<String> {
+        self.frames += 1;
+        self.readback_ms += readback.as_secs_f64() * 1000.0;
+        let window = now.saturating_duration_since(self.since);
+        if window < Duration::from_secs(1) {
+            return None;
+        }
+        let line = format!(
+            "webgpu: {:.1} fps presented, {:.1} ms host readback",
+            self.frames as f64 / window.as_secs_f64(),
+            self.readback_ms / self.frames as f64,
+        );
+        self.frames = 0;
+        self.readback_ms = 0.0;
+        self.since = now;
+        Some(line)
+    }
 }
 
 /// Where a local `soil-store serve` listens. A desktop shell that runs the
@@ -577,7 +682,11 @@ impl RecordsAccess {
     ) -> Self {
         Self {
             root: root.into(),
-            namespaces: vec![Namespace::write(name.into(), book.into(), collection.into())],
+            namespaces: vec![Namespace::write(
+                name.into(),
+                book.into(),
+                collection.into(),
+            )],
         }
     }
 
@@ -623,6 +732,15 @@ pub struct HostSetup {
     /// attest who is acting must not let a guest guess.
     pub principal: Option<PrincipalHost>,
     pub agents: Box<dyn AgentBackend>,
+    /// What this host does with the bus. One surface in a process owns dispatch;
+    /// the others watch, so a task read twice does not become two sessions. The
+    /// default owns dispatch with no creator, so a host that cannot start
+    /// sessions says so on the bus instead of dropping the task.
+    pub dispatch: DispatchRole,
+    /// The Unibus this Spore publishes to and polls. In-process by default: the
+    /// notices a wall emits are for surfaces on this machine, and a popup is one
+    /// of them.
+    pub bus: Arc<dyn Bus>,
     /// Shorthand for a read-only `soil:http` grant for one origin, folded into
     /// `http` when that is unset. The storefront browser names its own origin
     /// this way.
@@ -632,6 +750,15 @@ pub struct HostSetup {
     pub cursor: Option<Box<dyn CursorHost>>,
     /// `None` on hosts without a pasteboard.
     pub clipboard: Option<Box<dyn ClipboardHost>>,
+}
+
+/// The bus a surface publishes its notices to.
+///
+/// One per host process, shared by every surface in it. A caller that needs to
+/// inspect or seed the log keeps the concrete [`MemoryBus`]; the host only needs
+/// the trait.
+pub fn in_process_bus() -> Arc<MemoryBus> {
+    Arc::new(MemoryBus::default())
 }
 
 impl HostSetup {
@@ -647,6 +774,8 @@ impl HostSetup {
             vfs: None,
             principal: None,
             agents: Box::new(NoAgents),
+            dispatch: DispatchRole::default(),
+            bus: in_process_bus(),
             store_origin: None,
             terminal: Box::new(NoTerminal),
             cursor: None,
@@ -676,7 +805,10 @@ impl WebGpuHost {
             instance: Arc::new(instance),
             table: ResourceTable::new(),
             options: WasiWebGpuOptions::default(),
-            wasi: WasiCtxBuilder::new().build(),
+            // A Spore's stderr is the only place its own error text can go: a
+            // trap carries a backtrace, not the message. Inherit it so a failing
+            // guest says why.
+            wasi: WasiCtxBuilder::new().inherit_stderr().build(),
             presenter: setup.presenter,
             input: setup.input,
             interactive: setup.interactive,
@@ -695,9 +827,15 @@ impl WebGpuHost {
                 .transpose()?,
             principal: setup.principal,
             agents: setup.agents,
+            dispatch: match setup.dispatch {
+                DispatchRole::Own(sessions) => Dispatch::new(setup.bus.clone(), sessions),
+                DispatchRole::Watch => Dispatch::watcher(setup.bus.clone()),
+            },
             terminal: setup.terminal,
             cursor: setup.cursor,
             clipboard: setup.clipboard,
+            bus: Arc::new(MemoryBus::default()),
+            stats: FrameStats::new(),
         })
     }
 }
@@ -799,7 +937,7 @@ impl soil::present::surface::Host for WebGpuHost {
                 frame.pixels.len()
             ));
         }
-        if frame.pixels.chunks_exact(4).any(|pixel| pixel[3] != 0xFF) {
+        if frame.pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 0xFF) {
             return Err("every pixel must be opaque".into());
         }
         self.presenter
@@ -815,8 +953,14 @@ impl soil::present::surface::Host for WebGpuHost {
         &mut self,
         texture: wasmtime::component::Resource<wasi_webgpu_wasmtime::Texture>,
     ) -> std::result::Result<(), String> {
+        let started = Instant::now();
         let image = wasi_webgpu_wasmtime::read_texture_rgba(&self.instance, &self.table, texture)
             .map_err(|e| e.to_string())?;
+        if std::env::var_os("SOIL_WEBGPU_STATS").is_some()
+            && let Some(line) = self.stats.record(started.elapsed(), Instant::now())
+        {
+            eprintln!("{line}");
+        }
         let frame = CanvasFrame {
             width: image.width,
             height: image.height,
@@ -826,14 +970,68 @@ impl soil::present::surface::Host for WebGpuHost {
     }
 }
 
+impl ::soil::unibus::bus::Host for WebGpuHost {
+    fn poll(
+        &mut self,
+        kinds: Vec<String>,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> std::result::Result<::soil::unibus::bus::Page, ::soil::unibus::bus::Error> {
+        let page = self
+            .bus
+            .poll(&kinds, cursor.as_deref(), limit)
+            .map_err(bus_error)?;
+        Ok(::soil::unibus::bus::Page {
+            frames: page
+                .frames
+                .into_iter()
+                .map(|frame| ::soil::unibus::bus::Frame {
+                    kind: frame.kind,
+                    producer: frame.producer,
+                    issued_at_ms: frame.issued_at_ms,
+                    body: frame.body,
+                })
+                .collect(),
+            next: page.next,
+        })
+    }
+
+    fn publish(
+        &mut self,
+        kind: String,
+        body: Vec<u8>,
+        destination: Option<String>,
+        ttl_ms: u64,
+    ) -> std::result::Result<::soil::unibus::bus::Receipt, ::soil::unibus::bus::Error> {
+        self.bus
+            .publish(&kind, &body, destination.as_deref(), ttl_ms)
+            .map(|receipt| ::soil::unibus::bus::Receipt {
+                request_id: receipt.request_id,
+            })
+            .map_err(bus_error)
+    }
+}
+
+/// The bus reports failure in its own vocabulary; the guest sees the WIT one.
+fn bus_error(error: ::soil::unibus::BusError) -> ::soil::unibus::bus::Error {
+    use ::soil::unibus::BusError as Bus;
+    use ::soil::unibus::bus::Error as Wire;
+    match error {
+        Bus::Denied => Wire::Denied,
+        Bus::Invalid => Wire::Invalid,
+        Bus::OverBudget => Wire::OverBudget,
+        Bus::Stale => Wire::Stale,
+        Bus::Unavailable => Wire::Unavailable,
+    }
+}
+
 impl ::soil::vfs_host::vfs::Host for WebGpuHost {
     fn ls(
         &mut self,
         parent: String,
         offset: u64,
         limit: u32,
-    ) -> std::result::Result<::soil::vfs_host::vfs::Page, ::soil::vfs_host::vfs::Error>
-    {
+    ) -> std::result::Result<::soil::vfs_host::vfs::Page, ::soil::vfs_host::vfs::Error> {
         self.vfs
             .as_mut()
             .ok_or(::soil::vfs_host::vfs::Error::Denied)?
@@ -843,8 +1041,7 @@ impl ::soil::vfs_host::vfs::Host for WebGpuHost {
     fn stat(
         &mut self,
         path: String,
-    ) -> std::result::Result<::soil::vfs_host::vfs::Entry, ::soil::vfs_host::vfs::Error>
-    {
+    ) -> std::result::Result<::soil::vfs_host::vfs::Entry, ::soil::vfs_host::vfs::Error> {
         self.vfs
             .as_mut()
             .ok_or(::soil::vfs_host::vfs::Error::Denied)?
@@ -856,8 +1053,7 @@ impl ::soil::vfs_host::vfs::Host for WebGpuHost {
         path: String,
         offset: u64,
         length: u32,
-    ) -> std::result::Result<::soil::vfs_host::vfs::Chunk, ::soil::vfs_host::vfs::Error>
-    {
+    ) -> std::result::Result<::soil::vfs_host::vfs::Chunk, ::soil::vfs_host::vfs::Error> {
         self.vfs
             .as_mut()
             .ok_or(::soil::vfs_host::vfs::Error::Denied)?
@@ -1073,13 +1269,31 @@ impl soil::spore::catalog::Host for WebGpuHost {
         &mut self,
         id: String,
         surface: String,
-    ) -> std::result::Result<soil::spore::catalog::Launched, soil::spore::catalog::Error> {
-        let launched = self.catalog.launch(&id, &surface).map_err(catalog_error)?;
+    ) -> std::result::Result<soil::spore::catalog::Launched, soil::spore::catalog::Failure> {
+        let launched = self
+            .catalog
+            .launch(&id, &surface)
+            .map_err(catalog_failure)?;
         Ok(soil::spore::catalog::Launched {
             id: launched.id,
             surface: launched.surface,
             target: launched.target,
         })
+    }
+
+    fn running(&mut self) -> Vec<String> {
+        self.catalog.running()
+    }
+
+    fn stop(&mut self, id: String) -> std::result::Result<(), soil::spore::catalog::Failure> {
+        self.catalog.stop(&id).map_err(catalog_failure)
+    }
+}
+
+fn catalog_failure(failure: CatalogFailure) -> soil::spore::catalog::Failure {
+    soil::spore::catalog::Failure {
+        code: catalog_error(failure.code),
+        detail: failure.detail,
     }
 }
 
@@ -1279,6 +1493,9 @@ impl soil::agents::observe::Host for WebGpuHost {
     fn agents(
         &mut self,
     ) -> std::result::Result<Vec<soil::agents::types::Agent>, soil::agents::types::Error> {
+        // Asking for the roster is the tick: one bounded bus read, then the
+        // answer. Nothing polls a harness in the background.
+        self.dispatch.pump(&mut *self.agents);
         Ok(self.agents.list().into_iter().map(agent_record).collect())
     }
 
@@ -1286,6 +1503,7 @@ impl soil::agents::observe::Host for WebGpuHost {
         &mut self,
         id: String,
     ) -> std::result::Result<soil::agents::types::Agent, soil::agents::types::Error> {
+        self.dispatch.pump(&mut *self.agents);
         self.agents
             .get(&id)
             .map(agent_record)
@@ -1308,6 +1526,7 @@ impl soil::agents::observe::Host for WebGpuHost {
         before: Option<u64>,
         limit: u32,
     ) -> std::result::Result<soil::agents::observe::Page, soil::agents::types::Error> {
+        self.dispatch.pump(&mut *self.agents);
         self.agents
             .transcript(&id, before, limit)
             .map(agent_page)
@@ -1333,6 +1552,7 @@ impl soil::agents::observe::HostSubscription for WebGpuHost {
         timeout_ms: u32,
     ) -> std::result::Result<Option<soil::agents::observe::Change>, soil::agents::types::Error>
     {
+        self.dispatch.pump(&mut *self.agents);
         // A handle the guest already dropped is `stale`, not an empty poll.
         self.table
             .get(&subscription)
@@ -1566,6 +1786,7 @@ impl WebGpuRuntime {
         .context("link soil:vfs")?;
         ::soil::principal_host::add_to_linker::<WebGpuHost>(&mut linker)
             .context("link soil:principal")?;
+        ::soil::unibus::add_to_linker::<WebGpuHost>(&mut linker).context("link soil:unibus")?;
         Ok(Self {
             engine,
             linker,
@@ -1841,6 +2062,55 @@ mod tests {
         assert!(WEBGPU_WIT.starts_with("package wasi:webgpu@0.3.0-rc.2;"));
         assert!(RUNNER_WIT.contains("include wasi:webgpu/imports@0.3.0-rc.2;"));
         assert!(RUNNER_WIT.contains("export run: async func() -> u32;"));
+    }
+
+    fn stats_since(start: std::time::Instant) -> super::FrameStats {
+        super::FrameStats {
+            frames: 0,
+            readback_ms: 0.0,
+            since: start,
+        }
+    }
+
+    #[test]
+    fn the_stats_line_closes_a_window_and_starts_the_next() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let mut stats = stats_since(start);
+        // Nine frames of 10 ms inside the first second: still nothing to print.
+        for step in 1..=9 {
+            let at = start + Duration::from_millis(100 * step);
+            assert_eq!(stats.record(Duration::from_millis(10), at), None);
+        }
+        // The tenth crosses one second and reports the window just closed.
+        let at = start + Duration::from_secs(1);
+        assert_eq!(
+            stats.record(Duration::from_millis(10), at),
+            Some("webgpu: 10.0 fps presented, 10.0 ms host readback".to_string())
+        );
+        // And the next window counts only frames it saw.
+        for step in 1..=4 {
+            let at = start + Duration::from_secs(1) + Duration::from_millis(200 * step);
+            assert_eq!(stats.record(Duration::from_millis(20), at), None);
+        }
+        let at = start + Duration::from_secs(2);
+        assert_eq!(
+            stats.record(Duration::from_millis(20), at),
+            Some("webgpu: 5.0 fps presented, 20.0 ms host readback".to_string())
+        );
+    }
+
+    #[test]
+    fn a_slow_spore_reports_the_rate_it_actually_presented() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let mut stats = stats_since(start);
+        // One frame in 1.2 s is 0.8 fps, not a rounded-up 1.0.
+        let at = start + Duration::from_millis(1_200);
+        assert_eq!(
+            stats.record(Duration::from_millis(250), at),
+            Some("webgpu: 0.8 fps presented, 250.0 ms host readback".to_string())
+        );
     }
 
     #[test]

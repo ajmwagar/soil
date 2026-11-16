@@ -20,14 +20,15 @@ use url::Url;
 mod terminal;
 
 #[cfg(unix)]
-use ::soil::http_host::GeodeCredentials;
+use ::soil::creds::{GeodeCredentials, HostHandle};
 use ::soil::http_host::{
     DirectTransport, HttpPolicy, HttpTransport, TransportError, TransportRequest, TransportResponse,
 };
 use soil_webgpu::{
-    CanvasFrame, CanvasGpuPresenter, CatalogEntry, CatalogError, CatalogHost, CatalogLaunched,
-    CatalogSurface, CatalogSurfaceKind, ClipboardHost, CursorHost, CursorStyle, HostSetup,
-    HttpAccess, InputEvent, InputKey, NoAgents, PointerButton, RecordsAccess, WebGpuRuntime,
+    CanvasFrame, CanvasGpuPresenter, CatalogEntry, CatalogError, CatalogFailure, CatalogHost,
+    CatalogLaunched, CatalogSurface, CatalogSurfaceKind, ClipboardHost, CursorHost, CursorStyle,
+    HostSetup, HttpAccess, InputEvent, InputKey, NoAgents, PointerButton, RecordsAccess,
+    WebGpuRuntime,
 };
 use terminal::Terminals;
 use winit::{
@@ -44,6 +45,18 @@ type SoftSurface = softbuffer::Surface<Arc<Window>, Arc<Window>>;
 
 const LOGICAL_SIZE: (f64, f64) = (1000.0, 700.0);
 
+/// Which agent cast this host grants the Spore.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Agents {
+    /// No adapter attached. Every read fails, which is the honest answer for a
+    /// host that has none — and what CI runs.
+    #[default]
+    None,
+    /// The built-in fixture cast. It is the only cast that raises prompts, so it
+    /// is what a UI pass, a screenshot, or `--capture` runs against.
+    Demo,
+}
+
 /// Host grants that follow a Spore when the launcher opens it.
 ///
 /// The launcher is the thing the user configured, so passing its grants to a
@@ -54,6 +67,10 @@ struct LaunchConfig {
     origins: Vec<String>,
     geode_socket: Option<PathBuf>,
     geode_purpose: Option<String>,
+    /// Absolute `geode://` reference the granted handle leases.
+    geode_reference: Option<String>,
+    /// Which agent cast follows the Spore into the window.
+    agents: Agents,
     hue_bridge: Option<Url>,
     records_root: Option<PathBuf>,
     /// One workspace the Spore may list and read through `soil:vfs`.
@@ -73,33 +90,54 @@ struct BookGrant {
 }
 
 impl LaunchConfig {
-    fn append_args(&self, command: &mut std::process::Command) {
+    /// The runner flags that carry this window's grants to a child.
+    ///
+    /// Only what `soil spore run` accepts: a flag the runner rejects is a child
+    /// that does not start, and one it ignores is a grant the user believes they
+    /// gave.
+    fn runner_args(&self) -> Vec<std::ffi::OsString> {
+        let mut args: Vec<std::ffi::OsString> = Vec::new();
         for origin in &self.origins {
-            command.arg("--allow-origin").arg(origin);
+            args.push("--allow-origin".into());
+            args.push(origin.into());
         }
-        if let (Some(socket), Some(purpose)) = (&self.geode_socket, &self.geode_purpose) {
-            command
-                .arg("--geode-socket")
-                .arg(socket)
-                .arg("--geode-purpose")
-                .arg(purpose);
+        if let (Some(socket), Some(purpose), Some(reference)) =
+            (&self.geode_socket, &self.geode_purpose, &self.geode_reference)
+        {
+            args.push("--geode-socket".into());
+            args.push(socket.into());
+            args.push("--geode-purpose".into());
+            args.push(purpose.into());
+            args.push("--geode-reference".into());
+            args.push(reference.into());
         }
-        if let Some(bridge) = &self.hue_bridge {
-            command.arg("--hue-bridge").arg(bridge.as_str());
-        }
-        if let Some(root) = &self.records_root {
-            command.arg("--records-root").arg(root);
+        if self.agents == Agents::Demo {
+            args.push("--agents".into());
+            args.push("demo".into());
         }
         if let Some(root) = &self.vfs_root {
-            command.arg("--vfs-root").arg(root);
+            args.push("--vfs-root".into());
+            args.push(root.into());
+        }
+        if let Some(bridge) = &self.hue_bridge {
+            args.push("--hue-bridge".into());
+            args.push(bridge.as_str().into());
+        }
+        if let Some(root) = &self.records_root {
+            args.push("--records".into());
+            args.push(root.into());
         }
         if let Some(grant) = &self.records_book {
-            command.arg("--records-book").arg(&grant.book);
-            command.arg("--records-collection").arg(&grant.collection);
+            args.push("--book".into());
+            args.push(grant.book.as_str().into());
+            args.push("--collection".into());
+            args.push(grant.collection.as_str().into());
         }
         if let Some(actor) = &self.actor {
-            command.arg("--actor").arg(actor);
+            args.push("--actor".into());
+            args.push(actor.into());
         }
+        args
     }
 }
 
@@ -147,9 +185,25 @@ struct Installed {
     manifest: Manifest,
 }
 
+/// One Spore this window started, kept by the thread that started it.
+///
+/// The host spawns and reaps on one thread so the answer to "is this still
+/// running?" cannot race the process itself: nothing is detached to wait on a
+/// child that the catalogue has already forgotten.
+struct Running {
+    child: std::process::Child,
+}
+
 struct SporeCatalog {
     installed: Vec<Installed>,
     launch: LaunchConfig,
+    /// The binary that opens a package. Resolved once, when the catalogue is
+    /// built: the answer cannot change while a window is open, and a test needs
+    /// to name a stand-in for it.
+    runner: Option<PathBuf>,
+    /// What this window started, by Spore id. Empty is the ordinary state: a
+    /// launcher is usually looking at a machine where nothing is up yet.
+    running: std::collections::BTreeMap<String, Running>,
 }
 
 impl SporeCatalog {
@@ -191,7 +245,12 @@ impl SporeCatalog {
             }
         }
         installed.sort_by(|left, right| left.manifest.spore.name.cmp(&right.manifest.spore.name));
-        Ok(Self { installed, launch })
+        Ok(Self {
+            installed,
+            launch,
+            runner: runner_binary(),
+            running: std::collections::BTreeMap::new(),
+        })
     }
 }
 
@@ -262,84 +321,290 @@ impl CatalogHost for SporeCatalog {
             .collect())
     }
 
-    fn launch(&mut self, id: &str, surface: &str) -> Result<CatalogLaunched, CatalogError> {
+    fn launch(&mut self, id: &str, surface: &str) -> Result<CatalogLaunched, CatalogFailure> {
+        // A package that is already up is brought forward, not started twice:
+        // one tile, one window. There is no portable "raise this pid" here, so
+        // the honest answer is that it is already open.
+        if self.running.contains_key(id) {
+            return Ok(CatalogLaunched {
+                id: id.to_owned(),
+                surface: surface.to_owned(),
+                target: format!("{id} is already open"),
+            });
+        }
         let installed = self
             .installed
             .iter()
             .find(|installed| installed.manifest.spore.id == id)
-            .ok_or(CatalogError::NotFound)?;
-        let module = installed
-            .manifest
-            .module
-            .as_ref()
-            .ok_or(CatalogError::Unsupported)?;
-        let path = installed.root.join(&module.path);
-        // Spawning a path that is not there would "succeed" and put the failure
-        // in a child's stderr, where nobody is looking. Refuse it here so the
-        // launcher can say which app did not open.
-        if !path.is_file() {
-            eprintln!(
-                "canvas-winit: {} declares {} but the package does not carry it",
-                installed.manifest.spore.id,
-                path.display()
-            );
-            return Err(CatalogError::NotFound);
-        }
-        let executable = std::env::current_exe().map_err(|_| CatalogError::Io)?;
+            .ok_or_else(|| {
+                CatalogFailure::new(CatalogError::NotFound, format!("{id} is not installed"))
+            })?;
+        // The manifest is copied out before anything starts: the start mutates
+        // this catalogue's own table of running children, and a launch that
+        // borrows the list it is about to grow is a borrow the compiler is right
+        // to refuse.
+        let manifest = installed.manifest.clone();
+        let root = installed.root.clone();
+        let title = display_title(&manifest);
+        // What this host can present, in the catalogue's own vocabulary: a
+        // window is the `canvas` surface, and there is no browser view. The
+        // decision is `Manifest::resolve_launch`'s, so the launcher and any
+        // other host cannot disagree about which surface a name means.
+        let target = manifest
+            .resolve_launch(surface, &[soil_spore::SurfaceKind::Canvas])
+            .map_err(|error| {
+                CatalogFailure::new(
+                    CatalogError::Unsupported,
+                    format!("{title} cannot open here: {error}"),
+                )
+            })?;
+        let requested = target.surface.to_owned();
         // A package that ships a native host for this surface is launched in
-        // that host, not in the window presenter. The presenter owns pixels
-        // and input; the host owns the capabilities the Spore asked for.
-        let native = (surface == "native")
-            .then(|| installed.manifest.launch.native.as_deref())
+        // that host, not in the window presenter. The presenter owns pixels and
+        // input; the host owns the capabilities the Spore asked for.
+        let native = target
+            .kind
+            .is_none()
+            .then(|| manifest.launch.native.clone())
             .flatten();
-        let mut command = match native {
-            Some(host) => native_command(host, &installed.root, &path, id, surface)?,
-            None => launch_command(&executable, &path, &self.launch),
+        if let Some(host) = native {
+            return self.launch_native(&root, &manifest, &host, &requested);
+        }
+        self.launch_runner(root, manifest, &requested)
+    }
+
+    fn running(&mut self) -> Vec<String> {
+        // Reap here, on the thread that spawned: a child that exited since the
+        // last frame is no longer running, and saying so is the whole point of
+        // the dot.
+        self.running
+            .retain(|_, running| matches!(running.child.try_wait(), Ok(None) | Err(_)));
+        self.running.keys().cloned().collect()
+    }
+
+    fn stop(&mut self, id: &str) -> Result<(), CatalogFailure> {
+        let Some(mut running) = self.running.remove(id) else {
+            return Err(CatalogFailure::new(
+                CatalogError::NotFound,
+                format!("{id} is not running"),
+            ));
         };
+        running.child.kill().map_err(|error| {
+            CatalogFailure::new(CatalogError::Io, format!("stop {id}: {error}"))
+        })?;
+        let _ = running.child.wait();
+        Ok(())
+    }
+}
+
+impl SporeCatalog {
+    /// A package's own display name, which is what a dialog should say.
+    fn title_of(manifest: &Manifest) -> String {
+        display_title(manifest)
+    }
+
+    /// Start the package's native host for a surface this window cannot present.
+    ///
+    /// The host contract is environment: the module, the package and the
+    /// surface. A host that also knows a private variable (the terminal's window
+    /// switch, for example) can read it; the presenter stays unaware.
+    fn launch_native(
+        &mut self,
+        root: &std::path::Path,
+        manifest: &Manifest,
+        host: &str,
+        surface: &str,
+    ) -> Result<CatalogLaunched, CatalogFailure> {
+        let module = manifest.module.as_ref().ok_or_else(|| {
+            CatalogFailure::new(
+                CatalogError::Unsupported,
+                format!(
+                    "{} declares a native host but no module to hand it",
+                    Self::title_of(manifest)
+                ),
+            )
+        })?;
+        let path = root.join(&module.path);
+        if !path.is_file() {
+            return Err(CatalogFailure::new(
+                CatalogError::NotFound,
+                format!(
+                    "{} declares {} but the package does not carry it",
+                    manifest.spore.id,
+                    path.display()
+                ),
+            ));
+        }
+        let mut command =
+            native_command(host, root, &path, &manifest.spore.id, surface).map_err(|_| {
+                CatalogFailure::new(
+                    CatalogError::Io,
+                    format!(
+                        "{} needs the {host} host, and it is not installed",
+                        Self::title_of(manifest)
+                    ),
+                )
+            })?;
+        let mut child = command.spawn().map_err(|error| {
+            CatalogFailure::new(CatalogError::Io, format!("start {host}: {error}"))
+        })?;
+        let _ = child.try_wait();
+        self.running
+            .insert(manifest.spore.id.clone(), Running { child });
+        Ok(CatalogLaunched {
+            id: manifest.spore.id.clone(),
+            surface: surface.to_owned(),
+            target: format!("native {host} {}", path.display()),
+        })
+    }
+
+    /// Start a package through the one runner.
+    ///
+    /// A Spore is a package, not a module path: `soil spore run` resolves the
+    /// declared surface, the module and the grants. The launcher therefore keeps
+    /// no private copy of those rules — it names a package and a surface, and
+    /// the runner decides whether this machine can show it.
+    fn launch_runner(
+        &mut self,
+        root: PathBuf,
+        manifest: Manifest,
+        surface: &str,
+    ) -> Result<CatalogLaunched, CatalogFailure> {
+        let id = manifest.spore.id.clone();
+        let title = Self::title_of(&manifest);
+        let runner = self.runner.clone().ok_or_else(|| {
+            CatalogFailure::new(
+                CatalogError::Unsupported,
+                format!("{title} needs the soil runner, and this machine has none"),
+            )
+        })?;
         // A Spore that imports `soil:vfs` cannot start without a root: the host
         // links no such interface, so inheriting "nothing" is not a neutral
         // default, it is a child that dies at instantiation. Hand down the
         // launcher's own root when it has one, and otherwise the first desktop
-        // this machine declares — the same workspace `mush` would open.
-        if self.launch.vfs_root.is_none() {
+        // this machine declares — the same workspace `mush` would open. A Spore
+        // that does not import it is left alone: refusing it a window because
+        // this machine names no desktop would be a failure it cannot cause.
+        let launch = if self.launch.vfs_root.is_none()
+            && manifest
+                .grants
+                .keys()
+                .any(|grant| grant.split('@').next() == Some("soil:vfs"))
+        {
             match default_workspace() {
-                Some(root) => {
-                    command.arg("--vfs-root").arg(&root);
-                }
+                Some(workspace) => LaunchConfig {
+                    vfs_root: Some(workspace),
+                    ..self.launch.clone()
+                },
                 None => {
-                    eprintln!(
-                        "canvas-winit: {id} launches with no workspace: pass --vfs-root, or \
-                         declare a desktop in ~/.config/fungos/desktops"
-                    );
-                    return Err(CatalogError::Unsupported);
+                    return Err(CatalogFailure::new(
+                        CatalogError::Unsupported,
+                        format!(
+                            "{title} imports soil:vfs and this machine names no 
+\
+                             workspace: pass --vfs-root, or declare a desktop in \
+                             ~/.config/fungos/desktops"
+                        ),
+                    ));
                 }
             }
-        }
-        let log = log_launch_output(&mut command, &component_cache(&path), id);
-        let mut child = command.spawn().map_err(|_| CatalogError::Io)?;
-        // A Spore that cannot start — a module built against an older contract,
-        // a host that is not there, a trap on the way up — dies in under a
-        // second, and until now nobody heard it: the guest had its answer, and
-        // the child's reason went to a null stderr. A window that never appears
-        // and an app that opened were the same thing from here.
-        watch_startup(&mut child, log.as_deref(), id)?;
-        // Reap the child without blocking the launcher's event loop. Launch
-        // Services hands the window to another process, so there is often
-        // nothing to wait for; `open` exits as soon as the app is running.
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
+        } else {
+            self.launch.clone()
+        };
+        // A bundled Spore opens through Launch Services: its own activation, its
+        // own Dock tile, its own lifetime. A launcher started from a shell has no
+        // bundle to hand over, so it starts the runner itself.
+        let mut command = match bundle_root(&runner) {
+            Some(bundle) => {
+                let target = spore_bundle(bundle, &root).ok_or_else(|| {
+                    CatalogFailure::new(
+                        CatalogError::Io,
+                        format!("could not build the app bundle for {title}"),
+                    )
+                })?;
+                let mut command = std::process::Command::new("/usr/bin/open");
+                command
+                    .arg("-n")
+                    .arg(target)
+                    .arg("--args")
+                    .args(runner_args(&root, surface, &launch));
+                command
+            }
+            None => {
+                let mut command = std::process::Command::new(&runner);
+                command
+                    .args(runner_args(&root, surface, &launch))
+                    .stdin(std::process::Stdio::null());
+                command
+            }
+        };
+        // A Spore that cannot start dies while it instantiates — before it has a
+        // window to say why. Give it long enough to fail and quote what it said,
+        // instead of reporting an open that never happened.
+        // One log per Spore, in the same cache a compiled component lives in:
+        // a package carries a module or it does not, and either way the launch
+        // recorded itself somewhere a person can find it.
+        let cache = component_cache(
+            &manifest
+                .module
+                .as_ref()
+                .map(|module| root.join(&module.path))
+                .unwrap_or_else(|| root.clone()),
+        );
+        let mut child = spawn_checked(&mut command, &cache, &id, &title)?;
+        let _ = child.try_wait();
+        self.running.insert(id.clone(), Running { child });
         Ok(CatalogLaunched {
-            id: id.to_owned(),
+            id,
             surface: surface.to_owned(),
-            target: match native {
-                Some(host) => format!("native {host} {}", path.display()),
-                None => format!("fungOS {}", path.display()),
-            },
+            target: format!("soil {}", root.display()),
         })
     }
 }
 
+/// What the runner is called in this install: the app's own binary, or `soil`
+/// from `PATH` when the launcher runs somewhere else.
+///
+/// The binary that is running a window *is* the runner — `canvas-winit` is a
+/// surface of `soil`, not a program of its own — so the current executable is
+/// the first answer rather than a guess.
+fn runner_binary() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("SOIL_BIN").map(PathBuf::from) {
+        return explicit.is_file().then_some(explicit);
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        return Some(executable);
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|directory| directory.join("soil"))
+        .find(|candidate| candidate.is_file())
+}
+
+/// The command line that runs one package on one surface.
+fn runner_args(
+    package: &std::path::Path,
+    surface: &str,
+    launch: &LaunchConfig,
+) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "spore".into(),
+        "run".into(),
+        package.as_os_str().to_owned(),
+        "--surface".into(),
+        surface.into(),
+    ];
+    args.extend(launch.runner_args());
+    args
+}
+
+/// Spawn a child and give it long enough to fail.
+///
+/// The first second of a window is the honest boundary: a component that cannot
+/// instantiate exits inside it, and a component that can has a window by then.
+/// Its stderr is the only record of why, so a failure is quoted rather than
+/// swallowed — "expected record of 9 fields" in a dialog is better than a tile
+/// that appears to open and does nothing.
 /// How long a launch is watched before the app is called started.
 ///
 /// Long enough for a child to die of its own reasons, short enough that the
@@ -348,33 +613,53 @@ impl CatalogHost for SporeCatalog {
 const LAUNCH_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 const LAUNCH_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
-/// Wait out a launch long enough to learn that it failed.
+/// Spawn a child and wait out the moment in which it can fail.
 ///
-/// Returns `Ok` when the child is still running at the end of the grace, which
-/// is what a window that opened looks like, and when it exited **zero** — that
-/// is Launch Services handing the window to another process and returning.
-fn watch_startup(
-    child: &mut std::process::Child,
-    log: Option<&std::path::Path>,
+/// A Spore that cannot start — a module built against an older contract, a host
+/// that is not there, a trap on the way up — dies in under a second, before it
+/// has a window to say why. Its output goes to a log this machine can read, and
+/// the tail of that log is the sentence the modal shows.
+///
+/// An exit of **zero** is not a failure: that is Launch Services handing the
+/// window to another process and returning.
+fn spawn_checked(
+    command: &mut std::process::Command,
+    cache: &std::path::Path,
     id: &str,
-) -> Result<(), CatalogError> {
+    title: &str,
+) -> Result<std::process::Child, CatalogFailure> {
+    let log = log_launch_output(command, cache, id);
+    let mut child = command.spawn().map_err(|error| {
+        CatalogFailure::new(CatalogError::Io, format!("start {title}: {error}"))
+    })?;
     let started = std::time::Instant::now();
     while started.elapsed() < LAUNCH_GRACE {
         match child.try_wait() {
-            Ok(Some(status)) if !status.success() => {
-                let reason = log.map(launch_failure).unwrap_or_default();
-                eprintln!(
-                    "canvas-winit: {id} exited {} before a window{reason}",
-                    status.code().unwrap_or(-1)
-                );
-                return Err(CatalogError::Io);
+            Ok(Some(status)) if status.success() => return Ok(child),
+            Ok(Some(status)) => {
+                let detail = log
+                    .as_deref()
+                    .and_then(failure_detail)
+                    .map(|said| format!("{title} {said}"))
+                    .unwrap_or_else(|| {
+                        format!(
+                            "{title} exited {} before it opened a window",
+                            status.code().unwrap_or(-1)
+                        )
+                    });
+                eprintln!("canvas-winit: {} exited {status}", id);
+                return Err(CatalogFailure::new(CatalogError::Unsupported, detail));
             }
-            Ok(Some(_)) => return Ok(()),
             Ok(None) => std::thread::sleep(LAUNCH_POLL),
-            Err(_) => return Ok(()),
+            Err(error) => {
+                return Err(CatalogFailure::new(
+                    CatalogError::Io,
+                    format!("wait for {title}: {error}"),
+                ));
+            }
         }
     }
-    Ok(())
+    Ok(child)
 }
 
 /// Send a child's output to a file this machine can read afterwards.
@@ -410,22 +695,36 @@ fn log_launch_output(
     Some(path)
 }
 
-/// The last few lines a child wrote, as a sentence to put after an exit code.
-fn launch_failure(log: &std::path::Path) -> String {
-    const TAIL: usize = 12;
-    let Ok(text) = std::fs::read_to_string(log) else {
-        return String::new();
-    };
-    let lines: Vec<&str> = text
+/// The sentence a child died with.
+///
+/// The last non-empty line is the closest thing to a cause, and a backtrace is
+/// not a dialog. An instantiation failure is rewritten into the words a person
+/// needs — which import is missing — because wasmtime's own line names the
+/// linker, not the app, and the guest that asked has no way to know either.
+fn failure_detail(log: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(log).ok()?;
+    let line = text
         .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect();
-    let tail = lines[lines.len().saturating_sub(TAIL)..].join("\n  ");
-    if tail.is_empty() {
-        format!("; nothing was written to {}", log.display())
-    } else {
-        format!(" ({}):\n  {tail}", log.display())
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .next_back()?;
+    if let Some((instance, version)) = missing_instance(line) {
+        return Some(format!(
+            "needs {instance}@{version}, which this host does not provide"
+        ));
     }
+    let line = line
+        .trim_start_matches("canvas-winit: ")
+        .trim_start_matches("soil: ")
+        .trim_start_matches("Error: ");
+    let mut detail: String = line.chars().take(400).collect();
+    if detail.is_empty() {
+        return None;
+    }
+    if !detail.ends_with('.') {
+        detail.push('.');
+    }
+    Some(detail)
 }
 
 /// The workspace a launched Spore gets when the launcher was not given one.
@@ -467,39 +766,28 @@ fn default_workspace() -> Option<PathBuf> {
     None
 }
 
-/// How one Spore opens another.
+/// The `name@version` in wasmtime's "imports instance `…`" failure.
 ///
-/// A bundled app is started through Launch Services: it gets its own activation
-/// and its own session, so its window becomes key and its clicks and keys reach
-/// it. A binary run from a shell has no bundle to launch, so it re-executes
-/// itself — with a null stdin, because a Spore that inherits its parent's
-/// terminal inherits the wrong tty along with it. Output is pointed at a file by
-/// [`log_launch_output`] once the command exists.
-fn launch_command(
-    executable: &std::path::Path,
-    module: &std::path::Path,
-    launch: &LaunchConfig,
-) -> std::process::Command {
-    if let Some(bundle) = bundle_root(executable) {
-        // Every Spore opens as its own app: its own bundle identity, its own
-        // icon in the Dock, and therefore its own tile to come back to. Sharing
-        // the launcher's identity would give every window one Dock entry.
-        let mut command = std::process::Command::new("/usr/bin/open");
-        match spore_bundle(bundle, module) {
-            Some(target) => {
-                command.arg("-n").arg(target).arg("--args");
-            }
-            None => {
-                command.arg("-n").arg(bundle).arg("--args").arg(module);
-            }
-        }
-        launch.append_args(&mut command);
-        return command;
-    }
-    let mut command = std::process::Command::new(executable);
-    command.arg(module).stdin(std::process::Stdio::null());
-    launch.append_args(&mut command);
-    command
+/// The one line that names the reason is the same in every wasmtime error of
+/// this shape, so it is read rather than pattern-matched into a second copy of
+/// the linker's vocabulary.
+fn missing_instance(line: &str) -> Option<(&str, &str)> {
+    const NEEDLE: &str = "imports instance `";
+    let start = line.find(NEEDLE)? + NEEDLE.len();
+    let rest = &line[start..];
+    let instance = &rest[..rest.find('`')?];
+    let (name, version) = instance.split_once('@')?;
+    Some((name, version))
+}
+
+/// A package's display name, resolved the way every front door resolves it.
+fn display_title(manifest: &Manifest) -> String {
+    manifest
+        .spore
+        .title
+        .clone()
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| soil_spore::display_title(&manifest.spore.name))
 }
 
 /// Start the package's native host for a surface this window cannot present.
@@ -522,7 +810,9 @@ fn native_command(
         .env("SOIL_SPORE_SURFACE", surface)
         .env("SOIL_SPORE_PACKAGE", package)
         .env("SOIL_SPORE_MODULE", module)
-        .stdin(std::process::Stdio::null());
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     // The terminal host predates the generic environment and still reads its
     // own names. Keep both working until it moves to the contract.
     if program
@@ -571,17 +861,20 @@ fn resolve_native(host: &str, package: &std::path::Path) -> Option<std::path::Pa
 
 /// Build (or refresh) a `.app` that stands for one Spore, and answer its path.
 ///
-/// The bundle carries its own copy of the binary and the module. A symlink would
-/// be cheaper, but macOS names a Dock tile by the executable a process actually
-/// runs: through a symlink that resolves back to the launcher, so every Spore
-/// showed up as "fungOS". Copies are refreshed when the source changes.
-fn spore_bundle(app: &std::path::Path, module: &std::path::Path) -> Option<std::path::PathBuf> {
-    let slug = module
-        .parent()
-        .and_then(|package| package.file_name())
-        .and_then(|name| name.to_str())?
-        .to_owned();
-    let title = manifest_title(module).unwrap_or_else(|| soil_spore::display_title(&slug));
+/// The bundle is the package plus the runner: `Contents/MacOS/soil` is the
+/// executable and `Contents/Resources` is the package itself, so the Dock keeps
+/// a tile per Spore and `soil spore run` finds the package beside it. Copies
+/// rather than symlinks, because macOS names a Dock tile by the executable a
+/// process actually runs: through a symlink that resolves back to the launcher,
+/// and every Spore shows up as "fungOS".
+///
+/// A package that replaces `spore.toml` without dropping its old binary is a
+/// package whose bundled copy is stale, so every file is refreshed by size and
+/// mtime.
+fn spore_bundle(app: &std::path::Path, package: &std::path::Path) -> Option<std::path::PathBuf> {
+    let manifest = Manifest::load(package).ok()?;
+    let slug = manifest.spore.name.clone();
+    let title = display_title(&manifest);
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
     let bundle = home
         .join("Library/Application Support/fungOS/apps")
@@ -592,35 +885,38 @@ fn spore_bundle(app: &std::path::Path, module: &std::path::Path) -> Option<std::
     std::fs::create_dir_all(&macos).ok()?;
     std::fs::create_dir_all(&resources).ok()?;
 
-    let executable = std::env::current_exe().ok()?;
-    refresh_copy(&executable, &macos.join("canvas-winit"))?;
-    refresh_copy(module, &resources.join("spore.wasm"))?;
-    // The icon comes from the launcher bundle so every Spore is a fungOS app.
-    if let Some(parent) = app.parent() {
-        let icon = parent.join("Resources/fungos.icns");
-        if icon.is_file() {
-            let _ = std::fs::copy(&icon, resources.join("fungos.icns"));
+    let runner = runner_binary()?;
+    refresh_copy(&runner, &macos.join("soil"))?;
+    for path in manifest.package_paths() {
+        let target = resources.join(&path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).ok()?;
         }
+        refresh_copy(&package.join(&path), &target)?;
     }
-    // The bundle says what it is called; the module beside it is just
-    // `spore.wasm`, so the title travels with the bundle.
-    let _ = std::fs::write(resources.join("title.txt"), &title);
+    // The icon comes from the launcher's own bundle, so every Spore is a fungOS
+    // app rather than a generic executable.
+    let icon = app.join("Contents/Resources/fungos.icns");
+    if icon.is_file() {
+        let _ = std::fs::copy(&icon, resources.join("fungos.icns"));
+    }
     let identifier = format!("dev.fungos.spore.{slug}");
     let plist = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
 <plist version=\"1.0\"><dict>\n\
-  <key>CFBundleExecutable</key><string>canvas-winit</string>\n\
+  <key>CFBundleExecutable</key><string>soil</string>\n\
   <key>CFBundleIdentifier</key><string>{identifier}</string>\n\
   <key>CFBundleName</key><string>{title}</string>\n\
   <key>CFBundleDisplayName</key><string>{title}</string>\n\
   <key>CFBundleIconFile</key><string>fungos</string>\n\
   <key>CFBundlePackageType</key><string>APPL</string>\n\
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>\n\
-  <key>CFBundleVersion</key><string>0.1.0</string>\n\
+  <key>CFBundleShortVersionString</key><string>{version}</string>\n\
+  <key>CFBundleVersion</key><string>{version}</string>\n\
   <key>LSMinimumSystemVersion</key><string>13.0</string>\n\
   <key>NSHighResolutionCapable</key><true/>\n\
-</dict></plist>\n"
+</dict></plist>\n",
+        version = manifest.spore.version,
     );
     std::fs::write(contents.join("Info.plist"), plist).ok()?;
     Some(bundle)
@@ -643,18 +939,6 @@ fn refresh_copy(source: &std::path::Path, destination: &std::path::Path) -> Opti
         return Some(());
     }
     std::fs::copy(source, destination).ok().map(|_| ())
-}
-
-/// The display name a module's package gives itself, if it has a manifest.
-fn manifest_title(module: &std::path::Path) -> Option<String> {
-    let package = module.parent()?;
-    let manifest = Manifest::load(package).ok()?;
-    manifest
-        .spore
-        .title
-        .clone()
-        .filter(|title| !title.trim().is_empty())
-        .or_else(|| Some(soil_spore::display_title(&manifest.spore.name)))
 }
 
 /// The `.app` an executable lives in, if it lives in one.
@@ -867,6 +1151,7 @@ fn agent_backend(
         let actor = self.actor.clone();
         let agent_session = self.agent_session.clone();
         let records_root = self.records_root.clone();
+        let agents = self.launch.agents;
         let launch = self.launch.clone();
         thread::spawn(move || {
             let result = (|| -> Result<()> {
@@ -903,7 +1188,27 @@ fn agent_backend(
                         // A window shows agents only when the operator named a
                         // transcript; a book is read, never written, so a
                         // window over one cannot pretend to drive its harness.
-                        agents: Self::agent_backend(agent_session.as_deref(), records_root.as_deref())?,
+                        // Otherwise `--agents` decides, and its default is none.
+                        agents: match agent_session.as_deref() {
+                            Some(_) => Self::agent_backend(
+                                agent_session.as_deref(),
+                                records_root.as_deref(),
+                            )?,
+                            None => match agents {
+                                Agents::None => Box::new(NoAgents),
+                                Agents::Demo => {
+                                    Box::new(soil_agent_host::FixtureAgents::new())
+                                        as Box<dyn soil_agent_host::AgentBackend>
+                                }
+                            },
+                        },
+                        // This window owns dispatch, but no adapter here can
+                        // start a session yet, so a task is announced as failed.
+                        dispatch: Default::default(),
+                        // One window per process today, so a bus per surface is a
+                        // bus per process; hoisting this onto `App` is the
+                        // multi-window step.
+                        bus: ::soil_webgpu::in_process_bus(),
                         store_origin: None,
                         terminal: Box::new(Terminals::new(80, 24, command)),
                         cursor: Some(Box::new(WindowCursor(window))),
@@ -1643,11 +1948,17 @@ fn key_name(key: &WinitKey) -> String {
 }
 
 fn build_http(launch: &LaunchConfig) -> Result<Option<HttpAccess>> {
-    match (launch.geode_socket.as_ref(), launch.geode_purpose.as_ref()) {
-        (Some(_), None) | (None, Some(_)) => {
-            anyhow::bail!("--geode-socket and --geode-purpose must be used together");
-        }
-        _ => {}
+    let geode = (
+        launch.geode_socket.as_ref(),
+        launch.geode_purpose.as_ref(),
+        launch.geode_reference.as_ref(),
+    );
+    match geode {
+        (None, None, None) => {}
+        (Some(_), Some(_), Some(_)) => {}
+        _ => anyhow::bail!(
+            "--geode-socket, --geode-reference and --geode-purpose are used together"
+        ),
     }
     // The storefront is the one origin every presenter grants. A Spore that
     // needs another origin says so at launch; the launcher does not guess.
@@ -1666,17 +1977,27 @@ fn build_http(launch: &LaunchConfig) -> Result<Option<HttpAccess>> {
         bridge: launch.hue_bridge.clone(),
         inner: DirectTransport,
     }));
-    if let (Some(socket), Some(purpose)) = (&launch.geode_socket, &launch.geode_purpose) {
+    if let (Some(socket), Some(reference), Some(purpose)) = geode {
         #[cfg(unix)]
         {
-            access = access.with_credentials(Arc::new(GeodeCredentials::new(
-                socket.clone(),
-                purpose.clone(),
-            )));
+            // The guest names a handle. The reference, the purpose and whether
+            // the bytes become a header stay host configuration, so a Spore
+            // cannot address a slot by spelling it.
+            let credentials =
+                GeodeCredentials::new(socket.clone(), "", purpose.clone(), std::time::Duration::from_secs(60))
+                    .with_host_handle(
+                        "default",
+                        HostHandle {
+                            reference: reference.clone(),
+                            purpose: purpose.clone(),
+                            header: Some("authorization".into()),
+                        },
+                    );
+            access = access.with_credentials(Arc::new(credentials));
         }
         #[cfg(not(unix))]
         {
-            let _ = (socket, purpose);
+            let _ = (socket, reference, purpose);
             anyhow::bail!("--geode-socket is only available on Unix hosts");
         }
     }
@@ -1721,6 +2042,10 @@ pub struct Options {
     pub geode_socket: Option<PathBuf>,
     /// Geode purpose the lease is for.
     pub geode_purpose: Option<String>,
+    /// Absolute `geode://` reference the granted handle leases.
+    pub geode_reference: Option<String>,
+    /// Which agent cast to grant the Spore: `none` (the default) or `demo`.
+    pub agents: Agents,
     /// Bridge `hue.local` maps to.
     pub hue_bridge: Option<Url>,
     /// Records store the Spore may read or write.
@@ -1760,6 +2085,8 @@ impl Default for Options {
             origins: Vec::new(),
             geode_socket: None,
             geode_purpose: None,
+            geode_reference: None,
+            agents: Agents::None,
             hue_bridge: None,
             records_root: None,
             vfs_root: None,
@@ -1795,6 +2122,8 @@ pub fn parse(args: &[String]) -> Result<Options> {
     let mut origins = Vec::new();
     let mut geode_socket = None;
     let mut geode_purpose = None;
+    let mut geode_reference = None;
+    let mut agents = Agents::None;
     let mut hue_bridge = None;
     let mut records_root = None;
     let mut vfs_root: Option<PathBuf> = None;
@@ -1880,6 +2209,20 @@ pub fn parse(args: &[String]) -> Result<Options> {
                         .clone(),
                 );
             }
+            "--geode-reference" => {
+                geode_reference = Some(
+                    args.next()
+                        .context("--geode-reference needs a geode:// reference")?
+                        .clone(),
+                );
+            }
+            "--agents" => {
+                agents = match args.next().context("--agents needs demo or none")?.as_str() {
+                    "demo" => Agents::Demo,
+                    "none" => Agents::None,
+                    other => anyhow::bail!("--agents takes demo or none, not {other}"),
+                };
+            }
             "--hue-bridge" => {
                 let value = args.next().context("--hue-bridge needs a URL")?;
                 let url = Url::parse(&value).context("--hue-bridge needs an absolute URL")?;
@@ -1913,7 +2256,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
             }
             value if module.is_none() => module = Some(PathBuf::from(value)),
             _ => anyhow::bail!(
-                "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-purpose PURPOSE] [--hue-bridge URL] [--records-root DIR]"
+                "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] [--agents demo] [--hue-bridge URL] [--records-root DIR]"
             ),
         }
     }
@@ -1935,6 +2278,8 @@ pub fn parse(args: &[String]) -> Result<Options> {
         origins,
         geode_socket,
         geode_purpose,
+        geode_reference,
+        agents,
         hue_bridge,
         records_root,
         vfs_root,
@@ -1967,6 +2312,8 @@ pub fn run(options: Options) -> Result<()> {
         origins,
         geode_socket,
         geode_purpose,
+        geode_reference,
+        agents,
         hue_bridge,
         records_root,
         vfs_root,
@@ -1998,7 +2345,7 @@ pub fn run(options: Options) -> Result<()> {
             };
             if !candidate.is_file() {
                 anyhow::bail!(
-                    "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-purpose PURPOSE] [--hue-bridge URL] [--vfs-root DIR] [--records-root DIR] [--records-book NAME --records-collection NAME] [--actor WHO]"
+                    "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] [--agents demo] [--hue-bridge URL] [--vfs-root DIR] [--records-root DIR] [--records-book NAME --records-collection NAME] [--actor WHO]"
                 );
             }
             candidate
@@ -2111,6 +2458,8 @@ pub fn run(options: Options) -> Result<()> {
         origins,
         geode_socket,
         geode_purpose,
+        geode_reference,
+        agents,
         hue_bridge,
         records_root,
         vfs_root: vfs_root.clone(),
@@ -2319,65 +2668,132 @@ mod native_launch_tests {
         assert!(text.contains("native"));
         let _ = std::fs::remove_dir_all(&root);
     }
+}
 
-    fn scratch(name: &str) -> PathBuf {
-        let directory = std::env::temp_dir().join(format!(
-            "canvas-winit-launch-{name}-{}-{:?}",
+#[cfg(all(test, unix))]
+mod catalog_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "canvas-winit-catalog-{name}-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
-        let _ = std::fs::remove_dir_all(&directory);
-        std::fs::create_dir_all(&directory).expect("scratch directory");
-        directory
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch");
+        root
     }
 
-    /// A Spore that dies before its window is a launch that failed, and its own
-    /// words are what says why. This is the case the launcher used to swallow:
-    /// the child's stderr went nowhere and the guest had already been answered.
-    #[test]
-    fn a_child_that_dies_before_a_window_is_a_failed_launch() {
-        let directory = scratch("dies");
-        let mut command = std::process::Command::new("/bin/sh");
-        command.args([
-            "-c",
-            "echo 'instance export `ls` has the wrong type' >&2; exit 3",
-        ]);
-        let log =
-            log_launch_output(&mut command, &directory, "dev.fungos.broken").expect("log path");
-        let mut child = command.spawn().expect("spawn");
+    /// A package with a module and one canvas surface: everything the catalogue
+    /// needs to decide whether it can launch.
+    fn package(root: &std::path::Path) -> std::path::PathBuf {
+        let dir = root.join("demo");
+        std::fs::create_dir_all(&dir).expect("package");
+        std::fs::write(dir.join("module.wasm"), b"").expect("module");
+        std::fs::write(
+            dir.join("spore.toml"),
+            "schema = 1\n\
+             [spore]\n\
+             id = \"dev.fungos.demo\"\n\
+             name = \"demo\"\n\
+             version = \"0.1.0\"\n\
+             license = \"MIT\"\n\
+             summary = \"a demo\"\n\
+             [engine]\n\
+             soil = \">=0.1\"\n\
+             target = \"wasm32-wasip2\"\n\
+             [module]\n\
+             path = \"module.wasm\"\n\
+             [launch]\n\
+             default = \"canvas\"\n\
+             surfaces = [\"canvas\"]\n",
+        )
+        .expect("manifest");
+        dir
+    }
 
-        assert!(
-            watch_startup(&mut child, Some(&log), "dev.fungos.broken").is_err(),
-            "a death before the window is a failed launch"
+    /// A stand-in for `soil spore run`: the catalogue only needs a process that
+    /// behaves like one.
+    fn runner(root: &std::path::Path, body: &str) -> std::path::PathBuf {
+        let path = root.join("runner");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("runner");
+        let mut permissions = std::fs::metadata(&path)
+            .expect("runner metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).expect("runner permissions");
+        path
+    }
+
+    fn catalogue(root: &std::path::Path, runner: std::path::PathBuf) -> SporeCatalog {
+        let mut catalog = SporeCatalog::new(
+            std::slice::from_ref(&root.to_path_buf()),
+            LaunchConfig::default(),
+        )
+        .expect("catalogue");
+        catalog.runner = Some(runner);
+        catalog
+    }
+
+    #[test]
+    fn an_old_module_says_which_contract_it_wants() {
+        let line = "Error: component imports instance `soil:spore/catalog@0.1.0`, \
+                    but a matching implementation was not found in the linker";
+        assert_eq!(
+            missing_instance(line),
+            Some(("soil:spore/catalog", "0.1.0")),
+            "the missing interface is the reason, not the linker"
         );
-        let said = std::fs::read_to_string(&log).expect("the child's output was kept");
-        assert!(said.contains("wrong type"), "{said}");
-        let _ = std::fs::remove_dir_all(&directory);
     }
 
-    /// Still running at the end of the grace is what an opened window looks like.
     #[test]
-    fn a_child_still_running_is_a_launch() {
-        let mut command = std::process::Command::new("/bin/sh");
-        command.args(["-c", "sleep 5"]);
-        command.stdin(std::process::Stdio::null());
-        let mut child = command.spawn().expect("spawn");
+    fn a_child_that_dies_is_quoted_in_the_failure() {
+        let root = scratch("quote");
+        package(&root);
+        let runner = runner(
+            &root,
+            "echo 'demo needs soil:terminal, which this host does not provide' >&2; exit 1",
+        );
+        let mut catalog = catalogue(&root, runner);
 
-        assert!(watch_startup(&mut child, None, "dev.fungos.slow").is_ok());
-        let _ = child.kill();
-        let _ = child.wait();
+        let failure = catalog
+            .launch("dev.fungos.demo", "canvas")
+            .expect_err("a runner that exits has not opened anything");
+        assert!(
+            failure.detail.contains("soil:terminal"),
+            "the host's sentence reaches the window: {failure:?}"
+        );
+        assert!(
+            catalog.running().is_empty(),
+            "a child that exited is not running"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Silence is a diagnosis too: it says where to look.
     #[test]
-    fn a_silent_death_points_at_the_log() {
-        let directory = scratch("silent");
-        let log = directory.join("quiet-launch.log");
-        std::fs::write(&log, "\n\n").expect("empty log");
+    fn running_and_stop_follow_the_process() {
+        let root = scratch("stop");
+        package(&root);
+        let runner = runner(&root, "exec sleep 60");
+        let mut catalog = catalogue(&root, runner);
 
-        let said = launch_failure(&log);
-        assert!(said.contains("nothing was written"), "{said}");
-        assert!(said.contains("quiet-launch.log"), "{said}");
-        let _ = std::fs::remove_dir_all(&directory);
+        catalog.launch("dev.fungos.demo", "canvas").expect("launch");
+        assert_eq!(
+            catalog.running(),
+            vec!["dev.fungos.demo".to_owned()],
+            "a live child is a running Spore"
+        );
+        catalog.stop("dev.fungos.demo").expect("stop");
+        assert!(
+            catalog.running().is_empty(),
+            "a stopped Spore is not running"
+        );
+        assert!(
+            catalog.stop("dev.fungos.demo").is_err(),
+            "stopping a Spore that is not running is not-found"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

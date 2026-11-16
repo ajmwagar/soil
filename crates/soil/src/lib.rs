@@ -63,8 +63,14 @@ pub mod records_host;
 mod service;
 #[cfg(feature = "wasi")]
 pub mod time;
+// The dispatch seam: a task notice becomes a session, and a created session is
+// announced on the bus. Host-side only — a Spore never starts a process.
+#[cfg(feature = "dispatch")]
+pub mod dispatch;
 #[cfg(feature = "wasi")]
 pub mod unibus;
+#[cfg(feature = "work")]
+pub mod work;
 #[cfg(feature = "vfs")]
 pub mod vfs_host;
 
