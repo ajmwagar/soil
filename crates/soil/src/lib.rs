@@ -41,6 +41,9 @@
 //! others in, because those modules are written against it. `cli` adds the
 //! `soil-*` commands.
 
+// One clock for the whole host: a bus frame, a lease and an index entry all
+// mean the same thing by "now".
+mod clock;
 #[cfg(feature = "wasi")]
 pub mod context;
 #[cfg(feature = "wasi")]
@@ -65,6 +68,8 @@ mod service;
 pub mod time;
 // The dispatch seam: a task notice becomes a session, and a created session is
 // announced on the bus. Host-side only — a Spore never starts a process.
+#[cfg(feature = "acp")]
+pub mod acp;
 #[cfg(feature = "dispatch")]
 pub mod dispatch;
 #[cfg(feature = "wasi")]
