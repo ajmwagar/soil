@@ -61,6 +61,14 @@ pub enum DispatchRole {
     Watch,
 }
 
+impl Default for DispatchRole {
+    /// A host that cannot start sessions says so on the bus rather than dropping
+    /// the task, so the denying default is still an owner.
+    fn default() -> Self {
+        Self::Own(Box::new(NoSessions))
+    }
+}
+
 /// How this host reads the bus.
 enum Mode {
     Own(Box<dyn Sessions>),

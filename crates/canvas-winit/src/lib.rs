@@ -1090,6 +1090,13 @@ impl App {
                                     as Box<dyn soil_agent_host::AgentBackend>
                             }
                         },
+                        // This window owns dispatch, but no adapter here can
+                        // start a session yet, so a task is announced as failed.
+                        dispatch: Default::default(),
+                        // One window per process today, so a bus per surface is a
+                        // bus per process; hoisting this onto `App` is the
+                        // multi-window step.
+                        bus: ::soil_webgpu::in_process_bus(),
                         store_origin: None,
                         terminal: Box::new(Terminals::new(80, 24, command)),
                         cursor: Some(Box::new(WindowCursor(window))),

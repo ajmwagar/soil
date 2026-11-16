@@ -29,6 +29,7 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use crate::soil::present::input;
 use soil_agent_host::{AgentBackend, Answer, Binding, Page};
+use ::soil::dispatch::{Dispatch, DispatchRole};
 
 pub mod fb;
 
@@ -560,6 +561,8 @@ pub struct WebGpuHost {
     agents: Box<dyn AgentBackend>,
     terminal: Box<dyn TerminalHost>,
     cursor: Option<Box<dyn CursorHost>>,
+    /// Where this host is in the notice stream, and what it does with each one.
+    dispatch: Dispatch,
     clipboard: Option<Box<dyn ClipboardHost>>,
     /// The Unibus this Spore publishes to and polls. In-process: the notices a
     /// surface emits are for surfaces on this machine, and a popup is one.
@@ -729,6 +732,15 @@ pub struct HostSetup {
     /// attest who is acting must not let a guest guess.
     pub principal: Option<PrincipalHost>,
     pub agents: Box<dyn AgentBackend>,
+    /// What this host does with the bus. One surface in a process owns dispatch;
+    /// the others watch, so a task read twice does not become two sessions. The
+    /// default owns dispatch with no creator, so a host that cannot start
+    /// sessions says so on the bus instead of dropping the task.
+    pub dispatch: DispatchRole,
+    /// The Unibus this Spore publishes to and polls. In-process by default: the
+    /// notices a wall emits are for surfaces on this machine, and a popup is one
+    /// of them.
+    pub bus: Arc<dyn Bus>,
     /// Shorthand for a read-only `soil:http` grant for one origin, folded into
     /// `http` when that is unset. The storefront browser names its own origin
     /// this way.
@@ -738,6 +750,15 @@ pub struct HostSetup {
     pub cursor: Option<Box<dyn CursorHost>>,
     /// `None` on hosts without a pasteboard.
     pub clipboard: Option<Box<dyn ClipboardHost>>,
+}
+
+/// The bus a surface publishes its notices to.
+///
+/// One per host process, shared by every surface in it. A caller that needs to
+/// inspect or seed the log keeps the concrete [`MemoryBus`]; the host only needs
+/// the trait.
+pub fn in_process_bus() -> Arc<MemoryBus> {
+    Arc::new(MemoryBus::default())
 }
 
 impl HostSetup {
@@ -753,6 +774,8 @@ impl HostSetup {
             vfs: None,
             principal: None,
             agents: Box::new(NoAgents),
+            dispatch: DispatchRole::default(),
+            bus: in_process_bus(),
             store_origin: None,
             terminal: Box::new(NoTerminal),
             cursor: None,
@@ -804,6 +827,10 @@ impl WebGpuHost {
                 .transpose()?,
             principal: setup.principal,
             agents: setup.agents,
+            dispatch: match setup.dispatch {
+                DispatchRole::Own(sessions) => Dispatch::new(setup.bus.clone(), sessions),
+                DispatchRole::Watch => Dispatch::watcher(setup.bus.clone()),
+            },
             terminal: setup.terminal,
             cursor: setup.cursor,
             clipboard: setup.clipboard,
@@ -1466,6 +1493,9 @@ impl soil::agents::observe::Host for WebGpuHost {
     fn agents(
         &mut self,
     ) -> std::result::Result<Vec<soil::agents::types::Agent>, soil::agents::types::Error> {
+        // Asking for the roster is the tick: one bounded bus read, then the
+        // answer. Nothing polls a harness in the background.
+        self.dispatch.pump(&mut *self.agents);
         Ok(self.agents.list().into_iter().map(agent_record).collect())
     }
 
@@ -1473,6 +1503,7 @@ impl soil::agents::observe::Host for WebGpuHost {
         &mut self,
         id: String,
     ) -> std::result::Result<soil::agents::types::Agent, soil::agents::types::Error> {
+        self.dispatch.pump(&mut *self.agents);
         self.agents
             .get(&id)
             .map(agent_record)
@@ -1495,6 +1526,7 @@ impl soil::agents::observe::Host for WebGpuHost {
         before: Option<u64>,
         limit: u32,
     ) -> std::result::Result<soil::agents::observe::Page, soil::agents::types::Error> {
+        self.dispatch.pump(&mut *self.agents);
         self.agents
             .transcript(&id, before, limit)
             .map(agent_page)
@@ -1520,6 +1552,7 @@ impl soil::agents::observe::HostSubscription for WebGpuHost {
         timeout_ms: u32,
     ) -> std::result::Result<Option<soil::agents::observe::Change>, soil::agents::types::Error>
     {
+        self.dispatch.pump(&mut *self.agents);
         // A handle the guest already dropped is `stale`, not an empty poll.
         self.table
             .get(&subscription)
