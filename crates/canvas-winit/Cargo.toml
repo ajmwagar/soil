@@ -10,6 +10,10 @@ publish = false
 name = "canvas_winit"
 path = "src/lib.rs"
 
+[[bin]]
+name = "canvas-winit"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
