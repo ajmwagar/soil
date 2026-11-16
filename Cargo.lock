@@ -8117,6 +8117,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tend-core"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "soil-spore",
+]
+
+[[package]]
 name = "termcolor"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
