@@ -84,6 +84,46 @@ type Result<T> = std::result::Result<T, Error>;
 
 // ---- manifest -------------------------------------------------------------
 
+/// The records collections a Spore owns, declared instead of passed in.
+///
+/// A records-shaped Spore is the thing that defines its schema, so it is the
+/// only party that knows the collection name; making an operator type
+/// `--collection` at launch asks the one person who cannot know it. A host maps
+/// each declared name onto a book — `book` names one for all of them, and
+/// absent, each collection is its own book.
+///
+/// The grant stays `soil:records`: this table says *which* collections, and a
+/// host still decides whether the capability is granted at all. Declared
+/// collections are read-only; a Spore that writes names its collection on the
+/// command line, where the write is an act somebody chose.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Records {
+    /// One collection, when one is all there is.
+    #[serde(default)]
+    pub collection: Option<String>,
+    /// Several, for a Spore that reads more than one schema.
+    #[serde(default)]
+    pub collections: Vec<String>,
+    /// The book every declared collection lives in.
+    #[serde(default)]
+    pub book: Option<String>,
+}
+
+impl Records {
+    /// Every declared collection, in declaration order, without duplicates.
+    #[must_use]
+    pub fn names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = Vec::new();
+        for name in self.collection.iter().chain(self.collections.iter()) {
+            if !names.contains(&name.as_str()) {
+                names.push(name);
+            }
+        }
+        names
+    }
+}
+
 /// The environment a Spore and its host children may see.
 ///
 /// `spore` narrows what the shell can read (unset means the caller's whole
@@ -149,6 +189,10 @@ pub struct Manifest {
     pub deps: BTreeMap<String, String>,
     #[serde(default)]
     pub grants: BTreeMap<String, String>,
+    /// The records collections this Spore reads, so a host can grant them
+    /// without an operator naming a schema the package already defines.
+    #[serde(default)]
+    pub records: Option<Records>,
     /// Which environment variables this Spore may read, and which a host child
     /// may see while running on its behalf.
     ///
@@ -1021,6 +1065,24 @@ impl Manifest {
                 "version {:?} is not semver-ish",
                 self.spore.version
             )));
+        }
+        if let Some(records) = &self.records {
+            let names = records.names();
+            if names.is_empty() {
+                return Err(Error::Invalid(
+                    "[records] declares neither collection nor collections".into(),
+                ));
+            }
+            for name in names {
+                if name.trim().is_empty() || !name.contains('/') {
+                    return Err(Error::Invalid(format!(
+                        "records collection {name:?} is not a schema id (area/name@version)"
+                    )));
+                }
+            }
+            if records.book.as_ref().is_some_and(|book| book.trim().is_empty()) {
+                return Err(Error::Invalid("records.book must not be empty".into()));
+            }
         }
         for name in &self.env.spore {
             if name.trim().is_empty() {

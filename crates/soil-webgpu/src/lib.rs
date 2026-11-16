@@ -581,6 +581,30 @@ impl RecordsAccess {
         }
     }
 
+    /// The collections a package declares in its manifest, read-only.
+    ///
+    /// `book` names one book for all of them; absent, each collection is its own
+    /// book, which is what a fresh host has before anybody decides where it
+    /// lives. Declared collections are reads: a Spore that writes names its
+    /// collection on the command line, so the write is an act somebody chose.
+    pub fn declared(
+        root: impl Into<PathBuf>,
+        collections: Vec<String>,
+        book: Option<String>,
+    ) -> Self {
+        let root = root.into();
+        Self {
+            root,
+            namespaces: collections
+                .into_iter()
+                .map(|collection| {
+                    let book = book.clone().unwrap_or_else(|| collection.clone());
+                    Namespace::read(collection.clone(), book, collection)
+                })
+                .collect(),
+        }
+    }
+
     /// The read-only namespace the vitals renderer uses for the default
     /// wearer. A renderer that shows more than one person asks for
     /// [`Self::vitals_for`] instead.

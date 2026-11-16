@@ -261,21 +261,46 @@ pub fn grants(request: &Request, manifest: &Manifest) -> Result<soil_webgpu::Gra
         .grants
         .keys()
         .any(|grant| grant.starts_with("soil:records"));
-    if let Some(root) = request
-        .records_root
-        .clone()
-        .or_else(|| if granted { default_records_root() } else { None })
-    {
-        let Some(collection) = request.collection.clone() else {
-            bail!("--records needs --collection: the guest names a collection");
-        };
-        let book = request.book.clone().unwrap_or_else(|| collection.clone());
-        grants.records = Some(soil_webgpu::RecordsAccess::book(
-            root,
-            &collection,
-            &book,
-            &collection,
-        ));
+    // What the package says it reads, so an operator does not have to retype a
+    // schema the package itself defines.
+    let declared: Vec<String> = manifest
+        .records
+        .as_ref()
+        .map(|records| records.names().into_iter().map(str::to_owned).collect())
+        .unwrap_or_default();
+    if let Some(root) = request.records_root.clone().or_else(|| {
+        if granted || !declared.is_empty() {
+            default_records_root()
+        } else {
+            None
+        }
+    }) {
+        // An operator naming one collection wins — that is how a write is
+        // granted. Otherwise the manifest's declaration is the grant, read-only.
+        match request.collection.clone() {
+            Some(collection) => {
+                let book = request.book.clone().unwrap_or_else(|| collection.clone());
+                grants.records = Some(soil_webgpu::RecordsAccess::book(
+                    root,
+                    &collection,
+                    &book,
+                    &collection,
+                ));
+            }
+            None if !declared.is_empty() => {
+                let book = request.book.clone().or_else(|| {
+                    manifest
+                        .records
+                        .as_ref()
+                        .and_then(|records| records.book.clone())
+                });
+                grants.records =
+                    Some(soil_webgpu::RecordsAccess::declared(root, declared, book));
+            }
+            None => bail!(
+                "--records needs --collection, and this package declares none in [records]"
+            ),
+        }
     }
     if let Some(root) = &request.spores {
         grants = grants.with_catalog_roots(vec![root.clone()]);
