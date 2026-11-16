@@ -203,6 +203,10 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
                 run.present.bind = Some(value(index + 1)?);
                 index += 2;
             }
+            "--hue-bridge" => {
+                run.present.hue_bridge = Some(value(index + 1)?);
+                index += 2;
+            }
             "--token" => {
                 run.present.token = Some(value(index + 1)?);
                 index += 2;
@@ -646,6 +650,23 @@ mod tests {
         format!(
             "schema = 1\n[spore]\nid = \"dev.fungos.test\"\nname = \"test\"\nversion = \"0.1.0\"\nlicense = \"MIT\"\nsummary = \"s\"\n[engine]\nsoil = \">=0.1\"\ntarget = \"wasm32-wasip2\"\n[module]\npath = \"module.wasm\"\n[ui]\nentry = \"ui/main.lua\"\n[launch]\ndefault = \"canvas\"\nsurfaces = [\"canvas\"]\n{http}"
         )
+    }
+
+    #[test]
+    fn a_bridge_travels_with_the_run() {
+        let (package, run) = parse(&[
+            "run".into(),
+            "/tmp/example".into(),
+            "--hue-bridge".into(),
+            "http://192.168.1.9".into(),
+        ])
+        .expect("parse");
+        assert_eq!(package, PathBuf::from("/tmp/example"));
+        assert_eq!(
+            run.present.hue_bridge.as_deref(),
+            Some("http://192.168.1.9"),
+            "the window a Spore opens inherits the bridge the run was given"
+        );
     }
 
     #[test]

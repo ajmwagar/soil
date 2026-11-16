@@ -78,8 +78,7 @@ impl LaunchConfig {
     ///
     /// Only what `soil spore run` accepts: a flag the runner rejects is a child
     /// that does not start, and one it ignores is a grant the user believes they
-    /// gave. `--hue-bridge` is the one grant with no runner equivalent yet, so a
-    /// child does not inherit it.
+    /// gave.
     fn runner_args(&self) -> Vec<std::ffi::OsString> {
         let mut args: Vec<std::ffi::OsString> = Vec::new();
         for origin in &self.origins {
@@ -95,6 +94,10 @@ impl LaunchConfig {
         if let Some(root) = &self.vfs_root {
             args.push("--vfs-root".into());
             args.push(root.into());
+        }
+        if let Some(bridge) = &self.hue_bridge {
+            args.push("--hue-bridge".into());
+            args.push(bridge.as_str().into());
         }
         if let Some(root) = &self.records_root {
             args.push("--records".into());
@@ -481,7 +484,17 @@ impl SporeCatalog {
         // A Spore that cannot start dies while it instantiates — before it has a
         // window to say why. Give it long enough to fail and quote what it said,
         // instead of reporting an open that never happened.
-        let mut child = spawn_checked(&mut command, &title)?;
+        // One log per Spore, in the same cache a compiled component lives in:
+        // a package carries a module or it does not, and either way the launch
+        // recorded itself somewhere a person can find it.
+        let cache = component_cache(
+            &manifest
+                .module
+                .as_ref()
+                .map(|module| root.join(&module.path))
+                .unwrap_or_else(|| root.clone()),
+        );
+        let mut child = spawn_checked(&mut command, &cache, &id, &title)?;
         let _ = child.try_wait();
         self.running.insert(id.clone(), Running { child });
         Ok(CatalogLaunched {
@@ -535,28 +548,52 @@ fn runner_args(
 /// Its stderr is the only record of why, so a failure is quoted rather than
 /// swallowed — "expected record of 9 fields" in a dialog is better than a tile
 /// that appears to open and does nothing.
+/// How long a launch is watched before the app is called started.
+///
+/// Long enough for a child to die of its own reasons, short enough that the
+/// launcher's own frame is not held back by it. Nothing is lost by waiting: the
+/// guest that asked for the launch cannot draw a frame until this call returns.
+const LAUNCH_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+const LAUNCH_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Spawn a child and wait out the moment in which it can fail.
+///
+/// A Spore that cannot start — a module built against an older contract, a host
+/// that is not there, a trap on the way up — dies in under a second, before it
+/// has a window to say why. Its output goes to a log this machine can read, and
+/// the tail of that log is the sentence the modal shows.
+///
+/// An exit of **zero** is not a failure: that is Launch Services handing the
+/// window to another process and returning.
 fn spawn_checked(
     command: &mut std::process::Command,
+    cache: &std::path::Path,
+    id: &str,
     title: &str,
 ) -> Result<std::process::Child, CatalogFailure> {
-    use std::io::Read as _;
-    command.stderr(std::process::Stdio::piped());
+    let log = log_launch_output(command, cache, id);
     let mut child = command.spawn().map_err(|error| {
         CatalogFailure::new(CatalogError::Io, format!("start {title}: {error}"))
     })?;
-    for _ in 0..50 {
+    let started = std::time::Instant::now();
+    while started.elapsed() < LAUNCH_GRACE {
         match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(child),
             Ok(Some(status)) => {
-                let mut said = String::new();
-                if let Some(mut stderr) = child.stderr.take() {
-                    let _ = stderr.read_to_string(&mut said);
-                }
-                let detail = failure_detail(&said).unwrap_or_else(|| {
-                    format!("{title} exited before it opened a window ({status})")
-                });
+                let detail = log
+                    .as_deref()
+                    .and_then(failure_detail)
+                    .map(|said| format!("{title} {said}"))
+                    .unwrap_or_else(|| {
+                        format!(
+                            "{title} exited {} before it opened a window",
+                            status.code().unwrap_or(-1)
+                        )
+                    });
+                eprintln!("canvas-winit: {} exited {status}", id);
                 return Err(CatalogFailure::new(CatalogError::Unsupported, detail));
             }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Ok(None) => std::thread::sleep(LAUNCH_POLL),
             Err(error) => {
                 return Err(CatalogFailure::new(
                     CatalogError::Io,
@@ -568,17 +605,57 @@ fn spawn_checked(
     Ok(child)
 }
 
+/// Send a child's output to a file this machine can read afterwards.
+///
+/// The file is part of the answer, not a debugging aid: when a Spore dies on the
+/// way up, its reason is the only thing that says why, and the guest that asked
+/// for the launch has already been answered.
+fn log_launch_output(
+    command: &mut std::process::Command,
+    directory: &std::path::Path,
+    id: &str,
+) -> Option<std::path::PathBuf> {
+    let safe: String = id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '.' || character == '-' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let path = directory.join(format!("{safe}-launch.log"));
+    if let Some(directory) = path.parent() {
+        let _ = std::fs::create_dir_all(directory);
+    }
+    let file = std::fs::File::create(&path).ok()?;
+    let copy = file.try_clone().ok()?;
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(file))
+        .stderr(std::process::Stdio::from(copy));
+    Some(path)
+}
+
 /// The sentence a child died with.
 ///
 /// The last non-empty line is the closest thing to a cause, and a backtrace is
-/// not a dialog, so the line is trimmed free of the plumbing prefixes and cut at
-/// a length a modal can show.
-fn failure_detail(stderr: &str) -> Option<String> {
-    let line = stderr
+/// not a dialog. An instantiation failure is rewritten into the words a person
+/// needs — which import is missing — because wasmtime's own line names the
+/// linker, not the app, and the guest that asked has no way to know either.
+fn failure_detail(log: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(log).ok()?;
+    let line = text
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .next_back()?;
+    if let Some((instance, version)) = missing_instance(line) {
+        return Some(format!(
+            "needs {instance}@{version}, which this host does not provide"
+        ));
+    }
     let line = line
         .trim_start_matches("canvas-winit: ")
         .trim_start_matches("soil: ")
@@ -591,6 +668,20 @@ fn failure_detail(stderr: &str) -> Option<String> {
         detail.push('.');
     }
     Some(detail)
+}
+
+/// The `name@version` in wasmtime's "imports instance \`…\`" failure.
+///
+/// The one line that names the reason is the same in every wasmtime error of
+/// this shape, so it is read rather than pattern-matched into a second copy of
+/// the linker's vocabulary.
+fn missing_instance(line: &str) -> Option<(&str, &str)> {
+    const NEEDLE: &str = "imports instance `";
+    let start = line.find(NEEDLE)? + NEEDLE.len();
+    let rest = &line[start..];
+    let instance = &rest[..rest.find('`')?];
+    let (name, version) = instance.split_once('@')?;
+    Some((name, version))
 }
 
 /// A package's display name, resolved the way every front door resolves it.
@@ -2438,6 +2529,17 @@ mod catalog_tests {
         .expect("catalogue");
         catalog.runner = Some(runner);
         catalog
+    }
+
+    #[test]
+    fn an_old_module_says_which_contract_it_wants() {
+        let line = "Error: component imports instance `soil:spore/catalog@0.1.0`, \
+                    but a matching implementation was not found in the linker";
+        assert_eq!(
+            missing_instance(line),
+            Some(("soil:spore/catalog", "0.1.0")),
+            "the missing interface is the reason, not the linker"
+        );
     }
 
     #[test]

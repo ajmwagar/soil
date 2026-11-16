@@ -31,6 +31,7 @@ fn usage() -> &'static str {
      commands:\n\
        spore run <dir|package.spore> [--listen ADDR] [--hub ADDR]... [--unibus-config FILE]\n\
                                     [--bridge ADDR] [--bridge-wait SECS] [--allow-origin URL]...\n\
+                                    [--hue-bridge URL] [--surface window|web|frame|fb]...\n\
        shell [--mount DIR] [--fuse-binary PATH] [--shell PATH] [--no-mount] [-- command...]\n\
        ls [PREFIX]\n\
        stat PATH\n\
