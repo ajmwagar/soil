@@ -24,7 +24,17 @@ use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtxView, WasiView};
 
-wasmtime::component::bindgen!({ path: "wit", world: "runner" });
+wasmtime::component::bindgen!({
+    path: "wit",
+    world: "runner",
+    // The notify host already implements these interfaces; map them to its
+    // types so this host forwards instead of re-deriving the tray.
+    with: {
+        "soil:notify/types": soil_notify_host::api::types,
+        "soil:notify/publisher": soil_notify_host::api::publisher,
+        "soil:notify/focus": soil_notify_host::api::focus,
+    },
+});
 
 use crate::soil::ble::ble::Error as BleError;
 use crate::soil::ble::types::{Characteristic, Device, Event, Notification, Service};
@@ -48,6 +58,9 @@ struct Scanned {
 struct DevHost {
     ble: ble_host::Ble,
     links: links::Links,
+    /// Tray broker for Spores that publish notifications. The host owns focus
+    /// and holding policy; a Spore only classifies and publishes.
+    notify: soil_notify_host::NotifyComponent,
     /// One-based handles into the last scan result.
     devices: Vec<Scanned>,
     records: NamespacedRecordsHost,
@@ -169,6 +182,62 @@ impl DevHost {
     fn now_ms(&self) -> u64 {
         self.time_origin_ms
             .saturating_add(u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX))
+    }
+}
+
+impl soil_notify_host::api::publisher::Host for DevHost {
+    fn publish(
+        &mut self,
+        notification: soil_notify_host::api::publisher::Notification,
+    ) -> Result<String, soil_notify_host::api::types::Error> {
+        <soil_notify_host::NotifyComponent as soil_notify_host::api::publisher::Host>::publish(
+            &mut self.notify,
+            notification,
+        )
+    }
+
+    fn update(
+        &mut self,
+        id: String,
+        notification: soil_notify_host::api::publisher::Notification,
+    ) -> Result<(), soil_notify_host::api::types::Error> {
+        <soil_notify_host::NotifyComponent as soil_notify_host::api::publisher::Host>::update(
+            &mut self.notify,
+            id,
+            notification,
+        )
+    }
+
+    fn withdraw(&mut self, id: String) -> Result<(), soil_notify_host::api::types::Error> {
+        <soil_notify_host::NotifyComponent as soil_notify_host::api::publisher::Host>::withdraw(
+            &mut self.notify,
+            id,
+        )
+    }
+}
+
+impl soil_notify_host::api::focus::Host for DevHost {
+    fn get(
+        &mut self,
+    ) -> Result<Option<soil_notify_host::api::focus::Profile>, soil_notify_host::api::types::Error>
+    {
+        <soil_notify_host::NotifyComponent as soil_notify_host::api::focus::Host>::get(&mut self.notify)
+    }
+
+    fn set(
+        &mut self,
+        profile: soil_notify_host::api::focus::Profile,
+    ) -> Result<(), soil_notify_host::api::types::Error> {
+        <soil_notify_host::NotifyComponent as soil_notify_host::api::focus::Host>::set(
+            &mut self.notify,
+            profile,
+        )
+    }
+
+    fn clear(&mut self) -> Result<(), soil_notify_host::api::types::Error> {
+        <soil_notify_host::NotifyComponent as soil_notify_host::api::focus::Host>::clear(
+            &mut self.notify,
+        )
     }
 }
 
@@ -393,6 +462,7 @@ fn main() -> Result<()> {
     // Every wearer gets their own records book. A Spore selects one by naming
     // a `<collection>:<wearer>` namespace; a wearer not listed here is denied.
     let mut wearers_raw = std::env::var("SOIL_WEARERS").unwrap_or_else(|_| "owner".to_string());
+    let mut focus_mode: Option<String> = None;
 
     let mut origins: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
@@ -406,9 +476,10 @@ fn main() -> Result<()> {
             "--session" => session_path = args.next().context("--session needs a path")?,
             "--host-id" => host_id = args.next().context("--host-id needs a value")?,
             "--wearers" => wearers_raw = args.next().context("--wearers needs a list")?,
+            "--focus" => focus_mode = Some(args.next().context("--focus needs a mode")?),
             "--help" | "-h" => {
                 println!(
-                    "usage: soil-dev-host [--real] [--allow-origin URL]... [--records-dir DIR] [--session FILE] [--host-id ID] [--wearers LIST] <guest.wasm> [guest args...]"
+                    "usage: soil-dev-host [--real] [--allow-origin URL]... [--records-dir DIR] [--session FILE] [--host-id ID] [--wearers LIST] [--focus MODE] <guest.wasm> [guest args...]"
                 );
                 return Ok(());
             }
@@ -421,7 +492,7 @@ fn main() -> Result<()> {
         }
     }
     let guest_path = guest_path.context(
-        "usage: soil-dev-host [--real] [--allow-origin URL]... [--records-dir DIR] [--session FILE] [--host-id ID] [--wearers LIST] <guest.wasm> [guest args...]",
+        "usage: soil-dev-host [--real] [--allow-origin URL]... [--records-dir DIR] [--session FILE] [--host-id ID] [--wearers LIST] [--focus MODE] <guest.wasm> [guest args...]",
     )?;
 
     let ble = if real {
@@ -444,6 +515,9 @@ fn main() -> Result<()> {
             "vitals.summary",
             "vitals.latest",
             "vitals.view",
+            // Inbox triage: raw messages in, one decision per message out.
+            "inbox.raw",
+            "inbox",
         ] {
             namespaces.push(Namespace::write(
                 format!("{collection}:{wearer}"),
@@ -476,9 +550,30 @@ fn main() -> Result<()> {
         .build()
         .context("build WASI state")?;
 
+    let notify = soil_notify_host::NotifyComponent::new(
+        soil_notify_host::NotifyBroker::in_memory("dev-host")
+            .map_err(|error| anyhow::anyhow!("notify broker: {error:?}"))?,
+        "dev.host",
+    );
+    if let Some(mode) = focus_mode {
+        notify
+            .broker()
+            .set_focus(soil_notify_host::FocusProfile {
+                mode: mode.clone(),
+                until_ms: None,
+                allow_apps: Vec::new(),
+                allow_categories: Vec::new(),
+                allow_threads: Vec::new(),
+                breakthrough: Vec::new(),
+                rollup_held: true,
+            })
+            .map_err(|error| anyhow::anyhow!("focus: {error:?}"))?;
+        eprintln!("notify: focus {mode}, held items roll up");
+    }
     let state = DevHost {
         ble,
         links: links::Links::new(session, host_id, LEASE_TTL_MS),
+        notify,
         devices: Vec::new(),
         records,
         http: HttpHost::new(policy),
@@ -503,6 +598,17 @@ fn main() -> Result<()> {
         .map_err(anyhow::Error::from)
         .context("link soil:time")?;
     records_host::add_to_linker::<DevHost>(&mut linker).context("link soil:records")?;
+    soil_notify_host::api::publisher::add_to_linker::<DevHost, HasSelf<DevHost>>(
+        &mut linker,
+        |state| state,
+    )
+    .map_err(anyhow::Error::from)
+    .context("link soil:notify/publisher")?;
+    soil_notify_host::api::focus::add_to_linker::<DevHost, HasSelf<DevHost>>(&mut linker, |state| {
+        state
+    })
+    .map_err(anyhow::Error::from)
+    .context("link soil:notify/focus")?;
     http_host::api::add_to_linker::<DevHost, HasSelf<DevHost>>(&mut linker, |state| state)
         .map_err(anyhow::Error::from)
         .context("link soil:http")?;
@@ -525,6 +631,28 @@ fn main() -> Result<()> {
         Ok(Ok(bytes)) => println!("{}", String::from_utf8_lossy(&bytes)),
         Ok(Err(message)) => eprintln!("snapshot failed: {message}"),
         Err(error) => eprintln!("snapshot trapped: {error:#}"),
+    }
+    let filter = soil_notify_host::Filter {
+        include_held: true,
+        include_read: true,
+        limit: 50,
+        ..Default::default()
+    };
+    match store.data().notify.broker().inbox(&filter) {
+        Ok(items) if !items.is_empty() => {
+            for item in items {
+                println!(
+                    "notify [{:?}] {}: {} — {}{}",
+                    item.envelope.priority,
+                    item.envelope.category,
+                    item.envelope.title,
+                    item.envelope.body,
+                    if item.envelope.sensitive { " (sensitive)" } else { "" }
+                );
+            }
+        }
+        Ok(_) => {}
+        Err(error) => eprintln!("notify: {error:?}"),
     }
     for frame in store.data().bus.frames() {
         println!(

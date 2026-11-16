@@ -7305,6 +7305,7 @@ dependencies = [
  "anyhow",
  "soil",
  "soil-ble-host",
+ "soil-notify-host",
  "wasmtime",
  "wasmtime-wasi",
 ]

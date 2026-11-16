@@ -19,6 +19,12 @@ wasmtime::component::bindgen!({
     },
 });
 
+/// The generated `soil:notify` bindings, re-exported so another host can map
+/// its own component imports onto these types instead of duplicating them.
+pub mod api {
+    pub use super::soil::notify::{focus, publisher, types};
+}
+
 use soil::notify::ringer as ringer_api;
 use soil::notify::{
     cleanup as cleanup_api, focus as focus_api, history as history_api, inbox as inbox_api,
