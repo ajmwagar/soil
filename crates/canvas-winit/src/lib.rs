@@ -95,9 +95,7 @@ impl LaunchConfig {
         }
         if let Some(grant) = &self.records_book {
             command.arg("--records-book").arg(&grant.book);
-            command
-                .arg("--records-collection")
-                .arg(&grant.collection);
+            command.arg("--records-collection").arg(&grant.collection);
         }
         if let Some(actor) = &self.actor {
             command.arg("--actor").arg(actor);
@@ -298,6 +296,25 @@ impl CatalogHost for SporeCatalog {
             Some(host) => native_command(host, &installed.root, &path, id, surface)?,
             None => launch_command(&executable, &path, &self.launch),
         };
+        // A Spore that imports `soil:vfs` cannot start without a root: the host
+        // links no such interface, so inheriting "nothing" is not a neutral
+        // default, it is a child that dies at instantiation. Hand down the
+        // launcher's own root when it has one, and otherwise the first desktop
+        // this machine declares — the same workspace `mush` would open.
+        if self.launch.vfs_root.is_none() {
+            match default_workspace() {
+                Some(root) => {
+                    command.arg("--vfs-root").arg(&root);
+                }
+                None => {
+                    eprintln!(
+                        "canvas-winit: {id} launches with no workspace: pass --vfs-root, or \
+                         declare a desktop in ~/.config/fungos/desktops"
+                    );
+                    return Err(CatalogError::Unsupported);
+                }
+            }
+        }
         let log = log_launch_output(&mut command, &component_cache(&path), id);
         let mut child = command.spawn().map_err(|_| CatalogError::Io)?;
         // A Spore that cannot start — a module built against an older contract,
@@ -409,6 +426,45 @@ fn launch_failure(log: &std::path::Path) -> String {
     } else {
         format!(" ({}):\n  {tail}", log.display())
     }
+}
+
+/// The workspace a launched Spore gets when the launcher was not given one.
+///
+/// Read from the same desktop registry `mush` writes, because that is the only
+/// place this machine says which workspaces exist. First by name: a launcher
+/// with no picker has to choose something, and choosing predictably beats
+/// choosing well.
+fn default_workspace() -> Option<PathBuf> {
+    let registry =
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config/fungos/desktops"))?;
+    let mut desktops: Vec<PathBuf> = std::fs::read_dir(&registry)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("toml"))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|entry| entry.path())
+        .collect();
+    desktops.sort();
+    for path in desktops {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(root) = text.lines().find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            (key.trim() == "root").then(|| value.trim().trim_matches('"').to_owned())
+        }) else {
+            continue;
+        };
+        let root = match root.strip_prefix("~/") {
+            Some(rest) => PathBuf::from(std::env::var_os("HOME")?).join(rest),
+            None => PathBuf::from(root),
+        };
+        if root.is_dir() {
+            return Some(root);
+        }
+    }
+    None
 }
 
 /// How one Spore opens another.
@@ -1683,7 +1739,6 @@ pub fn parse(args: &[String]) -> Result<Options> {
     // Every borrowed argument is cloned at the point it is taken, so the parse
     // loop reads the same whether it is fed `argv` or a caller's vector.
 
-
     let mut module = None;
     let mut capture = None;
     let mut frames = None;
@@ -1724,8 +1779,16 @@ pub fn parse(args: &[String]) -> Result<Options> {
             }
             "--key" => key = Some(args.next().context("--key needs a key name")?.clone()),
             "--keys" => keys = Some(args.next().context("--keys needs text")?.clone()),
-            "--command" => command = Some(args.next().context("--command needs a command line")?.clone()),
-            "--pointer" => pointer = Some(point(args.next().context("--pointer needs X,Y")?.clone())?),
+            "--command" => {
+                command = Some(
+                    args.next()
+                        .context("--command needs a command line")?
+                        .clone(),
+                )
+            }
+            "--pointer" => {
+                pointer = Some(point(args.next().context("--pointer needs X,Y")?.clone())?)
+            }
             "--click" => click = Some(point(args.next().context("--click needs X,Y")?.clone())?),
             "--drag" => {
                 drag = Some(drag_point(
@@ -1772,7 +1835,11 @@ pub fn parse(args: &[String]) -> Result<Options> {
                 ));
             }
             "--geode-purpose" => {
-                geode_purpose = Some(args.next().context("--geode-purpose needs a purpose")?.clone());
+                geode_purpose = Some(
+                    args.next()
+                        .context("--geode-purpose needs a purpose")?
+                        .clone(),
+                );
             }
             "--hue-bridge" => {
                 let value = args.next().context("--hue-bridge needs a URL")?;
