@@ -1,146 +1,488 @@
-//! Project attach for a Desktop.
+//! Project identity, and the checkouts a Desktop remembers.
 //!
-//! This is a snapshot import, not a live worktree monitor. It copies a host
-//! checkout into the Desktop VFS under `projects/<name>` so Mush can browse,
-//! search, and edit it with VFS tools. A future worktree implementation will
-//! replace this copy with Git base + op-log history.
+//! A project is a repository, not a directory. `git@github.com:Owner/Repo.git`
+//! and `https://github.com/owner/repo` are the same project, and a checkout and
+//! the worktrees made from it share that identity. Mush, Operator and Agentsmith
+//! spell it the same way — `github.com/owner/repo` — so a row one of them writes
+//! is a row the others can look up.
+//!
+//! Attaching records a *reference*: identity and path on the Desktop, and nothing
+//! else. The tree stays where the person working in it keeps it. A copy inside
+//! the Desktop would be a second, stale answer to what the project contains, and
+//! git already answers that question.
 
 use std::{
-    path::Path,
-    time::{SystemTime, UNIX_EPOCH},
+    io::IsTerminal,
+    path::{Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::{Context, Result, bail};
-use fungos_vfs::{Expect, Vfs};
-use ignore::WalkBuilder;
-use serde_json::json;
+use serde_json::{Value, json};
 
-use crate::{config, desktop};
+use crate::desktop::{self, Desktop};
 
-const MAX_FILE_BYTES: usize = 32 * 1024 * 1024;
-const MAX_TOTAL_BYTES: usize = 1024 * 1024 * 1024;
+/// Exit status for a change that was refused, so a caller can tell "nobody
+/// approved this" from "that path is not a checkout".
+pub const REFUSED: i32 = 4;
 
-pub fn attach(desktop_id: &str, project: &str, source: &str) -> Result<(usize, usize)> {
-    desktop::validate_id(project)?;
-    let desktop_config = desktop::load(desktop_id)?;
-    let source = config::expand_home(source);
-    if !source.is_dir() {
-        bail!("project source {} is not a directory", source.display());
-    }
-    let mut vfs = Vfs::open(&desktop_config.root)
-        .with_context(|| format!("open Desktop VFS {}", desktop_config.root.display()))?;
-    let head = git_output(&source, &["rev-parse", "HEAD"]);
-    let dirty =
-        git_output(&source, &["status", "--porcelain"]).map(|output| !output.trim().is_empty());
-    let remote = git_output(&source, &["remote", "get-url", "origin"]);
-
-    let mut files = 0usize;
-    let mut imported_bytes = 0usize;
-    let mut walker = WalkBuilder::new(&source);
-    walker
-        .hidden(false)
-        .git_ignore(true)
-        .git_exclude(true)
-        .git_global(false)
-        .parents(true);
-    for entry in walker.build() {
-        let entry = entry.map_err(|error| anyhow::anyhow!("walk {}: {error}", source.display()))?;
-        if entry.depth() == 0 {
-            continue;
-        }
-        let path = entry.path();
-        if path.is_dir() {
-            continue;
-        }
-        if path.is_symlink() {
-            continue;
-        }
-        let relative = match path.strip_prefix(&source) {
-            Ok(relative) => relative,
-            Err(_) => continue,
-        };
-        if relative.components().any(|component| {
-            matches!(
-                component.as_os_str().to_str(),
-                Some(".git" | "target" | "node_modules")
-            )
-        }) {
-            continue;
-        }
-        let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-        if bytes.len() > MAX_FILE_BYTES {
-            continue;
-        }
-        if imported_bytes + bytes.len() > MAX_TOTAL_BYTES {
-            bail!("project import exceeds {MAX_TOTAL_BYTES} bytes");
-        }
-        let vfs_path = format!(
-            "projects/{project}/{}",
-            relative.to_string_lossy().replace('\\', "/")
-        );
-        vfs.put(&vfs_path, &bytes, media_type(path), Expect::Any)
-            .with_context(|| format!("write VFS path {vfs_path}"))?;
-        files += 1;
-        imported_bytes += bytes.len();
-    }
-    if files == 0 {
-        bail!("project {} produced no importable files", source.display());
-    }
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or(0);
-    let manifest = json!({
-        "schema": 1,
-        "name": project,
-        "source": source.display().to_string(),
-        "head": head,
-        "dirty": dirty.unwrap_or(false),
-        "remote": remote,
-        "files": files,
-        "bytes": imported_bytes,
-        "imported_at_ms": now_ms,
-    });
-    let manifest_path = format!("projects/{project}/.desktop/project.json");
-    vfs.put(
-        &manifest_path,
-        serde_json::to_string_pretty(&manifest)?.as_bytes(),
-        "application/json",
-        Expect::Any,
-    )
-    .with_context(|| format!("write VFS path {manifest_path}"))?;
-    desktop::add_project(desktop_id, project)?;
-    Ok((files, imported_bytes))
+/// One checkout, as a Desktop remembers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectRef {
+    /// Identity recorded when the row was written. `None` for a name a Desktop
+    /// only claims: nothing has read a remote for it yet.
+    pub project: Option<String>,
+    /// Where the checkout is on this device.
+    pub path: PathBuf,
 }
 
-fn git_output(source: &Path, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("git")
+/// What git says about a checkout now.
+///
+/// Read where it is reported and never stored: a row remembering yesterday's
+/// commit would be wrong every time it was read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Facts {
+    pub branch: Option<String>,
+    pub commit: Option<String>,
+    /// The commit this checkout forked from its upstream default branch.
+    pub base: Option<String>,
+    /// `primary` for a repository, `worktree` for a tree linked to one.
+    pub role: &'static str,
+}
+
+impl ProjectRef {
+    /// A row for a path whose identity has not been read yet.
+    pub fn new(path: PathBuf) -> Self {
+        ProjectRef {
+            project: None,
+            path,
+        }
+    }
+
+    /// The checkout's name: its last path component.
+    pub fn name(&self) -> Option<&str> {
+        self.path.file_name().and_then(|name| name.to_str())
+    }
+
+    /// The recorded identity, or one read from the checkout now.
+    pub fn identity(&self) -> Option<String> {
+        self.project.clone().or_else(|| id(&self.path))
+    }
+
+    /// One row, in the shape every `--json` in this crate prints.
+    pub fn to_json(&self, desktop: &str) -> Value {
+        let facts = facts(&self.path);
+        json!({
+            "desktop": desktop,
+            "project": self.identity(),
+            "path": self.path.display().to_string(),
+            "branch": facts.branch,
+            "commit": facts.commit,
+            "base": facts.base,
+            "role": facts.role,
+        })
+    }
+}
+
+/// The one envelope for a row: `ok` first, then the row's own keys.
+pub fn envelope(row: Value) -> Value {
+    let mut envelope = json!({ "ok": true });
+    if let (Value::Object(envelope), Value::Object(row)) = (&mut envelope, row) {
+        envelope.extend(row);
+    }
+    envelope
+}
+
+/// One spelling for a project, across mush, Operator and Agentsmith.
+///
+/// A checkout with a remote is named by it, so two clones of one repository are
+/// one project. A checkout with no remote is named by its own path, which is
+/// stable as long as the tree stays put.
+pub fn id(path: &Path) -> Option<String> {
+    checkout_root(path).map(|root| identity_of(&root))
+}
+
+/// The identity of a checkout root: its remote, spelled one way, or the path
+/// when there is no remote to name it by.
+pub(crate) fn identity_of(root: &Path) -> String {
+    remote_url(root)
+        .and_then(|remote| normalize_remote(&remote))
+        .unwrap_or_else(|| format!("path:{}", normalized(root).display()))
+}
+
+/// `git@github.com:Owner/Repo.git` and `https://github.com/owner/repo` are the
+/// same project: `github.com/owner/repo`.
+///
+/// This is the spelling Operator's `roots::normalize_remote` produces, so a row
+/// written on one side of the fleet is found on the other. Anything that is not
+/// a host with a repository path — a local remote, a bundle, a typo — is `None`,
+/// and the caller falls back to naming the checkout by its path.
+pub fn normalize_remote(remote: &str) -> Option<String> {
+    let remote = remote.trim();
+    // A scheme that does not name a host (`file://`, a bundle, a typo) is not an
+    // identity; the caller falls back to naming the checkout by its path.
+    if let Some((scheme, _)) = remote.split_once("://") {
+        if !matches!(scheme, "https" | "http" | "ssh" | "git") {
+            return None;
+        }
+    }
+    let mut body = remote;
+    for scheme in ["https://", "http://", "ssh://", "git://"] {
+        if let Some(rest) = body.strip_prefix(scheme) {
+            body = rest;
+            break;
+        }
+    }
+    if body.is_empty() {
+        return None;
+    }
+    // `[user@]host:owner/repo` (scp syntax) uses the colon as the separator; a
+    // URL only ever has a port there.
+    let (host, path) = match body.split_once(':') {
+        Some((host, path)) if !remote.contains("://") => (host, path),
+        _ => body.split_once('/')?,
+    };
+    let host = host.rsplit('@').next().unwrap_or(host);
+    let host = host.split(':').next().unwrap_or(host);
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    if host.is_empty() || !path.contains('/') {
+        return None;
+    }
+    Some(format!("{host}/{path}").to_lowercase())
+}
+
+/// The root of the checkout `path` is inside, if it is in one.
+pub fn checkout_root(path: &Path) -> Option<PathBuf> {
+    let root = git(path, &["rev-parse", "--show-toplevel"])?;
+    let root = PathBuf::from(root);
+    (!root.as_os_str().is_empty()).then_some(root)
+}
+
+/// What git says about a checkout now.
+pub fn facts(path: &Path) -> Facts {
+    Facts {
+        role: role(path),
+        branch: git(path, &["rev-parse", "--abbrev-ref", "HEAD"]).filter(|head| head != "HEAD"),
+        commit: git(path, &["rev-parse", "HEAD"]),
+        base: base(path),
+    }
+}
+
+/// A `.git` directory is the repository; a `.git` file is a worktree linked to
+/// one. Anything else is not a checkout.
+fn role(path: &Path) -> &'static str {
+    match std::fs::metadata(path.join(".git")) {
+        Ok(metadata) if metadata.is_dir() => "primary",
+        Ok(_) => "worktree",
+        Err(_) => "none",
+    }
+}
+
+/// The commit this checkout forked from: the merge-base with the upstream
+/// default branch. That is what "based on" means for a worktree, and for a
+/// primary checkout on the default branch it is HEAD itself.
+fn base(root: &Path) -> Option<String> {
+    ["refs/remotes/origin/HEAD", "origin/main", "origin/master"]
+        .into_iter()
+        .find_map(|reference| git(root, &["merge-base", "HEAD", reference]))
+}
+
+/// Prefer `origin`, then the first remote there is: two remotes are one
+/// project, and origin is the one a clone names.
+fn remote_url(root: &Path) -> Option<String> {
+    if let Some(url) = git(root, &["remote", "get-url", "origin"]) {
+        return Some(url);
+    }
+    let remotes = git(root, &["remote"])?;
+    let first = remotes
+        .lines()
+        .map(str::trim)
+        .find(|name| !name.is_empty())?;
+    git(root, &["remote", "get-url", first])
+}
+
+fn git(root: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
         .arg("-C")
-        .arg(source)
+        .arg(root)
         .args(args)
         .output()
         .ok()?;
-    if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        None
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// The real path, so `/var` and `/private/var` are one checkout and a row
+/// written before a symlink moved still matches.
+pub(crate) fn normalized(path: &Path) -> PathBuf {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return real;
+    }
+    // A path that does not exist still has a real parent; normalize that much,
+    // so a missing directory never looks like a different checkout.
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => normalized(parent).join(name),
+        _ => path.to_path_buf(),
     }
 }
 
-fn media_type(path: &Path) -> &'static str {
-    match path.extension().and_then(|value| value.to_str()) {
-        Some("rs") => "text/x-rust",
-        Some("md") => "text/markdown",
-        Some("json") => "application/json",
-        Some("toml") => "application/toml",
-        Some("yaml" | "yml") => "application/yaml",
-        Some("sh") => "application/x-sh",
-        Some("js") => "text/javascript",
-        Some("ts") => "text/typescript",
-        Some("py") => "text/python",
-        Some("html") => "text/html",
-        Some("css") => "text/css",
-        Some("xml") => "text/xml",
-        _ => "application/octet-stream",
+/// Read a checkout: the row a Desktop would store for it.
+pub fn snapshot(path: &Path) -> Result<ProjectRef> {
+    let root =
+        checkout_root(path).with_context(|| format!("{} is not a git checkout", path.display()))?;
+    let root = normalized(&root);
+    Ok(ProjectRef {
+        project: Some(identity_of(&root)),
+        path: root,
+    })
+}
+
+/// Attach a checkout to a Desktop. The checkout itself is not touched.
+pub(crate) fn attach(desktop_id: &str, path: &Path) -> Result<ProjectRef> {
+    let project = snapshot(path)?;
+    desktop::attach_project(desktop_id, project.clone())?;
+    Ok(project)
+}
+
+/// Forget a checkout on one Desktop. Nothing on disk changes.
+pub(crate) fn detach(desktop_id: &str, path: &Path) -> Result<Option<ProjectRef>> {
+    desktop::detach_project(desktop_id, path)
+}
+
+/// `mush attach <path> [--desktop ID] [--approve] [--json]`
+pub fn run_attach(config: &crate::config::Config, mut args: Vec<String>) -> Result<()> {
+    let as_json = args.iter().any(|arg| arg == "--json");
+    args.retain(|arg| arg != "--json");
+    let approved = args.iter().any(|arg| arg == "--approve");
+    args.retain(|arg| arg != "--approve");
+    let desktop_id = desktop::selected(config, &mut args).ok_or_else(|| {
+        anyhow::anyhow!("no Desktop selected: pass --desktop ID (nothing claims this directory)")
+    })?;
+    let Some(path) = args.first().cloned() else {
+        bail!("usage: mush attach <path> [--desktop ID] [--approve] [--json]");
+    };
+    let project = snapshot(&crate::config::expand_home(&path))?;
+    let desktop = desktop::load(&desktop_id)?;
+    confirm(&desktop, &project, approved, as_json)?;
+    desktop::attach_project(&desktop_id, project.clone())?;
+    if as_json {
+        println!(
+            "{}",
+            serde_json::to_string(&envelope(project.to_json(&desktop_id)))?
+        );
+    } else {
+        let facts = facts(&project.path);
+        println!(
+            "attached {} at {} to Desktop {} ({}, branch {})",
+            project.identity().as_deref().unwrap_or("project"),
+            project.path.display(),
+            desktop.id,
+            facts.role,
+            facts.branch.as_deref().unwrap_or("(detached)"),
+        );
+    }
+    Ok(())
+}
+
+/// Attaching changes someone's Desktop, so a person confirms it. A caller with
+/// no terminal gets a refusal it can pass on — never a silent attach.
+fn confirm(desktop: &Desktop, project: &ProjectRef, approved: bool, as_json: bool) -> Result<()> {
+    if approved {
+        return Ok(());
+    }
+    let what = format!(
+        "attach {} ({}) to Desktop {}",
+        project.identity().as_deref().unwrap_or("this checkout"),
+        project.path.display(),
+        desktop.id
+    );
+    let row = project.to_json(&desktop.id);
+    if !std::io::stdin().is_terminal() {
+        refuse(
+            as_json,
+            "approval-required",
+            &format!("refusing to {what}: there is no terminal to ask, so pass --approve"),
+            row,
+        );
+    }
+    eprintln!("mush: {what}?");
+    eprint!("mush: [y/N] ");
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        refuse(as_json, "not-approved", "nothing was attached", row);
+    }
+    Ok(())
+}
+
+/// Report a refusal in the caller's own format, then exit non-zero.
+fn refuse(as_json: bool, reason: &str, message: &str, row: Value) -> ! {
+    eprintln!("mush: {message}");
+    if as_json {
+        let mut envelope = json!({ "ok": false, "reason": reason });
+        if let (Value::Object(envelope), Value::Object(row)) = (&mut envelope, row) {
+            envelope.extend(row);
+        }
+        println!("{envelope}");
+    }
+    std::process::exit(REFUSED)
+}
+
+/// `mush detach <path> [--desktop ID] [--json]`
+pub fn run_detach(config: &crate::config::Config, mut args: Vec<String>) -> Result<()> {
+    let as_json = args.iter().any(|arg| arg == "--json");
+    args.retain(|arg| arg != "--json");
+    let desktop_id = desktop::selected(config, &mut args).ok_or_else(|| {
+        anyhow::anyhow!("no Desktop selected: pass --desktop ID (nothing claims this directory)")
+    })?;
+    let Some(path) = args.first().cloned() else {
+        bail!("usage: mush detach <path> [--desktop ID] [--json]");
+    };
+    let path = crate::config::expand_home(&path);
+    let Some(project) = detach(&desktop_id, &path)? else {
+        // Removing nothing is a wrong path, not a success.
+        if as_json {
+            println!(
+                "{}",
+                json!({
+                    "ok": false,
+                    "reason": "not-attached",
+                    "desktop": desktop_id,
+                    "path": path.display().to_string(),
+                })
+            );
+            std::process::exit(REFUSED);
+        }
+        bail!("{} is not attached to Desktop {desktop_id}", path.display());
+    };
+    if as_json {
+        println!(
+            "{}",
+            serde_json::to_string(&envelope(project.to_json(&desktop_id)))?
+        );
+    } else {
+        println!(
+            "detached {} from Desktop {desktop_id} (the checkout is untouched)",
+            project.path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn two_spellings_of_one_remote_collapse() {
+        let github = Some("github.com/owner/repo".to_string());
+        assert_eq!(normalize_remote("git@github.com:Owner/Repo.git"), github);
+        assert_eq!(normalize_remote("https://github.com/owner/repo"), github);
+        assert_eq!(
+            normalize_remote("https://github.com/owner/repo.git/"),
+            github
+        );
+        assert_eq!(
+            normalize_remote("ssh://git@github.com:22/owner/repo"),
+            github
+        );
+        assert_eq!(normalize_remote("ssh://git@github.com/owner/repo"), github);
+        assert_eq!(normalize_remote(" http://GitHub.com/owner/repo "), github);
+    }
+
+    #[test]
+    fn a_remote_that_is_not_a_repository_has_no_identity() {
+        assert_eq!(normalize_remote(""), None);
+        assert_eq!(normalize_remote("/Users/me/src/soil"), None);
+        assert_eq!(normalize_remote("file:///Users/me/src/soil"), None);
+        assert_eq!(normalize_remote("https://github.com/owner"), None);
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "mush")
+            .env("GIT_AUTHOR_EMAIL", "mush@example.com")
+            .env("GIT_COMMITTER_NAME", "mush")
+            .env("GIT_COMMITTER_EMAIL", "mush@example.com")
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn checkout(remote: Option<&str>) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        git_in(dir.path(), &["init", "-q"]);
+        if let Some(remote) = remote {
+            git_in(dir.path(), &["remote", "add", "origin", remote]);
+        }
+        git_in(
+            dir.path(),
+            &["commit", "-q", "--allow-empty", "-m", "first"],
+        );
+        dir
+    }
+
+    #[test]
+    fn a_worktree_and_its_primary_share_an_identity() {
+        let primary = checkout(Some("git@github.com:Owner/Repo.git"));
+        let linked = tempfile::tempdir().unwrap();
+        let worktree = linked.path().join("repo");
+        git_in(
+            primary.path(),
+            &[
+                "worktree",
+                "add",
+                "-q",
+                worktree.to_str().unwrap(),
+                "-b",
+                "feature",
+            ],
+        );
+        let expected = Some("github.com/owner/repo".to_string());
+        assert_eq!(id(primary.path()), expected);
+        assert_eq!(id(&worktree), expected);
+        assert_eq!(facts(&worktree).role, "worktree");
+        assert_eq!(facts(primary.path()).role, "primary");
+    }
+
+    #[test]
+    fn a_checkout_without_a_remote_is_named_by_its_path() {
+        let checkout = checkout(None);
+        let root = normalized(checkout.path());
+        let expected = Some(format!("path:{}", root.display()));
+        assert_eq!(id(checkout.path()), expected);
+        // Stable across calls, and the same from anywhere inside the tree.
+        assert_eq!(id(checkout.path()), expected);
+        std::fs::create_dir_all(root.join("crates/app")).unwrap();
+        assert_eq!(id(&root.join("crates/app")), expected);
+    }
+
+    #[test]
+    fn a_directory_that_is_not_a_checkout_has_no_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(id(dir.path()), None);
+        assert!(snapshot(dir.path()).is_err());
+    }
+
+    #[test]
+    fn facts_carry_the_head_commit_and_the_branch() {
+        let checkout = checkout(Some("https://github.com/owner/repo"));
+        let head = git_in(checkout.path(), &["rev-parse", "HEAD"]);
+        let facts = facts(checkout.path());
+        assert_eq!(facts.commit.as_deref(), Some(head.as_str()));
+        assert!(!facts.branch.as_deref().unwrap_or_default().is_empty());
+        // No upstream here, so there is nothing to be based on.
+        assert_eq!(facts.base, None);
     }
 }

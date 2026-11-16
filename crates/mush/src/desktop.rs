@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+use crate::project::ProjectRef;
+
 pub struct Desktop {
     pub id: String,
     pub name: String,
@@ -20,7 +22,10 @@ pub struct Desktop {
     /// while each device projects it somewhere different.
     pub mount: PathBuf,
     pub theme: String,
-    pub projects: Vec<String>,
+    /// Checkouts this Desktop works on. A row is a reference: the tree stays
+    /// where the person keeps it, and one project can be attached to more than
+    /// one Desktop.
+    pub projects: Vec<ProjectRef>,
 }
 
 pub fn registry_path() -> PathBuf {
@@ -112,14 +117,78 @@ pub fn create_at(
     Ok(desktop)
 }
 
-pub fn add_project(id: &str, project: &str) -> Result<()> {
+/// Which Desktop a command means: `--desktop`, `MUSH_DESKTOP`, the config,
+/// then the caller's origin. One rule, so `mush attach` and `mush projects`
+/// cannot disagree about where a command lands.
+pub fn selected(config: &crate::config::Config, args: &mut Vec<String>) -> Option<String> {
+    crate::take_option(args, "--desktop")
+        .or_else(|| std::env::var("MUSH_DESKTOP").ok())
+        .or_else(|| config.desktop.clone())
+        .or_else(|| {
+            // No Desktop named: ask the caller's origin, exactly as `mush` does.
+            let cwd = std::env::current_dir().ok()?;
+            crate::origin::resolve(&cwd).desktop
+        })
+}
+
+/// Claim a name inside the Desktop's own `projects/` directory.
+pub fn claim(id: &str, name: &str) -> Result<()> {
+    validate_id(name)?;
+    let desktop = load(id)?;
+    let path = desktop.mount.join("projects").join(name);
+    attach_project(id, ProjectRef::new(path))
+}
+
+/// Record one checkout on a Desktop.
+///
+/// Re-attaching the same path refreshes the row instead of adding a second:
+/// a path is the checkout, and the identity is what the last read of it said.
+pub fn attach_project(id: &str, project: ProjectRef) -> Result<()> {
+    attach_project_at(&registry_path(), id, project)
+}
+
+pub fn attach_project_at(base: &Path, id: &str, project: ProjectRef) -> Result<()> {
     validate_id(id)?;
-    validate_id(project)?;
-    let mut desktop = load(id)?;
-    if !desktop.projects.iter().any(|existing| existing == project) {
-        desktop.projects.push(project.to_string());
+    let mut desktop = load_at(base, id)?;
+    let path = crate::project::normalized(&project.path);
+    match desktop
+        .projects
+        .iter_mut()
+        .find(|row| crate::project::normalized(&row.path) == path)
+    {
+        Some(row) => *row = project,
+        None => desktop.projects.push(project),
     }
-    write_config(&registry_path().join(format!("{id}.toml")), &desktop)
+    write_config(&base.join(format!("{id}.toml")), &desktop)
+}
+
+/// Forget a checkout on one Desktop.
+///
+/// Only the row goes. The checkout, its git state and the Desktop's VFS are
+/// untouched: the Desktop never owned any of them.
+pub fn detach_project(id: &str, path: &Path) -> Result<Option<ProjectRef>> {
+    detach_project_at(&registry_path(), id, path)
+}
+
+pub fn detach_project_at(base: &Path, id: &str, path: &Path) -> Result<Option<ProjectRef>> {
+    validate_id(id)?;
+    let mut desktop = load_at(base, id)?;
+    let target = crate::project::normalized(path);
+    // The deepest matching row wins, so detaching from a subdirectory names the
+    // checkout it is in rather than every Desktop that happens to be above it.
+    let index = desktop
+        .projects
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| target.starts_with(crate::project::normalized(&row.path)))
+        .max_by_key(|(_, row)| row.path.components().count())
+        .map(|(index, _)| index);
+    let Some(index) = index else {
+        return Ok(None);
+    };
+    let removed = desktop.projects.remove(index);
+    write_config(&base.join(format!("{id}.toml")), &desktop)?;
+    Ok(Some(removed))
 }
 
 fn write_config(path: &Path, desktop: &Desktop) -> Result<()> {
@@ -135,10 +204,16 @@ fn write_config(path: &Path, desktop: &Desktop) -> Result<()> {
         escape(&desktop.mount.display().to_string())
     ));
     text.push_str(&format!("theme = \"{}\"\n", escape(&desktop.theme)));
-    text.push_str(&format!(
-        "projects = \"{}\"\n",
-        escape(&desktop.projects.join(","))
-    ));
+    for project in &desktop.projects {
+        text.push_str("\n[[project]]\n");
+        if let Some(identity) = &project.project {
+            text.push_str(&format!("project = \"{}\"\n", escape(identity)));
+        }
+        text.push_str(&format!(
+            "path = \"{}\"\n",
+            escape(&project.path.display().to_string())
+        ));
+    }
     std::fs::write(path, text).with_context(|| format!("write {}", path.display()))
 }
 
@@ -149,10 +224,21 @@ fn parse(id: &str, text: &str) -> Result<Desktop> {
         .join(id);
     let mut mount = default_mount(id);
     let mut theme = "deep".to_string();
-    let mut projects = Vec::new();
+    let mut projects: Vec<ProjectRef> = Vec::new();
+    // `projects = "a,b"` is the shape written before rows existed. It still
+    // reads, as names inside this Desktop's own `projects/` directory.
+    let mut claims: Vec<String> = Vec::new();
+    let mut row: Option<ProjectRef> = None;
     for (line_number, raw) in text.lines().enumerate() {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line == "[[project]]" {
+            if let Some(row) = row.take() {
+                push_row(id, &mut projects, row)?;
+            }
+            row = Some(ProjectRef::new(PathBuf::new()));
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
@@ -161,18 +247,30 @@ fn parse(id: &str, text: &str) -> Result<Desktop> {
                 line_number + 1
             );
         };
+        let key = key.trim();
         let value = unquote(value.trim());
-        match key.trim() {
+        if let Some(row) = row.as_mut() {
+            match key {
+                "project" => row.project = Some(value),
+                "path" => row.path = crate::config::expand_home(&value),
+                other => bail!(
+                    "Desktop {id} line {}: unknown project key {other:?}",
+                    line_number + 1
+                ),
+            }
+            continue;
+        }
+        match key {
             "id" => {}
             "name" => name = value,
             "root" => root = crate::config::expand_home(&value),
             "mount" => mount = crate::config::expand_home(&value),
             "theme" => theme = value,
             "projects" => {
-                projects = value
+                claims = value
                     .split(',')
                     .map(str::trim)
-                    .filter(|project| !project.is_empty())
+                    .filter(|claim| !claim.is_empty())
                     .map(str::to_string)
                     .collect();
             }
@@ -180,6 +278,15 @@ fn parse(id: &str, text: &str) -> Result<Desktop> {
                 "Desktop {id} line {}: unknown key {other:?}",
                 line_number + 1
             ),
+        }
+    }
+    if let Some(row) = row.take() {
+        push_row(id, &mut projects, row)?;
+    }
+    for claim in claims {
+        let path = mount.join("projects").join(claim);
+        if !projects.iter().any(|row| row.path == path) {
+            projects.push(ProjectRef::new(path));
         }
     }
     Ok(Desktop {
@@ -190,6 +297,15 @@ fn parse(id: &str, text: &str) -> Result<Desktop> {
         theme,
         projects,
     })
+}
+
+/// A row is a path; everything else about it is read from the checkout.
+fn push_row(id: &str, projects: &mut Vec<ProjectRef>, row: ProjectRef) -> Result<()> {
+    if row.path.as_os_str().is_empty() {
+        bail!("Desktop {id}: a [[project]] row needs a path");
+    }
+    projects.push(row);
+    Ok(())
 }
 
 /// Where a Desktop is projected on this device when the registry is silent.
@@ -250,7 +366,78 @@ mod tests {
         assert!(desktop.root.ends_with("fungos/acme"));
         assert!(desktop.mount.ends_with("mnt/acme"));
         assert_eq!(desktop.theme, "ocean");
-        assert_eq!(desktop.projects, vec!["soil", "marbles"]);
+        // A name written by an older mush is a claim inside the projection.
+        assert_eq!(
+            desktop
+                .projects
+                .iter()
+                .map(|row| row.name().unwrap_or_default().to_string())
+                .collect::<Vec<_>>(),
+            vec!["soil", "marbles"]
+        );
+        assert!(desktop.projects[0].project.is_none());
+    }
+
+    #[test]
+    fn rows_round_trip_and_detach_removes_only_the_row() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("vfs");
+        let mount = base.path().join("mount");
+        let checkout = base.path().join("src/soil");
+        std::fs::create_dir_all(&checkout).unwrap();
+
+        let desktop = Desktop {
+            id: "acme".into(),
+            name: "Acme".into(),
+            root: root.clone(),
+            mount: mount.clone(),
+            theme: "ocean".into(),
+            projects: Vec::new(),
+        };
+        write_config(&base.path().join("acme.toml"), &desktop).unwrap();
+
+        attach_project_at(
+            base.path(),
+            "acme",
+            ProjectRef {
+                project: Some("github.com/mycelium-linux/soil".into()),
+                path: checkout.clone(),
+            },
+        )
+        .unwrap();
+        // Re-attaching the same path refreshes rather than duplicating.
+        attach_project_at(
+            base.path(),
+            "acme",
+            ProjectRef {
+                project: Some("github.com/mycelium-linux/soil".into()),
+                path: checkout.clone(),
+            },
+        )
+        .unwrap();
+        let loaded = load_at(base.path(), "acme").unwrap();
+        assert_eq!(loaded.projects.len(), 1);
+        assert_eq!(
+            loaded.projects[0].project.as_deref(),
+            Some("github.com/mycelium-linux/soil")
+        );
+
+        let removed = detach_project_at(base.path(), "acme", &checkout.join("crates"))
+            .unwrap()
+            .expect("a row to remove");
+        assert_eq!(removed.path, checkout);
+        assert!(load_at(base.path(), "acme").unwrap().projects.is_empty());
+        // The checkout was never the Desktop's to delete.
+        assert!(checkout.is_dir());
+        assert_eq!(
+            detach_project_at(base.path(), "acme", &checkout).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_row_without_a_path_is_refused() {
+        assert!(parse("acme", "[[project]]\nproject = \"github.com/o/r\"\n").is_err());
     }
 
     #[test]
