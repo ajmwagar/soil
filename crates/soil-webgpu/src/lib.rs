@@ -18,6 +18,7 @@ use ::soil::http_host::{
 };
 use ::soil::principal_host::PrincipalHost;
 use ::soil::records_host::{self, Namespace, NamespacedRecordsHost};
+use ::soil::unibus::{Bus, MemoryBus};
 use ::soil::vfs_host::VfsHost;
 use anyhow::{Context, Result};
 use wasi_webgpu_wasmtime::reexports::{wgpu_core, wgpu_types};
@@ -560,6 +561,9 @@ pub struct WebGpuHost {
     terminal: Box<dyn TerminalHost>,
     cursor: Option<Box<dyn CursorHost>>,
     clipboard: Option<Box<dyn ClipboardHost>>,
+    /// The Unibus this Spore publishes to and polls. In-process: the notices a
+    /// surface emits are for surfaces on this machine, and a popup is one.
+    bus: Arc<MemoryBus>,
     /// Frame accounting for `SOIL_WEBGPU_STATS=1`.
     stats: FrameStats,
 }
@@ -803,6 +807,7 @@ impl WebGpuHost {
             terminal: setup.terminal,
             cursor: setup.cursor,
             clipboard: setup.clipboard,
+            bus: Arc::new(MemoryBus::default()),
             stats: FrameStats::new(),
         })
     }
@@ -935,6 +940,61 @@ impl soil::present::surface::Host for WebGpuHost {
             rgba: image.rgba,
         };
         self.presenter.present(frame).map_err(|e| e.to_string())
+    }
+}
+
+impl ::soil::unibus::bus::Host for WebGpuHost {
+    fn poll(
+        &mut self,
+        kinds: Vec<String>,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> std::result::Result<::soil::unibus::bus::Page, ::soil::unibus::bus::Error> {
+        let page = self
+            .bus
+            .poll(&kinds, cursor.as_deref(), limit)
+            .map_err(bus_error)?;
+        Ok(::soil::unibus::bus::Page {
+            frames: page
+                .frames
+                .into_iter()
+                .map(|frame| ::soil::unibus::bus::Frame {
+                    kind: frame.kind,
+                    producer: frame.producer,
+                    issued_at_ms: frame.issued_at_ms,
+                    body: frame.body,
+                })
+                .collect(),
+            next: page.next,
+        })
+    }
+
+    fn publish(
+        &mut self,
+        kind: String,
+        body: Vec<u8>,
+        destination: Option<String>,
+        ttl_ms: u64,
+    ) -> std::result::Result<::soil::unibus::bus::Receipt, ::soil::unibus::bus::Error> {
+        self.bus
+            .publish(&kind, &body, destination.as_deref(), ttl_ms)
+            .map(|receipt| ::soil::unibus::bus::Receipt {
+                request_id: receipt.request_id,
+            })
+            .map_err(bus_error)
+    }
+}
+
+/// The bus reports failure in its own vocabulary; the guest sees the WIT one.
+fn bus_error(error: ::soil::unibus::BusError) -> ::soil::unibus::bus::Error {
+    use ::soil::unibus::BusError as Bus;
+    use ::soil::unibus::bus::Error as Wire;
+    match error {
+        Bus::Denied => Wire::Denied,
+        Bus::Invalid => Wire::Invalid,
+        Bus::OverBudget => Wire::OverBudget,
+        Bus::Stale => Wire::Stale,
+        Bus::Unavailable => Wire::Unavailable,
     }
 }
 
@@ -1693,6 +1753,7 @@ impl WebGpuRuntime {
         .context("link soil:vfs")?;
         ::soil::principal_host::add_to_linker::<WebGpuHost>(&mut linker)
             .context("link soil:principal")?;
+        ::soil::unibus::add_to_linker::<WebGpuHost>(&mut linker).context("link soil:unibus")?;
         Ok(Self {
             engine,
             linker,

@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 soil-spore = { path = "../soil-spore" }
-soil = { path = "../soil", default-features = false, features = ["http", "principal", "records", "vfs"] }
+soil = { path = "../soil", default-features = false, features = ["http", "principal", "records", "vfs", "wasi"] }
 soil-agent-host = { path = "../soil-agent-host" }
 ureq = "2"
 anyhow = "1"
