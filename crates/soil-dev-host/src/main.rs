@@ -518,6 +518,7 @@ fn main() -> Result<()> {
             // Inbox triage: raw messages in, one decision per message out.
             "inbox.raw",
             "inbox",
+            "brief",
         ] {
             namespaces.push(Namespace::write(
                 format!("{collection}:{wearer}"),

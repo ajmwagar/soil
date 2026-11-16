@@ -30,6 +30,10 @@ use crate::records_host::soil::records::records;
 /// query does not need — see the records-backend follow-ups.
 const MAX_PAGE: u32 = 4096;
 
+/// How many store batches one `scan` may walk while looking for its own
+/// collection. Bounded so a large book cannot make one call unbounded.
+const MAX_SCAN_BATCHES: usize = 32;
+
 /// One named book grant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Namespace {
@@ -112,11 +116,27 @@ impl NamespacedRecordsHost {
         Ok(namespace)
     }
 
+    /// Store ids are scoped by collection: a book's primary key is
+    /// `(book, entity id)`, so without this an inbox decision `m1` would
+    /// overwrite the raw message `m1`, and a brief keyed by wearer would
+    /// overwrite that wearer's vitals view.
+    fn scoped(namespace: &Namespace, id: &str) -> String {
+        format!("{}:{id}", namespace.collection)
+    }
+
+    /// The guest-visible id, without the collection scope.
+    fn unscoped(namespace: &Namespace, entity_id: &str) -> String {
+        entity_id
+            .strip_prefix(&format!("{}:", namespace.collection))
+            .unwrap_or(entity_id)
+            .to_string()
+    }
+
     fn entry(namespace: &Namespace, record: Record) -> records::Entry {
         records::Entry {
             key: records::Key {
                 collection: namespace.name.clone(),
-                id: record.entity_id,
+                id: Self::unscoped(namespace, &record.entity_id),
             },
             schema: record.schema_id,
             revision: record.updated_hlc,
@@ -137,7 +157,7 @@ impl records::Host for NamespacedRecordsHost {
         let record = {
             let store = self.store.lock().expect("records store poisoned");
             store
-                .get(&namespace.book, &key.id)
+                .get(&namespace.book, &Self::scoped(namespace, &key.id))
                 .map_err(|_| records::Error::NotFound)?
         };
         Ok(Self::entry(namespace, record))
@@ -153,26 +173,42 @@ impl records::Host for NamespacedRecordsHost {
         if limit == 0 || limit > MAX_PAGE {
             return Err(records::Error::OverBudget);
         }
-        let records = {
-            let store = self.store.lock().expect("records store poisoned");
-            store
-                .scan_records(&namespace.book, cursor.as_deref(), limit as usize + 1)
-                .map_err(|_| records::Error::Io)?
-        };
-        let mut entries: Vec<_> = records.into_iter().collect();
-        let next = if entries.len() > limit as usize {
-            entries.truncate(limit as usize);
-            entries.last().map(|record| record.entity_id.clone())
-        } else {
-            None
-        };
-        Ok(records::Page {
-            entries: entries
-                .into_iter()
-                .map(|record| Self::entry(namespace, record))
-                .collect(),
-            next,
-        })
+        let prefix = format!("{}:", namespace.collection);
+        let store = self.store.lock().expect("records store poisoned");
+        let mut entries = Vec::new();
+        let mut cursor = cursor;
+        // The book may hold several collections; walk it until this one has a
+        // full page or the book ends.
+        for _ in 0..MAX_SCAN_BATCHES {
+            let batch = store
+                .scan_records(&namespace.book, cursor.as_deref(), MAX_PAGE as usize)
+                .map_err(|_| records::Error::Io)?;
+            let batch_len = batch.len();
+            let mut last = None;
+            for record in batch {
+                let entity_id = record.entity_id.clone();
+                last = Some(entity_id.clone());
+                if !entity_id.starts_with(&prefix) {
+                    continue;
+                }
+                entries.push(Self::entry(namespace, record));
+                if entries.len() > limit as usize {
+                    entries.truncate(limit as usize);
+                    return Ok(records::Page {
+                        entries,
+                        next: last,
+                    });
+                }
+            }
+            cursor = last;
+            if batch_len < MAX_PAGE as usize || cursor.is_none() {
+                return Ok(records::Page {
+                    entries,
+                    next: None,
+                });
+            }
+        }
+        Err(records::Error::OverBudget)
     }
 
     fn upsert(&mut self, entry: records::Entry) -> Result<records::Entry, records::Error> {
@@ -187,10 +223,16 @@ impl records::Host for NamespacedRecordsHost {
         }
         let mut store = self.store.lock().expect("records store poisoned");
         store
-            .put_record(&namespace.book, &entry.key.id, &entry.schema, 1, value)
+            .put_record(
+                &namespace.book,
+                &Self::scoped(namespace, &entry.key.id),
+                &entry.schema,
+                1,
+                value,
+            )
             .map_err(|_| records::Error::Io)?;
         let record = store
-            .get(&namespace.book, &entry.key.id)
+            .get(&namespace.book, &Self::scoped(namespace, &entry.key.id))
             .map_err(|_| records::Error::Io)?;
         drop(store);
         Ok(Self::entry(namespace, record))
@@ -226,7 +268,8 @@ impl records::Host for NamespacedRecordsHost {
         };
 
         let mut store = self.store.lock().expect("records store poisoned");
-        let current = store.get(&namespace.book, &key.id).ok();
+        let scoped = Self::scoped(namespace, &key.id);
+        let current = store.get(&namespace.book, &scoped).ok();
         let current_entry = current
             .as_ref()
             .map(|record| Self::entry(namespace, record.clone()));
@@ -261,13 +304,13 @@ impl records::Host for NamespacedRecordsHost {
 
         if entry.deleted {
             store
-                .delete_record(&namespace.book, &key.id, &schema, 1)
+                .delete_record(&namespace.book, &scoped, &schema, 1)
                 .map_err(|_| records::Error::Io)?;
         } else {
             store
                 .put_record(
                     &namespace.book,
-                    &key.id,
+                    &scoped,
                     &schema,
                     1,
                     body.expect("a live write has a body"),
@@ -276,7 +319,7 @@ impl records::Host for NamespacedRecordsHost {
         }
 
         let record = store
-            .get(&namespace.book, &key.id)
+            .get(&namespace.book, &scoped)
             .map_err(|_| records::Error::Io)?;
         drop(store);
         Ok(records::CasResult {
@@ -291,12 +334,13 @@ impl records::Host for NamespacedRecordsHost {
             return Err(records::Error::Invalid);
         }
         let mut store = self.store.lock().expect("records store poisoned");
+        let scoped = Self::scoped(namespace, &key.id);
         let schema = store
-            .get(&namespace.book, &key.id)
+            .get(&namespace.book, &scoped)
             .map(|record| record.schema_id)
             .map_err(|_| records::Error::NotFound)?;
         store
-            .delete_record(&namespace.book, &key.id, &schema, 1)
+            .delete_record(&namespace.book, &scoped, &schema, 1)
             .map_err(|_| records::Error::Io)?;
         Ok(())
     }
@@ -364,11 +408,12 @@ impl records::Host for NamespacedRecordsHost {
                 }
                 value
             };
+            let entity_id = Self::scoped(namespace, &entry.key.id);
             let applied = store
                 .apply_entry(
                     &namespace.book,
                     fungos_records::RecordEntry {
-                        entity_id: &entry.key.id,
+                        entity_id: &entity_id,
                         schema_id: &entry.schema,
                         schema_version: 1,
                         fields,
@@ -443,6 +488,58 @@ mod tests {
             host.scan("missing".into(), None, 10).unwrap_err(),
             records::Error::Denied
         );
+    }
+
+    /// A book's primary key is `(book, entity id)`, so two namespaces sharing
+    /// one book must not collide on a guest id — that is how an inbox decision
+    /// `m1` would erase the raw message `m1`.
+    #[test]
+    fn two_namespaces_in_one_book_cannot_overwrite_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = NamespacedRecordsHost::open(
+            dir.path(),
+            vec![
+                Namespace::write("raw", "personal/test/telemetry", "raw"),
+                Namespace::write("decisions", "personal/test/telemetry", "decisions"),
+            ],
+        )
+        .unwrap();
+
+        let mut raw = entry("raw", "m1");
+        raw.body = serde_json::to_vec(&serde_json::json!({"body": "hello"})).unwrap();
+        host.upsert(raw).unwrap();
+        let mut decision = entry("decisions", "m1");
+        decision.body = serde_json::to_vec(&serde_json::json!({"action": "publish"})).unwrap();
+        host.upsert(decision).unwrap();
+
+        let body = |entry: records::Entry| serde_json::from_slice::<serde_json::Value>(&entry.body).unwrap();
+        assert_eq!(
+            body(host
+                .get(records::Key {
+                    collection: "raw".into(),
+                    id: "m1".into()
+                })
+                .unwrap())["body"],
+            "hello",
+            "the raw message survives the decision"
+        );
+        assert_eq!(
+            body(host
+                .get(records::Key {
+                    collection: "decisions".into(),
+                    id: "m1".into()
+                })
+                .unwrap())["action"],
+            "publish"
+        );
+
+        // A scan sees its own collection, not the whole book.
+        let raw_page = host.scan("raw".into(), None, 10).unwrap();
+        assert_eq!(raw_page.entries.len(), 1);
+        assert_eq!(raw_page.entries[0].key.collection, "raw");
+        let decision_page = host.scan("decisions".into(), None, 10).unwrap();
+        assert_eq!(decision_page.entries.len(), 1);
+        assert_eq!(decision_page.entries[0].key.collection, "decisions");
     }
 
     #[test]
