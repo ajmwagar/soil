@@ -735,10 +735,15 @@ struct App {
     http: Option<HttpAccess>,
     /// The records grant passed to the Spore, when it was given a root.
     records: Option<RecordsAccess>,
+    /// The store root itself, for the one thing that is not a guest grant: a
+    /// recorded transcript read back through `soil:agents`.
+    records_root: Option<PathBuf>,
     /// The workspace grant passed to the Spore, when it was given a root.
     vfs_root: Option<PathBuf>,
     /// The principal the host attests for this Spore, when it was told.
     actor: Option<String>,
+    /// One recorded transcript to present through `soil:agents`, or `all`.
+    agent_session: Option<String>,
     /// Grants a child Spore inherits when the launcher opens it.
     launch: LaunchConfig,
     /// What runs on the terminal's pty: a login shell when absent.
@@ -817,8 +822,34 @@ impl App {
         }
     }
 
-    fn start_component(&mut self, window: Arc<Window>) {
-        if self.started {
+/// The agent set a window presents.
+///
+/// A book is read, never written: a window over one cannot pretend to drive the
+/// harness that wrote it, which is why the reader refuses `send`, `answer` and
+/// `interrupt`. `all` is the wall; one id is the conversation the window is for.
+fn agent_backend(
+    session: Option<&str>,
+    records_root: Option<&std::path::Path>,
+) -> Result<Box<dyn soil_agent_host::AgentBackend>> {
+    let Some(session) = session else {
+        return Ok(Box::new(NoAgents));
+    };
+    let root = records_root
+        .context("--agent-session needs a records root: the book has to live somewhere")?;
+    Ok(if session == "all" {
+        Box::new(
+            soil_agent_records::RecordedSessions::open(root)
+                .with_context(|| format!("open the recorded sessions in {}", root.display()))?,
+        )
+    } else {
+        Box::new(
+            soil_agent_records::RecordsAgents::open(root, session)
+                .with_context(|| format!("open the transcript of {session}"))?,
+        )
+    })
+}
+
+    fn start_component(&mut self, window: Arc<Window>) {        if self.started {
             return;
         }
         self.started = true;
@@ -834,6 +865,8 @@ impl App {
         let records = self.records.clone();
         let vfs_root = self.vfs_root.clone();
         let actor = self.actor.clone();
+        let agent_session = self.agent_session.clone();
+        let records_root = self.records_root.clone();
         let launch = self.launch.clone();
         thread::spawn(move || {
             let result = (|| -> Result<()> {
@@ -867,10 +900,10 @@ impl App {
                             }
                             None => ::soil::principal_host::PrincipalHost::local(),
                         },
-                        // The storefront origin is already in the HTTP policy
-                        // `build_http` constructs; this presenter has no agent
-                        // cast of its own and needs no single-origin shorthand.
-                        agents: Box::new(NoAgents),
+                        // A window shows agents only when the operator named a
+                        // transcript; a book is read, never written, so a
+                        // window over one cannot pretend to drive its harness.
+                        agents: Self::agent_backend(agent_session.as_deref(), records_root.as_deref())?,
                         store_origin: None,
                         terminal: Box::new(Terminals::new(80, 24, command)),
                         cursor: Some(Box::new(WindowCursor(window))),
@@ -1700,6 +1733,11 @@ pub struct Options {
     pub records_collection: Option<String>,
     /// Principal the host attests for this Spore.
     pub actor: Option<String>,
+    /// One recorded transcript to present through `soil:agents`: a session id
+    /// whose book lives under `records_root`, or `all` for every session that
+    /// store holds. `None` attaches nothing, which is the honest answer for a
+    /// window that does not show agents.
+    pub agent_session: Option<String>,
 }
 
 impl Default for Options {
@@ -1728,6 +1766,7 @@ impl Default for Options {
             records_book: None,
             records_collection: None,
             actor: None,
+            agent_session: None,
         }
     }
 }
@@ -1902,6 +1941,9 @@ pub fn parse(args: &[String]) -> Result<Options> {
         records_book,
         records_collection,
         actor,
+        // A window started from this binary has no recorded session to show; a
+        // host that has one (`soil spore run --agent-session`) passes it in.
+        agent_session: None,
     })
 }
 
@@ -1931,6 +1973,7 @@ pub fn run(options: Options) -> Result<()> {
         records_book,
         records_collection,
         actor,
+        agent_session,
     } = options;
     let module = match module {
         Some(module) => module,
@@ -2119,8 +2162,10 @@ pub fn run(options: Options) -> Result<()> {
         command,
         http,
         records,
+        records_root: launch.records_root.clone(),
         vfs_root,
         actor,
+        agent_session,
         launch,
         spores: spores.map(|path| vec![path]).unwrap_or_else(|| {
             let home = std::env::var_os("HOME")

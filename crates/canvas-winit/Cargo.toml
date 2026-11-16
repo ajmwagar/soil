@@ -21,4 +21,6 @@ soil = { path = "../soil", default-features = false, features = ["http", "princi
 soil-spore = { path = "../soil-spore" }
 soil-vt = { path = "../soil-vt" }
 soil-webgpu = { path = "../soil-webgpu" }
+soil-agent-host = { path = "../soil-agent-host" }
+soil-agent-records = { path = "../soil-agent-records" }
 winit = "0.30"

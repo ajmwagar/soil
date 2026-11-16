@@ -392,6 +392,7 @@ pub fn show(
             records_book: request.book.clone(),
             records_collection: request.collection.clone(),
             actor: request.actor.clone(),
+            agent_session: request.agent_session.clone(),
             ..canvas_winit::Options::default()
         };
         canvas_winit::run(options)?;
