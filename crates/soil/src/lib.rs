@@ -41,8 +41,11 @@
 //! others in, because those modules are written against it. `cli` adds the
 //! `soil-*` commands.
 
-// One clock for the whole host: a bus frame, a lease and an index entry all
-// mean the same thing by "now".
+// One clock for the whole host: a bus frame, a lease, an invocation fact and an
+// agent record all mean the same thing by "now". It is compiled only where
+// something reads it — the WASI profile stamps `context`, the ACP client stamps
+// agent records — so a host that grants neither carries no clock at all.
+#[cfg(any(feature = "wasi", feature = "acp"))]
 mod clock;
 #[cfg(feature = "wasi")]
 pub mod context;
