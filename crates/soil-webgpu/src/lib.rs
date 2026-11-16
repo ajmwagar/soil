@@ -12,14 +12,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
-use ::soil::principal_host::PrincipalHost;
-use ::soil::vfs_host::VfsHost;
 use ::soil::http_host::{
     self, CredentialProvider, DirectTransport, HttpPolicy, HttpTransport, NoCredentials,
     Request as HttpRequest,
 };
+use ::soil::principal_host::PrincipalHost;
 use ::soil::records_host::{self, Namespace, NamespacedRecordsHost};
+use ::soil::vfs_host::VfsHost;
+use anyhow::{Context, Result};
 use wasi_webgpu_wasmtime::reexports::{wgpu_core, wgpu_types};
 use wasi_webgpu_wasmtime::{WasiWebGpuCtx, WasiWebGpuCtxView, WasiWebGpuOptions};
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
@@ -185,11 +185,57 @@ pub enum CatalogError {
     Io,
 }
 
+/// A catalogue call that did not happen, in the two pieces a window shows: what
+/// kind of failure it was, and the host's sentence about it.
+///
+/// The enum is what a program branches on; the sentence is what a person reads.
+/// A host is the only party that knows which import it does not link or which
+/// file a package claims but does not carry, and none of that survives an enum,
+/// so every launch and stop carries both.
+#[derive(Clone, Debug)]
+pub struct CatalogFailure {
+    pub code: CatalogError,
+    pub detail: String,
+}
+
+impl CatalogFailure {
+    pub fn new(code: CatalogError, detail: impl Into<String>) -> Self {
+        Self {
+            code,
+            detail: detail.into(),
+        }
+    }
+}
+
+impl From<CatalogError> for CatalogFailure {
+    fn from(code: CatalogError) -> Self {
+        Self {
+            code,
+            detail: String::new(),
+        }
+    }
+}
+
 /// The host's installed-Spore catalogue. `launch` is host-owned: the guest
 /// asks, the host starts the process or opens the window.
 pub trait CatalogHost: Send {
     fn entries(&mut self) -> Result<Vec<CatalogEntry>, CatalogError>;
-    fn launch(&mut self, id: &str, surface: &str) -> Result<CatalogLaunched, CatalogError>;
+    fn launch(&mut self, id: &str, surface: &str) -> Result<CatalogLaunched, CatalogFailure>;
+    /// The ids this host started and has not seen exit.
+    ///
+    /// The host is what starts and reaps a Spore, so it is the only thing that
+    /// knows this. A default keeps a catalogue that launches nothing honest
+    /// instead of pretending every tile is running.
+    fn running(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+    /// End a Spore this host started. `not-found` when it is not running one.
+    fn stop(&mut self, id: &str) -> Result<(), CatalogFailure> {
+        Err(CatalogFailure::new(
+            CatalogError::NotFound,
+            format!("{id} is not running"),
+        ))
+    }
 }
 
 struct NoCatalog;
@@ -199,8 +245,11 @@ impl CatalogHost for NoCatalog {
         Ok(Vec::new())
     }
 
-    fn launch(&mut self, _id: &str, _surface: &str) -> Result<CatalogLaunched, CatalogError> {
-        Err(CatalogError::NotFound)
+    fn launch(&mut self, id: &str, _surface: &str) -> Result<CatalogLaunched, CatalogFailure> {
+        Err(CatalogFailure::new(
+            CatalogError::NotFound,
+            format!("{id} is not installed"),
+        ))
     }
 }
 
@@ -300,8 +349,11 @@ impl CatalogHost for InstallCatalog {
         Ok(found)
     }
 
-    fn launch(&mut self, _id: &str, _surface: &str) -> Result<CatalogLaunched, CatalogError> {
-        Err(CatalogError::Unsupported)
+    fn launch(&mut self, id: &str, _surface: &str) -> Result<CatalogLaunched, CatalogFailure> {
+        Err(CatalogFailure::new(
+            CatalogError::Unsupported,
+            format!("this host presents frames, so it cannot open {id} in a window"),
+        ))
     }
 }
 
@@ -577,7 +629,11 @@ impl RecordsAccess {
     ) -> Self {
         Self {
             root: root.into(),
-            namespaces: vec![Namespace::write(name.into(), book.into(), collection.into())],
+            namespaces: vec![Namespace::write(
+                name.into(),
+                book.into(),
+                collection.into(),
+            )],
         }
     }
 
@@ -832,8 +888,7 @@ impl ::soil::vfs_host::vfs::Host for WebGpuHost {
         parent: String,
         offset: u64,
         limit: u32,
-    ) -> std::result::Result<::soil::vfs_host::vfs::Page, ::soil::vfs_host::vfs::Error>
-    {
+    ) -> std::result::Result<::soil::vfs_host::vfs::Page, ::soil::vfs_host::vfs::Error> {
         self.vfs
             .as_mut()
             .ok_or(::soil::vfs_host::vfs::Error::Denied)?
@@ -843,8 +898,7 @@ impl ::soil::vfs_host::vfs::Host for WebGpuHost {
     fn stat(
         &mut self,
         path: String,
-    ) -> std::result::Result<::soil::vfs_host::vfs::Entry, ::soil::vfs_host::vfs::Error>
-    {
+    ) -> std::result::Result<::soil::vfs_host::vfs::Entry, ::soil::vfs_host::vfs::Error> {
         self.vfs
             .as_mut()
             .ok_or(::soil::vfs_host::vfs::Error::Denied)?
@@ -856,8 +910,7 @@ impl ::soil::vfs_host::vfs::Host for WebGpuHost {
         path: String,
         offset: u64,
         length: u32,
-    ) -> std::result::Result<::soil::vfs_host::vfs::Chunk, ::soil::vfs_host::vfs::Error>
-    {
+    ) -> std::result::Result<::soil::vfs_host::vfs::Chunk, ::soil::vfs_host::vfs::Error> {
         self.vfs
             .as_mut()
             .ok_or(::soil::vfs_host::vfs::Error::Denied)?
@@ -1073,13 +1126,31 @@ impl soil::spore::catalog::Host for WebGpuHost {
         &mut self,
         id: String,
         surface: String,
-    ) -> std::result::Result<soil::spore::catalog::Launched, soil::spore::catalog::Error> {
-        let launched = self.catalog.launch(&id, &surface).map_err(catalog_error)?;
+    ) -> std::result::Result<soil::spore::catalog::Launched, soil::spore::catalog::Failure> {
+        let launched = self
+            .catalog
+            .launch(&id, &surface)
+            .map_err(catalog_failure)?;
         Ok(soil::spore::catalog::Launched {
             id: launched.id,
             surface: launched.surface,
             target: launched.target,
         })
+    }
+
+    fn running(&mut self) -> Vec<String> {
+        self.catalog.running()
+    }
+
+    fn stop(&mut self, id: String) -> std::result::Result<(), soil::spore::catalog::Failure> {
+        self.catalog.stop(&id).map_err(catalog_failure)
+    }
+}
+
+fn catalog_failure(failure: CatalogFailure) -> soil::spore::catalog::Failure {
+    soil::spore::catalog::Failure {
+        code: catalog_error(failure.code),
+        detail: failure.detail,
     }
 }
 

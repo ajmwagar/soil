@@ -44,6 +44,24 @@ fn usage() -> &'static str {
 
 fn run() -> Result<()> {
     let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+    // Launch Services starts a bundle's executable with no arguments at all, so
+    // a binary inside a `.app` that carries a package has exactly one thing it
+    // can mean. A single argument suppresses this: the command line is still
+    // the interface, and the bundle is a command line with its first words
+    // implied.
+    if args.is_empty()
+        && let Some(package) = bundle_package()
+    {
+        args = vec![
+            "spore".into(),
+            "run".into(),
+            package.display().to_string(),
+            "--surface".into(),
+            // A Dock click asks for a window. The browser bridge, the capture
+            // loop and the HTTP hosts are things a person asks for by name.
+            "window".into(),
+        ];
+    }
     let root =
         take_option(&mut args, "--root").unwrap_or_else(|| "~/.local/share/fungos/vfs".into());
     let root = expand_home(&root);
@@ -302,9 +320,47 @@ fn expand_home(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
+/// The package this executable carries, when it was started from an app bundle.
+///
+/// The contract is the one every fungOS bundle has: the binary in
+/// `Contents/MacOS`, the package in `Contents/Resources`. A binary outside a
+/// bundle answers `None`, so `soil` invoked with no command is still a usage
+/// error rather than a guess.
+fn bundle_package() -> Option<PathBuf> {
+    bundle_package_at(&std::env::current_exe().ok()?)
+}
+
+fn bundle_package_at(executable: &Path) -> Option<PathBuf> {
+    let resources = executable.parent()?.parent()?.join("Resources");
+    resources.join("spore.toml").is_file().then_some(resources)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bundle_carries_its_package_beside_the_binary() {
+        let root = std::env::temp_dir().join(format!("soil-bundle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let macos = root.join("Demo.app/Contents/MacOS");
+        let resources = root.join("Demo.app/Contents/Resources");
+        std::fs::create_dir_all(&macos).expect("bundle layout");
+        std::fs::create_dir_all(&resources).expect("bundle layout");
+        std::fs::write(resources.join("spore.toml"), "schema = 1\n").expect("manifest");
+
+        assert_eq!(
+            bundle_package_at(&macos.join("soil")),
+            Some(resources.clone()),
+            "a binary in a bundle runs the package the bundle carries"
+        );
+        assert_eq!(
+            bundle_package_at(&root.join("soil")),
+            None,
+            "a binary outside a bundle has no package to fall back on"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// A store inside the root's own state directory: it dies with the tempdir,
     /// and no other test (or the operator's real store) can see it.
