@@ -65,11 +65,21 @@ impl RecordPeerHost {
 
     pub async fn run(self) -> anyhow::Result<()> {
         loop {
-            let mut session = self
-                .listener
-                .accept()
-                .await
-                .map_err(|error| anyhow::anyhow!("Iroh accept: {error}"))?;
+            // A failed admission belongs to that one connection: a peer that
+            // reboots mid-handshake, or anything else that opens a socket and
+            // stalls, must not take the host down with it. Only a closed
+            // endpoint is terminal, because nothing will ever be accepted.
+            let mut session = match self.listener.accept().await {
+                Ok(session) => session,
+                Err(error) if error.to_string() == "Iroh endpoint closed" => {
+                    return Err(anyhow::anyhow!("Iroh accept: {error}"));
+                }
+                Err(error) => {
+                    eprintln!("soil-sync-host: Iroh accept: {error}");
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    continue;
+                }
+            };
             let store = Arc::clone(&self.store);
             let endpoint = self.endpoint.clone();
             #[cfg(feature = "notify")]
@@ -890,8 +900,7 @@ mod tests {
     }
 
     /// Trust documents are per host: each pairs one local endpoint with one
-    /// peer, and two documents may not claim the same peer.
-    #[tokio::test]
+    /// peer, and two documents may not claim the same peer.    #[tokio::test]
     async fn trust_documents_pair_this_host_with_one_peer() {
         let a = endpoint().await;
         let b = endpoint().await;
@@ -940,6 +949,79 @@ mod tests {
         for endpoint in [&a, &b, &c] {
             endpoint.close().await;
         }
+    }
+
+    /// One bad admission is about that connection. A peer that opens the peer
+    /// ALPN and hangs up used to end the whole host, which takes every other
+    /// peer down with it.
+    #[tokio::test]
+    async fn a_failed_admission_does_not_stop_the_host() {
+        let a = endpoint().await;
+        let b = endpoint().await;
+        let now = now_s();
+        let signer = SigningKey::from_bytes(&[46; 32]);
+        let dir = tempfile::tempdir().unwrap();
+        let (doc, issuer) = write_trust(
+            dir.path(),
+            "macbook-studio",
+            permit(("records.macbook", &a), ("records.studio", &b)),
+            &signer,
+            now,
+        );
+        let macbook_verifiers = verifier_set(&[doc.clone()], &issuer, &a);
+        let studio_verifiers = verifier_set(&[doc], &issuer, &b);
+
+        let mut store = Store::open(
+            &dir.path().join("studio"),
+            &dir.path().join("studio-device"),
+        )
+        .unwrap();
+        store
+            .put_record(
+                "personal/avery/contacts",
+                "ada",
+                "fungos.contacts/contact",
+                1,
+                serde_json::json!({"display_name": "Ada Lovelace"}),
+            )
+            .unwrap();
+        let listener =
+            IrohListener::new(b.clone(), grant_config("records.studio", studio_verifiers));
+        let host = RecordPeerHost::new(listener, store, peer("records.studio"));
+        let task = tokio::spawn(host.run());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        if let Ok(connection) = a.connect(b.addr(), PEER_ALPN.as_bytes()).await {
+            connection.close(0u32.into(), b"hanging up");
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !task.is_finished(),
+            "host stopped after one failed admission"
+        );
+
+        // The same host still admits a real session.
+        let transport = IrohTransport::new(
+            a.clone(),
+            grant_config("records.macbook", macbook_verifiers.clone()),
+        );
+        let outcome = sync_records_with_transport(
+            &transport,
+            &candidate("records.studio", &b, now),
+            &macbook_verifiers
+                .assertion_for(&b.id().to_string(), now)
+                .unwrap(),
+            &mut Store::open(&dir.path().join("neo"), &dir.path().join("neo-device")).unwrap(),
+            "personal/avery/contacts",
+            &peer("records.macbook"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.pulled, 1);
+
+        task.abort();
+        a.close().await;
+        b.close().await;
     }
 
     #[tokio::test]
