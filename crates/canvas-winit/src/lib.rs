@@ -55,6 +55,8 @@ pub enum Agents {
     /// The built-in fixture cast. It is the only cast that raises prompts, so it
     /// is what a UI pass, a screenshot, or `--capture` runs against.
     Demo,
+    /// A real harness over ACP: one session per conversation, spoken on stdio.
+    Acp,
 }
 
 /// Host grants that follow a Spore when the launcher opens it.
@@ -71,6 +73,8 @@ struct LaunchConfig {
     geode_reference: Option<String>,
     /// Which agent cast follows the Spore into the window.
     agents: Agents,
+    /// The ACP agent command, when the cast is a real harness.
+    acp_cmd: Option<String>,
     hue_bridge: Option<Url>,
     records_root: Option<PathBuf>,
     /// One workspace the Spore may list and read through `soil:vfs`.
@@ -114,6 +118,14 @@ impl LaunchConfig {
         if self.agents == Agents::Demo {
             args.push("--agents".into());
             args.push("demo".into());
+        }
+        if self.agents == Agents::Acp {
+            args.push("--agents".into());
+            args.push("acp".into());
+            if let Some(cmd) = &self.acp_cmd {
+                args.push("--acp-cmd".into());
+                args.push(cmd.into());
+            }
         }
         if let Some(root) = &self.vfs_root {
             args.push("--vfs-root".into());
@@ -1152,6 +1164,7 @@ fn agent_backend(
         let agent_session = self.agent_session.clone();
         let records_root = self.records_root.clone();
         let agents = self.launch.agents;
+        let acp_cmd = self.launch.acp_cmd.clone();
         let launch = self.launch.clone();
         thread::spawn(move || {
             let result = (|| -> Result<()> {
@@ -1199,6 +1212,12 @@ fn agent_backend(
                                 Agents::Demo => {
                                     Box::new(soil_agent_host::FixtureAgents::new())
                                         as Box<dyn soil_agent_host::AgentBackend>
+                                }
+                                Agents::Acp => {
+                                    let cmd = acp_cmd.clone().unwrap_or_else(|| "delta-acp".into());
+                                    Box::new(::soil::acp::AcpBackend::spawn(&cmd).map_err(
+                                        |error| anyhow::anyhow!("acp: {error}"),
+                                    )?)
                                 }
                             },
                         },
@@ -2044,8 +2063,11 @@ pub struct Options {
     pub geode_purpose: Option<String>,
     /// Absolute `geode://` reference the granted handle leases.
     pub geode_reference: Option<String>,
-    /// Which agent cast to grant the Spore: `none` (the default) or `demo`.
+    /// Which agent cast to grant the Spore: `none` (the default), `demo`, or
+    /// `acp` for a real harness.
     pub agents: Agents,
+    /// The ACP agent command to spawn when the cast is `acp`.
+    pub acp_cmd: Option<String>,
     /// Bridge `hue.local` maps to.
     pub hue_bridge: Option<Url>,
     /// Records store the Spore may read or write.
@@ -2087,6 +2109,7 @@ impl Default for Options {
             geode_purpose: None,
             geode_reference: None,
             agents: Agents::None,
+            acp_cmd: None,
             hue_bridge: None,
             records_root: None,
             vfs_root: None,
@@ -2124,6 +2147,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
     let mut geode_purpose = None;
     let mut geode_reference = None;
     let mut agents = Agents::None;
+    let mut acp_cmd: Option<String> = None;
     let mut hue_bridge = None;
     let mut records_root = None;
     let mut vfs_root: Option<PathBuf> = None;
@@ -2219,9 +2243,13 @@ pub fn parse(args: &[String]) -> Result<Options> {
             "--agents" => {
                 agents = match args.next().context("--agents needs demo or none")?.as_str() {
                     "demo" => Agents::Demo,
+                    "acp" => Agents::Acp,
                     "none" => Agents::None,
-                    other => anyhow::bail!("--agents takes demo or none, not {other}"),
+                    other => anyhow::bail!("--agents takes demo, acp or none, not {other}"),
                 };
+            }
+            "--acp-cmd" => {
+                acp_cmd = Some(args.next().context("--acp-cmd needs a command")?.clone());
             }
             "--hue-bridge" => {
                 let value = args.next().context("--hue-bridge needs a URL")?;
@@ -2280,6 +2308,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
         geode_purpose,
         geode_reference,
         agents,
+        acp_cmd,
         hue_bridge,
         records_root,
         vfs_root,
@@ -2314,6 +2343,7 @@ pub fn run(options: Options) -> Result<()> {
         geode_purpose,
         geode_reference,
         agents,
+        acp_cmd,
         hue_bridge,
         records_root,
         vfs_root,
@@ -2460,6 +2490,7 @@ pub fn run(options: Options) -> Result<()> {
         geode_purpose,
         geode_reference,
         agents,
+        acp_cmd,
         hue_bridge,
         records_root,
         vfs_root: vfs_root.clone(),
