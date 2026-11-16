@@ -301,10 +301,19 @@ pub fn grants(request: &Request, manifest: &Manifest) -> Result<soil_webgpu::Gra
             .clone()
             .or_else(default_records_root)
             .context("--agent-session needs --records ROOT: the book has to live somewhere")?;
-        grants.agents = Some(Box::new(
-            soil_agent_records::RecordsAgents::open(&root, session)
-                .with_context(|| format!("open the transcript of {session}"))?,
-        ));
+        // `all` is the wall: every session this store holds. One id is one
+        // agent, which is what a window opened for a conversation wants.
+        grants.agents = Some(if session == "all" {
+            Box::new(
+                soil_agent_records::RecordedSessions::open(&root)
+                    .with_context(|| format!("open the recorded sessions in {}", root.display()))?,
+            )
+        } else {
+            Box::new(
+                soil_agent_records::RecordsAgents::open(&root, session)
+                    .with_context(|| format!("open the transcript of {session}"))?,
+            )
+        });
     }
     grants.principal = match &request.actor {
         Some(actor) => soil_webgpu::Grants::new().actor(actor.clone()).principal,

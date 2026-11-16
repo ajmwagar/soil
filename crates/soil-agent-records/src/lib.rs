@@ -24,9 +24,16 @@ use soil_agent_host::{
     Prompt, PromptKind, Role, Scope, ScopeKind, Status, Turn, Usage,
 };
 
-/// The schema every recorder writes: `delta-acp`, edgerunner's mirror, and
-/// whatever producer comes next.
-pub const EVENT_SCHEMA: &str = "fungos.agents/event";
+/// The schema every recorder writes, and the name of the book it writes into,
+/// are the shared crate's: `delta-acp`, edgerunner and this reader must not
+/// drift apart on a field name.
+pub use fungos_agents_event::{SCHEMA as EVENT_SCHEMA, book_id};
+
+/// The prefix every transcript book shares, so the store's book list reads as
+/// a session list.
+pub fn book_prefix() -> String {
+    book_id("")
+}
 
 /// Ceiling for one read. A transcript larger than this needs paging through the
 /// store's own cursor, not a bigger number.
@@ -37,8 +44,8 @@ const EVENT_LIMIT: usize = 20_000;
 const ACTIVITY_LIMIT: usize = 32;
 
 /// The book one session's transcript lives in.
-pub fn book_id(session: &str) -> String {
-    format!("fungos/agents/{session}")
+pub fn session_of(book: &str) -> Option<String> {
+    book.strip_prefix(&book_prefix()).map(|session| session.to_string())
 }
 
 /// One recorded transcript, presented as one agent.
@@ -242,8 +249,7 @@ impl RecordsAgents {
     }
 }
 
-impl AgentBackend for RecordsAgents {
-    fn list(&mut self) -> Vec<Agent> {
+impl AgentBackend for RecordsAgents {    fn list(&mut self) -> Vec<Agent> {
         vec![self.agent()]
     }
 
@@ -288,8 +294,101 @@ impl AgentBackend for RecordsAgents {
     }
 }
 
-fn title(session: &Session, first_user: Option<&Event>) -> String {
-    let Some(event) = first_user else {
+/// Every recorded session this device holds, presented as one wall.
+///
+/// The device is the scope and the store is the list: a book is a namespace,
+/// so `Store::books` under [`book_prefix`] *is* the session list. Opening reads
+/// each book once; a session recorded after that needs another open, which is
+/// why this is a snapshot and not a subscription.
+pub struct RecordedSessions {
+    agents: Vec<RecordsAgents>,
+    binding: Binding,
+}
+
+impl RecordedSessions {
+    pub fn open(root: &Path) -> anyhow::Result<Self> {
+        let store = Store::open(root, &root.join("device_id"))?;
+        let prefix = book_prefix();
+        let sessions: Vec<String> = store
+            .books()?
+            .into_iter()
+            .filter_map(|book| book.strip_prefix(&prefix).map(|session| session.to_string()))
+            .collect();
+        let mut agents: Vec<(bool, u64, RecordsAgents)> = Vec::new();
+        for session in sessions {
+            let reader = RecordsAgents::open(root, &session)?;
+            let agent = reader.agent();
+            agents.push((!agent.prompts.is_empty(), agent.updated_at_ms, reader));
+        }
+        // Host order: what needs a person first, then what moved most recently.
+        agents.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then(right.1.cmp(&left.1))
+                .then(left.2.session.id.cmp(&right.2.session.id))
+        });
+        Ok(Self {
+            agents: agents.into_iter().map(|(_, _, reader)| reader).collect(),
+            binding: Binding::default(),
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.agents.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.agents.is_empty()
+    }
+
+    fn find(&self, id: &str) -> Option<&RecordsAgents> {
+        self.agents.iter().find(|agent| agent.session.id == id)
+    }
+}
+
+impl AgentBackend for RecordedSessions {
+    fn list(&mut self) -> Vec<Agent> {
+        self.agents.iter().map(RecordsAgents::agent).collect()
+    }
+
+    fn get(&mut self, id: &str) -> Option<Agent> {
+        self.find(id).map(RecordsAgents::agent)
+    }
+
+    fn binding(&mut self) -> Binding {
+        self.binding.clone()
+    }
+
+    fn scope(&mut self) -> Scope {
+        Scope {
+            kind: ScopeKind::Device,
+            id: None,
+            label: None,
+            owner: None,
+        }
+    }
+
+    fn transcript(&mut self, id: &str, before: Option<u64>, limit: u32) -> Result<Page, Error> {
+        self.find(id)
+            .map(|agent| agent.page(before, limit))
+            .ok_or(Error::NotFound)
+    }
+
+    fn answer(&mut self, _id: &str, _prompt_id: &str, _answer: Answer) -> Result<(), Error> {
+        Err(Error::Unsupported)
+    }
+
+    fn send(&mut self, _id: &str, _text: &str) -> Result<(), Error> {
+        Err(Error::Unsupported)
+    }
+
+    fn interrupt(&mut self, _id: &str) -> Result<(), Error> {
+        Err(Error::Unsupported)
+    }
+}
+
+fn title(session: &Session, first_user: Option<&Event>) -> String {    let Some(event) = first_user else {
         return session.id.clone();
     };
     let line = event
@@ -572,6 +671,52 @@ mod tests {
         let agent = &agents.list()[0];
         assert!(agent.prompts.is_empty(), "answered, so nothing is owed");
         assert_eq!(agent.phase, Phase::Working, "back to what the turn says");
+    }
+
+    #[test]
+    fn every_recorded_session_is_one_wall_in_host_order() {
+        let dir = delta_thread();
+        let root = dir.path().to_path_buf();
+        // The first session ends up owing a person an answer…
+        record(
+            &root,
+            7,
+            json!({"event": "prompt", "text": "push this branch?", "at_ms": 106, "harness": "delta"}),
+        );
+        // …while this one is newer but asks for nothing.
+        let mut store = Store::open(&root, &root.join("device_id")).expect("store");
+        store
+            .append(
+                &book_id("thread-2"),
+                "evt:1",
+                "record.put",
+                json!({
+                    "schema_id": EVENT_SCHEMA,
+                    "schema_version": 1,
+                    "fields": {
+                        "event": "message", "role": "user", "text": "later",
+                        "at_ms": 900, "seq": 1, "harness": "edgerunner",
+                    },
+                }),
+            )
+            .expect("append");
+        drop(store);
+
+        // It is one test binary: keep the delta thread's prompt out of the way.
+        let mut sessions = RecordedSessions::open(&root).expect("open");        assert_eq!(sessions.len(), 2);
+        let listed = sessions.list();
+        assert_eq!(
+            listed.iter().map(|agent| agent.id.as_str()).collect::<Vec<_>>(),
+            ["thread-1", "thread-2"],
+            "the older session asks for a person, so it leads"
+        );
+        assert_eq!(listed[1].harness, "edgerunner");
+        assert_eq!(
+            sessions.get("thread-2").map(|agent| agent.title),
+            Some("later".to_string())
+        );
+        assert_eq!(sessions.transcript("nobody", None, 2).unwrap_err(), Error::NotFound);
+        assert!(!sessions.is_empty());
     }
 
     #[test]

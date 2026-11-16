@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 soil-agent-host = { path = "../soil-agent-host" }
 fungos-records.workspace = true
+fungos-agents-event.workspace = true
 anyhow = "1"
 serde_json = "1"
 

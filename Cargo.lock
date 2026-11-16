@@ -2416,6 +2416,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fungos-agents-event"
+version = "0.1.0"
+source = "git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd#1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "fungos-content"
 version = "0.1.0"
 dependencies = [
@@ -2438,7 +2446,7 @@ dependencies = [
 [[package]]
 name = "fungos-records"
 version = "0.1.0"
-source = "git+https://github.com/mycelium-linux/records.git?rev=a6eab642173ef7606756093e63ea7148a3c2dc29#a6eab642173ef7606756093e63ea7148a3c2dc29"
+source = "git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd#1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd"
 dependencies = [
  "anyhow",
  "blake3",
@@ -7067,7 +7075,7 @@ dependencies = [
  "bytes",
  "clap",
  "ed25519-dalek 2.2.0",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=a6eab642173ef7606756093e63ea7148a3c2dc29)",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
  "fungos-vfs",
  "hmac",
  "http",
@@ -7124,7 +7132,8 @@ name = "soil-agent-records"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=a6eab642173ef7606756093e63ea7148a3c2dc29)",
+ "fungos-agents-event",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
  "serde_json",
  "soil-agent-host",
  "tempfile",
@@ -7272,7 +7281,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "fungos-content",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=a6eab642173ef7606756093e63ea7148a3c2dc29)",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
  "serde",
  "serde_json",
  "tempfile",
@@ -7285,7 +7294,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "clap",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=a6eab642173ef7606756093e63ea7148a3c2dc29)",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
  "serde",
  "serde_json",
  "tempfile",
@@ -7299,7 +7308,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=a6eab642173ef7606756093e63ea7148a3c2dc29)",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
  "serde_json",
  "tempfile",
  "tiny_http",
@@ -7454,7 +7463,7 @@ name = "soil-marbles-import"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=a6eab642173ef7606756093e63ea7148a3c2dc29)",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
  "rusqlite",
  "serde_json",
 ]
@@ -7475,7 +7484,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=a6eab642173ef7606756093e63ea7148a3c2dc29)",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
  "serde_json",
  "tempfile",
 ]
@@ -7652,7 +7661,7 @@ name = "soil-search-host"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=a6eab642173ef7606756093e63ea7148a3c2dc29)",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
  "fungos-vfs",
  "plist",
  "serde",
@@ -7730,7 +7739,7 @@ dependencies = [
  "anyhow",
  "clap",
  "ed25519-dalek 2.2.0",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=a6eab642173ef7606756093e63ea7148a3c2dc29)",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
  "iroh",
  "mycelium-peer-protocol",
  "serde",
