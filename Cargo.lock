@@ -7303,6 +7303,7 @@ name = "soil-dev-host"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde_json",
  "soil",
  "soil-ble-host",
  "soil-notify-host",
