@@ -7511,6 +7511,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "soil-open"
+version = "0.1.0"
+
+[[package]]
 name = "soil-openapi"
 version = "0.1.0"
 dependencies = [
