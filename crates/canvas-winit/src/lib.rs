@@ -21,6 +21,7 @@ mod terminal;
 
 #[cfg(unix)]
 use ::soil::creds::{GeodeCredentials, HostHandle};
+use ::soil::dispatch::DispatchRole;
 use ::soil::http_host::{
     DirectTransport, HttpPolicy, HttpTransport, TransportError, TransportRequest, TransportResponse,
 };
@@ -1145,7 +1146,53 @@ fn agent_backend(
     })
 }
 
-    fn start_component(&mut self, window: Arc<Window>) {        if self.started {
+/// Who shows agents to the Spore, and who creates them.
+///
+/// ACP is the one adapter that is both, and it is one process: the roster this
+/// window draws and the sessions a task notice creates through are the same
+/// adapter under one lock. A second adapter would be a second process, and a
+/// session created through it would be missing from the roster that asked for
+/// it. Every other cast observes and cannot create, so its dispatcher refuses
+/// loudly — `agent.task.failed.v1` — rather than dropping the work.
+fn agent_roles(
+    session: Option<&str>,
+    records_root: Option<&std::path::Path>,
+    agents: Agents,
+    acp_cmd: Option<&str>,
+    workspace: Option<&std::path::Path>,
+) -> Result<(Box<dyn soil_agent_host::AgentBackend>, DispatchRole)> {
+    // A book is read, never written, so a window over one cannot pretend to
+    // drive its harness and must not create sessions.
+    if session.is_some() {
+        return Ok((Self::agent_backend(session, records_root)?, DispatchRole::default()));
+    }
+    Ok(match agents {
+        Agents::None => (Box::new(NoAgents), DispatchRole::default()),
+        Agents::Demo => (
+            Box::new(soil_agent_host::FixtureAgents::new()),
+            DispatchRole::default(),
+        ),
+        Agents::Acp => {
+            let backend = ::soil::acp::AcpBackend::spawn(acp_cmd.unwrap_or("delta-acp"))
+                .map_err(|error| anyhow::anyhow!("acp: {error}"))?;
+            // The window's `soil:vfs` grant is the workspace a session can be
+            // created in; a window given none hands the agent `/`, which is
+            // what `session/load` already uses.
+            let backend = match workspace {
+                Some(path) => backend.with_workspace(path.display().to_string()),
+                None => backend,
+            };
+            let live = soil_agent_host::Live::new(backend);
+            (
+                Box::new(live.clone()) as Box<dyn soil_agent_host::AgentBackend>,
+                DispatchRole::Own(Box::new(live)),
+            )
+        }
+    })
+}
+
+    fn start_component(&mut self, window: Arc<Window>) {
+        if self.started {
             return;
         }
         self.started = true;
@@ -1175,6 +1222,13 @@ fn agent_backend(
                 let runtime = WebGpuRuntime::new()?.with_component_cache(component_cache(&module));
                 let catalog = SporeCatalog::new(&spores, launch)
                     .map_err(|error| anyhow::anyhow!("catalog: {error:?}"))?;
+                let (agents, dispatch) = Self::agent_roles(
+                    agent_session.as_deref(),
+                    records_root.as_deref(),
+                    agents,
+                    acp_cmd.as_deref(),
+                    vfs_root.as_deref(),
+                )?;
                 let status = pollster::block_on(runtime.run_component_with(
                     &bytes,
                     HostSetup {
@@ -1198,32 +1252,8 @@ fn agent_backend(
                             }
                             None => ::soil::principal_host::PrincipalHost::local(),
                         },
-                        // A window shows agents only when the operator named a
-                        // transcript; a book is read, never written, so a
-                        // window over one cannot pretend to drive its harness.
-                        // Otherwise `--agents` decides, and its default is none.
-                        agents: match agent_session.as_deref() {
-                            Some(_) => Self::agent_backend(
-                                agent_session.as_deref(),
-                                records_root.as_deref(),
-                            )?,
-                            None => match agents {
-                                Agents::None => Box::new(NoAgents),
-                                Agents::Demo => {
-                                    Box::new(soil_agent_host::FixtureAgents::new())
-                                        as Box<dyn soil_agent_host::AgentBackend>
-                                }
-                                Agents::Acp => {
-                                    let cmd = acp_cmd.clone().unwrap_or_else(|| "delta-acp".into());
-                                    Box::new(::soil::acp::AcpBackend::spawn(&cmd).map_err(
-                                        |error| anyhow::anyhow!("acp: {error}"),
-                                    )?)
-                                }
-                            },
-                        },
-                        // This window owns dispatch, but no adapter here can
-                        // start a session yet, so a task is announced as failed.
-                        dispatch: Default::default(),
+                        agents,
+                        dispatch,
                         // One window per process today, so a bus per surface is a
                         // bus per process; hoisting this onto `App` is the
                         // multi-window step.

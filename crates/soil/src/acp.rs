@@ -8,7 +8,9 @@
 //! The client is deliberately thin: it spawns the agent, correlates JSON-RPC
 //! over newline-delimited frames, folds `session/update` into the records
 //! `soil:agents` already defines, and parks `session/request_permission` as a
-//! prompt until a person answers it.
+//! prompt until a person answers it. It is also the one adapter that can turn a
+//! task into a session, because a harness that speaks ACP is a harness whose
+//! incarnation is one request.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
@@ -21,8 +23,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use soil_agent_host::{
-    Activity, ActivityKind, Agent, AgentBackend, Answer, Binding, Change, Choice, Error, Goal,
-    Page, Phase, Prompt, PromptKind, Role, Status, Turn, Usage,
+    Activity, ActivityKind, Agent, AgentBackend, Answer, Binding, Change, Choice, Created, Error,
+    Goal, Page, Phase, Prompt, PromptKind, Role, Sessions, Status, Task, Turn, Usage,
 };
 
 /// How long an ordinary request may take before it is treated as failed. A
@@ -35,6 +37,10 @@ const ACTIVITY_LIMIT: usize = 12;
 /// How many transcript turns one session keeps in memory. A page is what a
 /// focus view draws; the rest stays in whatever store the harness owns.
 const TRANSCRIPT_LIMIT: usize = 400;
+
+/// How much of a task's first line a row keeps. A rail row is one line, and a
+/// brief pasted into a notice is not a title.
+const TITLE_LIMIT: usize = 72;
 
 use crate::clock::now_ms;
 
@@ -225,6 +231,9 @@ pub struct AcpBackend {
     /// stream, so it is done per agent rather than for a whole roster.
     attached: HashSet<String>,
     binding: Binding,
+    /// The directory new sessions are created in. A task names a place, not a
+    /// path, so the backend is told this once when it is opened for a surface.
+    workspace: Option<String>,
     started_at_ms: u64,
 }
 
@@ -255,6 +264,7 @@ impl AcpBackend {
             harness,
             attached: HashSet::new(),
             binding: Binding::default(),
+            workspace: None,
             started_at_ms: now_ms(),
         })
     }
@@ -264,6 +274,34 @@ impl AcpBackend {
     pub fn bind(mut self, agent: Option<String>, view: Option<String>) -> Self {
         self.binding = Binding { agent, view };
         self
+    }
+
+    /// The directory a new session is created in.
+    ///
+    /// The cwd is the one thing a task cannot carry: a notice names a place
+    /// ("local", "boat"), not a path. A backend given none asks for `/`, which
+    /// is what `session/load` already uses.
+    pub fn with_workspace(mut self, workspace: impl Into<String>) -> Self {
+        self.workspace = Some(workspace.into());
+        self
+    }
+
+    fn cwd(&self) -> &str {
+        self.workspace.as_deref().unwrap_or("/")
+    }
+
+    /// Put a session in the roster at the moment it is created, so the surface
+    /// that asked for the work shows a row with the title it asked for rather
+    /// than waiting for the next `session/list`.
+    fn note_created(&mut self, created: &Created) {
+        let started_at_ms = self.started_at_ms;
+        let agent = self.agent(&created.id);
+        agent.title = created.title.clone();
+        agent.workspace = created.workspace.clone();
+        agent.model = created.model.clone();
+        agent.phase = Phase::Idle;
+        agent.revision += 1;
+        agent.updated_at_ms = started_at_ms;
     }
 
     /// Read the roster once. `session/list` is the ACP extension `operator` and
@@ -468,6 +506,78 @@ impl AgentBackend for AcpBackend {
         };
         Some(Change::Upserted(Box::new(change)))
     }
+}
+
+/// Where a task notice becomes a session: one `session/new`, then the task text
+/// as the first turn. Nothing sets a model — see [`created_from`].
+impl Sessions for AcpBackend {
+    fn create(&mut self, task: &Task) -> Result<Created, Error> {
+        let reply = self
+            .acp
+            .request(
+                "session/new",
+                json!({"cwd": self.cwd(), "mcpServers": []}),
+                REQUEST_TIMEOUT,
+            )
+            .map_err(|_| Error::Io)?;
+        let created = created_from(&reply, task, &self.harness, self.workspace.as_deref())?;
+        self.note_created(&created);
+        // A notice with no text asked for a session, not for work: create it and
+        // leave the turn to whoever writes next.
+        if !task.text.trim().is_empty() {
+            self.send(&created.id, &task.text)?;
+        }
+        Ok(created)
+    }
+}
+
+/// What one `session/new` reply becomes as a row.
+///
+/// The reply is a session id and nothing a rail draws, so the rest comes from
+/// the task: a person asked for this work, and the title they gave it beats an
+/// id. `model` stays empty, because ACP has no field a client may set without
+/// knowing the harness's own model vocabulary — a guess in that column reads as
+/// a fact, and this is the one place a view would believe it.
+fn created_from(
+    reply: &Value,
+    task: &Task,
+    harness: &str,
+    workspace: Option<&str>,
+) -> Result<Created, Error> {
+    let id = reply
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .ok_or(Error::Invalid)?;
+    Ok(Created {
+        id: id.to_string(),
+        harness: harness.to_string(),
+        title: task
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| task_title(&task.text)),
+        workspace: reply
+            .get("workspace")
+            .or_else(|| reply.get("cwd"))
+            .and_then(Value::as_str)
+            .or(workspace)
+            .map(str::to_string),
+        model: None,
+    })
+}
+
+/// The first line of a task, cut to what a row holds.
+fn task_title(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .chars()
+        .take(TITLE_LIMIT)
+        .collect()
 }
 
 fn agent_from_session(session: &Value, started_at_ms: u64, harness: &str) -> Option<Agent> {
@@ -750,6 +860,86 @@ mod tests {
         json!({"sessionId": id, "title": title, "workspace": "/w"})
     }
 
+    /// A task as `agent.task.v1` carries it.
+    fn task(title: Option<&str>, text: &str) -> Task {
+        Task {
+            text: text.to_string(),
+            harness: "operator".to_string(),
+            environment: "boat".to_string(),
+            title: title.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_task_becomes_a_created_session() {
+        let created = created_from(
+            &json!({"sessionId": "s9"}),
+            &task(None, "fix the flaky lane\n\nand then the second lane"),
+            "delta-acp",
+            Some("/w"),
+        )
+        .expect("a reply with an id");
+        assert_eq!(created.id, "s9");
+        // What the agent called itself, not what the task asked for: only the
+        // agent knows what it is.
+        assert_eq!(created.harness, "delta-acp");
+        // One line, taken from the text, when nobody titled the task.
+        assert_eq!(created.title, "fix the flaky lane");
+        assert_eq!(created.workspace.as_deref(), Some("/w"));
+        // Nothing sets a model, so the row says nothing.
+        assert_eq!(created.model, None);
+    }
+
+    #[test]
+    fn the_title_a_person_gave_wins_over_the_text() {
+        let created = created_from(
+            &json!({"sessionId": "s9"}),
+            &task(Some("  flaky lane  "), "fix the flaky lane"),
+            "acp",
+            None,
+        )
+        .expect("a reply with an id");
+        assert_eq!(created.title, "flaky lane");
+        assert_eq!(created.workspace, None);
+    }
+
+    #[test]
+    fn a_reply_that_names_a_cwd_is_where_the_session_lands() {
+        let created = created_from(
+            &json!({"sessionId": "s9", "cwd": "/replied"}),
+            &task(Some("lane"), "x"),
+            "acp",
+            Some("/configured"),
+        )
+        .expect("a reply with an id");
+        assert_eq!(created.workspace.as_deref(), Some("/replied"));
+    }
+
+    #[test]
+    fn a_first_line_past_a_row_is_cut() {
+        let long = "x".repeat(TITLE_LIMIT + 40);
+        let created = created_from(
+            &json!({"sessionId": "s9"}),
+            &task(None, &long),
+            "acp",
+            None,
+        )
+        .expect("a reply with an id");
+        assert_eq!(created.title.chars().count(), TITLE_LIMIT);
+    }
+
+    #[test]
+    fn a_reply_without_a_session_id_is_refused() {
+        let error = created_from(
+            &json!({"sessionId": "  "}),
+            &task(Some("lane"), "x"),
+            "acp",
+            None,
+        )
+        .expect_err("no id");
+        assert_eq!(error, Error::Invalid);
+    }
+
     #[test]
     fn a_relist_adds_a_session_created_elsewhere() {
         let mut agents = Vec::new();
@@ -980,5 +1170,73 @@ mod tests {
         assert_eq!(prompt.origin.as_deref(), Some("edit"));
         assert!(prompt.details.is_some());
         assert!(prompt_from_permission(1, &json!({})).is_none());
+    }
+
+    /// A stand-in agent, in the only language every checkout has: answers the
+    /// two requests `create` makes, and writes the `session/new` it was handed
+    /// to `__LOG__` so the test can read the cwd the backend chose.
+    const FAKE_AGENT: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentInfo":{"name":"fake-agent"}}}\n' "$id" ;;
+    *'"session/new"'*)
+      printf '%s\n' "$line" >> __LOG__
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s-new"}}\n' "$id" ;;
+    *'"session/prompt"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id" ;;
+  esac
+done
+"#;
+
+    /// The whole path a task takes, against a real child process: handshake,
+    /// `session/new`, the row it puts in the roster, and the turn it starts.
+    /// Pure mapping is tested above; this is the part that only a process can
+    /// show, and it is the one code path in this module that starts sessions.
+    #[cfg(unix)]
+    #[test]
+    fn a_task_becomes_a_session_on_a_live_agent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("soil-acp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let log = dir.join("session-new.jsonl");
+        let script = dir.join("fake-agent.sh");
+        std::fs::write(
+            &script,
+            FAKE_AGENT.replace("__LOG__", &log.display().to_string()),
+        )
+        .expect("write the agent");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("make the agent runnable");
+
+        let mut backend = AcpBackend::spawn(&format!("sh {}", script.display()))
+            .expect("start the agent")
+            .with_workspace("/w");
+        let created = backend
+            .create(&task(Some("flaky lane"), "fix the flaky lane"))
+            .expect("create the session");
+
+        assert_eq!(created.id, "s-new");
+        assert_eq!(created.harness, "fake-agent");
+        assert_eq!(created.title, "flaky lane");
+        assert_eq!(created.workspace.as_deref(), Some("/w"));
+        // The row is in the roster now, not on the next `session/list`.
+        let row = backend
+            .list()
+            .into_iter()
+            .find(|row| row.id == "s-new")
+            .expect("the row exists");
+        assert_eq!(row.title, "flaky lane");
+
+        let asked: Value = serde_json::from_str(
+            std::fs::read_to_string(&log)
+                .expect("read the log")
+                .trim(),
+        )
+        .expect("the session/new frame");
+        assert_eq!(asked["method"], "session/new");
+        assert_eq!(asked["params"]["cwd"], "/w");
     }
 }
