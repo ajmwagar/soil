@@ -21,7 +21,7 @@ pollster = "0.4"
 portable-pty = "0.9"
 softbuffer = "0.4"
 url = "2"
-soil = { path = "../soil", default-features = false, features = ["http", "principal", "vfs", "wasi"] }
+soil = { path = "../soil", default-features = false, features = ["http", "principal", "vfs", "wasi", "acp"] }
 soil-agent-host = { path = "../soil-agent-host" }
 soil-spore = { path = "../soil-spore" }
 soil-vt = { path = "../soil-vt" }
