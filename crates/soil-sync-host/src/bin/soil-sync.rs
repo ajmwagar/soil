@@ -169,6 +169,16 @@ struct PeerConfig {
     endpoint_id: String,
     #[serde(default)]
     direct_addresses: Vec<SocketAddr>,
+    /// Books this peer takes part in. Empty keeps the older meaning: every book
+    /// this host lists, which is what a two-host config relies on.
+    #[serde(default)]
+    books: Vec<String>,
+}
+
+impl PeerConfig {
+    fn syncs(&self, book: &str) -> bool {
+        self.books.is_empty() || self.books.iter().any(|allowed| allowed == book)
+    }
 }
 
 fn default_bind_addr() -> String {
@@ -399,12 +409,15 @@ async fn run_peer(config_path: PathBuf) -> anyhow::Result<()> {
     )?));
     let dispatch_store = Store::open(&config.records_root, &config.records_root.join("device_id"))?;
     {
-        let peers = config
-            .peers
-            .iter()
-            .map(|peer| peer.producer_id.clone())
-            .collect::<Vec<_>>();
+        // A peer's outbox only holds the books it is scoped to, so a phone
+        // added for contacts does not attract the rest of the host's books.
         for book in &config.books {
+            let peers = config
+                .peers
+                .iter()
+                .filter(|peer| peer.syncs(book))
+                .map(|peer| peer.producer_id.clone())
+                .collect::<Vec<_>>();
             dispatch_store.set_sync_peers(book, &peers)?;
         }
     }
@@ -515,7 +528,7 @@ async fn supervise(
             // The sweep reconciles every book with every peer, including the
             // pairs with nothing queued. That is what makes it the backstop.
             for book in &config.books {
-                for peer in &config.peers {
+                for peer in config.peers.iter().filter(|peer| peer.syncs(book)) {
                     sync_one(&config, &store, &transport, &verifier, book, peer).await;
                 }
             }
@@ -543,7 +556,10 @@ async fn pending_pairs<'a>(
     let mut due = Vec::new();
     let store = store.lock().await;
     for book in &config.books {
-        for peer in &config.peers {
+        // A peer that is scoped to some books must not be scheduled for the
+        // others: the sweep would open a session just to reconcile a book the
+        // peer was never granted.
+        for peer in config.peers.iter().filter(|peer| peer.syncs(book)) {
             if !store
                 .pending_outbox(book, &peer.producer_id, now, 1)?
                 .is_empty()
@@ -670,6 +686,9 @@ async fn sync(config_path: PathBuf, peer: &str, book: &str) -> anyhow::Result<()
         .iter()
         .find(|p| p.producer_id == peer)
         .ok_or_else(|| anyhow::anyhow!("peer `{peer}` is not configured"))?;
+    if !peer_config.syncs(book) {
+        bail!("peer `{peer}` is not configured for book `{book}`");
+    }
     let verifier = make_verifiers(&config)?;
     let assertion = verifier.assertion_for(&peer_config.endpoint_id, now_s())?;
     let endpoint = bind_endpoint(&config).await?;
@@ -910,5 +929,84 @@ mod tests {
             due.is_empty(),
             "an idle tick must not open a session for every pair"
         );
+    }
+
+    /// Parse the way a config file is read, so these assert the `serde`
+    /// defaults that existing configs depend on.
+    fn parse(value: serde_json::Value) -> SyncConfig {
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn base() -> serde_json::Value {
+        serde_json::json!({
+            "endpoint_key_file": "/config/endpoint.key",
+            "installation_id": "home",
+            "local_producer": "records.macbook",
+            "audience": "unibus:soil-records",
+            "issuers": ["issuer"],
+            "records_root": "/records",
+        })
+    }
+
+    #[test]
+    fn trust_file_alone_is_still_enough() {
+        let mut value = base();
+        value["trust_file"] = "/config/records-trust.json".into();
+        assert_eq!(
+            parse(value).trust_paths(),
+            [PathBuf::from("/config/records-trust.json")]
+        );
+    }
+
+    #[test]
+    fn trust_files_are_additive_and_deduplicated() {
+        let mut value = base();
+        value["trust_file"] = "/config/records-trust.json".into();
+        value["trust_files"] = serde_json::json!([
+            "/config/records-trust.json",
+            "/config/records-trust-records.cat-s22.json"
+        ]);
+        assert_eq!(
+            parse(value).trust_paths(),
+            [
+                PathBuf::from("/config/records-trust.json"),
+                PathBuf::from("/config/records-trust-records.cat-s22.json")
+            ]
+        );
+    }
+
+    #[test]
+    fn trust_files_stand_alone_for_a_new_host() {
+        let mut value = base();
+        value["trust_files"] = serde_json::json!(["/config/records-trust-records.macbook.json"]);
+        assert_eq!(
+            parse(value).trust_paths(),
+            [PathBuf::from("/config/records-trust-records.macbook.json")]
+        );
+    }
+
+    #[test]
+    fn a_peer_without_books_takes_every_book() {
+        let mut value = base();
+        value["peers"] =
+            serde_json::json!([{ "producer_id": "records.studio", "endpoint_id": "e" }]);
+        let mut config = parse(value);
+        let peer = config.peers.remove(0);
+        assert!(peer.syncs("personal/avery/contacts"));
+        assert!(peer.syncs("personal/avery/marbles"));
+    }
+
+    #[test]
+    fn a_peer_with_books_is_scoped_to_them() {
+        let mut value = base();
+        value["peers"] = serde_json::json!([{
+            "producer_id": "records.cat-s22",
+            "endpoint_id": "e",
+            "books": ["personal/avery/contacts"]
+        }]);
+        let mut config = parse(value);
+        let peer = config.peers.remove(0);
+        assert!(peer.syncs("personal/avery/contacts"));
+        assert!(!peer.syncs("personal/avery/marbles"));
     }
 }
