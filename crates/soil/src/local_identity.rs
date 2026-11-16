@@ -136,7 +136,7 @@ fn hostname() -> Option<String> {
             return None;
         }
         let end = buffer.iter().position(|byte| *byte == 0)?;
-        return std::str::from_utf8(&buffer[..end]).ok().map(str::to_owned);
+        std::str::from_utf8(&buffer[..end]).ok().map(str::to_owned)
     }
     #[cfg(not(unix))]
     {
