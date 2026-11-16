@@ -45,6 +45,18 @@ type SoftSurface = softbuffer::Surface<Arc<Window>, Arc<Window>>;
 
 const LOGICAL_SIZE: (f64, f64) = (1000.0, 700.0);
 
+/// Which agent cast this host grants the Spore.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Agents {
+    /// No adapter attached. Every read fails, which is the honest answer for a
+    /// host that has none — and what CI runs.
+    #[default]
+    None,
+    /// The built-in fixture cast. It is the only cast that raises prompts, so it
+    /// is what a UI pass, a screenshot, or `--capture` runs against.
+    Demo,
+}
+
 /// Host grants that follow a Spore when the launcher opens it.
 ///
 /// The launcher is the thing the user configured, so passing its grants to a
@@ -57,6 +69,8 @@ struct LaunchConfig {
     geode_purpose: Option<String>,
     /// Absolute `geode://` reference the granted handle leases.
     geode_reference: Option<String>,
+    /// Which agent cast follows the Spore into the window.
+    agents: Agents,
     hue_bridge: Option<Url>,
     records_root: Option<PathBuf>,
     /// One workspace the Spore may list and read through `soil:vfs`.
@@ -96,6 +110,10 @@ impl LaunchConfig {
             args.push(purpose.into());
             args.push("--geode-reference".into());
             args.push(reference.into());
+        }
+        if self.agents == Agents::Demo {
+            args.push("--agents".into());
+            args.push("demo".into());
         }
         if let Some(root) = &self.vfs_root {
             args.push("--vfs-root".into());
@@ -1028,6 +1046,7 @@ impl App {
         let records = self.records.clone();
         let vfs_root = self.vfs_root.clone();
         let actor = self.actor.clone();
+        let agents = self.launch.agents;
         let launch = self.launch.clone();
         thread::spawn(move || {
             let result = (|| -> Result<()> {
@@ -1064,7 +1083,13 @@ impl App {
                         // The storefront origin is already in the HTTP policy
                         // `build_http` constructs; this presenter has no agent
                         // cast of its own and needs no single-origin shorthand.
-                        agents: Box::new(NoAgents),
+                        agents: match agents {
+                            Agents::None => Box::new(NoAgents),
+                            Agents::Demo => {
+                                Box::new(soil_agent_host::FixtureAgents::new())
+                                    as Box<dyn soil_agent_host::AgentBackend>
+                            }
+                        },
                         store_origin: None,
                         terminal: Box::new(Terminals::new(80, 24, command)),
                         cursor: Some(Box::new(WindowCursor(window))),
@@ -1900,6 +1925,8 @@ pub struct Options {
     pub geode_purpose: Option<String>,
     /// Absolute `geode://` reference the granted handle leases.
     pub geode_reference: Option<String>,
+    /// Which agent cast to grant the Spore: `none` (the default) or `demo`.
+    pub agents: Agents,
     /// Bridge `hue.local` maps to.
     pub hue_bridge: Option<Url>,
     /// Records store the Spore may read or write.
@@ -1935,6 +1962,7 @@ impl Default for Options {
             geode_socket: None,
             geode_purpose: None,
             geode_reference: None,
+            agents: Agents::None,
             hue_bridge: None,
             records_root: None,
             vfs_root: None,
@@ -1970,6 +1998,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
     let mut geode_socket = None;
     let mut geode_purpose = None;
     let mut geode_reference = None;
+    let mut agents = Agents::None;
     let mut hue_bridge = None;
     let mut records_root = None;
     let mut vfs_root: Option<PathBuf> = None;
@@ -2062,6 +2091,13 @@ pub fn parse(args: &[String]) -> Result<Options> {
                         .clone(),
                 );
             }
+            "--agents" => {
+                agents = match args.next().context("--agents needs demo or none")?.as_str() {
+                    "demo" => Agents::Demo,
+                    "none" => Agents::None,
+                    other => anyhow::bail!("--agents takes demo or none, not {other}"),
+                };
+            }
             "--hue-bridge" => {
                 let value = args.next().context("--hue-bridge needs a URL")?;
                 let url = Url::parse(&value).context("--hue-bridge needs an absolute URL")?;
@@ -2095,7 +2131,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
             }
             value if module.is_none() => module = Some(PathBuf::from(value)),
             _ => anyhow::bail!(
-                "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] [--hue-bridge URL] [--records-root DIR]"
+                "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] [--agents demo] [--hue-bridge URL] [--records-root DIR]"
             ),
         }
     }
@@ -2118,6 +2154,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
         geode_socket,
         geode_purpose,
         geode_reference,
+        agents,
         hue_bridge,
         records_root,
         vfs_root,
@@ -2148,6 +2185,7 @@ pub fn run(options: Options) -> Result<()> {
         geode_socket,
         geode_purpose,
         geode_reference,
+        agents,
         hue_bridge,
         records_root,
         vfs_root,
@@ -2178,7 +2216,7 @@ pub fn run(options: Options) -> Result<()> {
             };
             if !candidate.is_file() {
                 anyhow::bail!(
-                    "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] [--hue-bridge URL] [--vfs-root DIR] [--records-root DIR] [--records-book NAME --records-collection NAME] [--actor WHO]"
+                    "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] [--agents demo] [--hue-bridge URL] [--vfs-root DIR] [--records-root DIR] [--records-book NAME --records-collection NAME] [--actor WHO]"
                 );
             }
             candidate
@@ -2292,6 +2330,7 @@ pub fn run(options: Options) -> Result<()> {
         geode_socket,
         geode_purpose,
         geode_reference,
+        agents,
         hue_bridge,
         records_root,
         vfs_root: vfs_root.clone(),

@@ -691,6 +691,7 @@ dependencies = [
  "portable-pty",
  "softbuffer",
  "soil",
+ "soil-agent-host",
  "soil-spore",
  "soil-vt",
  "soil-webgpu",
