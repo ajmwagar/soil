@@ -213,9 +213,14 @@ fn apply(app: &App, record: &Value) -> Result<String> {
             .get("delete")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+    // The namespaced host stores an entity as `<collection>:<guest id>`, so two
+    // collections can share a book without overwriting each other. A sink that
+    // writes straight into the store has to use the same spelling, or nothing it
+    // writes is ever found by a scan.
+    let store_id = format!("{schema}:{id}");
     let mut store = app.store.lock().expect("records store poisoned");
     if delete {
-        store.delete_record(book, id, schema, version)?;
+        store.delete_record(book, &store_id, schema, version)?;
     } else {
         let body = record
             .get("body")
@@ -224,7 +229,7 @@ fn apply(app: &App, record: &Value) -> Result<String> {
         if !body.is_object() {
             bail!("record {id} body must be a JSON object");
         }
-        store.put_record(book, id, schema, version, body)?;
+        store.put_record(book, &store_id, schema, version, body)?;
     }
     Ok(id.to_string())
 }
