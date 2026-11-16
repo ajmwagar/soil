@@ -51,7 +51,7 @@ jobs:
       # carries lints of its own. A gate that cannot run is worse than no gate,
       # so a crate joins this list in the change that makes it green here.
       - name: Clippy
-        run: cargo clippy -p soil -p soil-agent-host -p soil-vt --all-targets --locked -- -D warnings
+        run: cargo clippy -p soil -p soil-agent-host -p soil-vt -p soil-webgpu --all-targets --locked -- -D warnings
 
       # `soil`'s own suite joins this step once it is green: three
       # `records_host` tests (upsert_get_scan_and_delete and two neighbours)
