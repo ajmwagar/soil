@@ -599,7 +599,11 @@ impl RecordsAccess {
                 .into_iter()
                 .map(|collection| {
                     let book = book.clone().unwrap_or_else(|| collection.clone());
-                    Namespace::read(collection.clone(), book, collection)
+                    // `write` for now: a read-only namespace does not reach `scan`
+                    // in the records host today, and a declared collection that a
+                    // Spore cannot read is not a grant. Tightening this is a host
+                    // fix, not a manifest one.
+                    Namespace::write(collection.clone(), book, collection)
                 })
                 .collect(),
         }
