@@ -124,7 +124,8 @@ struct TrustEntry {
 impl VerifierSet {
     /// Load and index one trust document per peer. A path that cannot be read
     /// or parsed fails startup rather than silently dropping a peer, and one
-    /// peer endpoint may only be claimed by one document.
+    /// peer endpoint may only be claimed by one document. The index is fixed at
+    /// load: swapping a document for a different pair needs a restart.
     ///
     /// `local_endpoint` is this host's Iroh endpoint id. Every document must
     /// name it on one side -- one that does not can neither admit nor open a

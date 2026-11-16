@@ -41,13 +41,16 @@ document of the peer being dialed. Inbound it tries each document in turn, and
 each one still checks signature, signed scope digest, validity window and key
 binding, so the first that verifies is the only one that can.
 
+`peers[].books` limits a peer to those books. Leaving it empty keeps the older
+meaning, every book this host lists, which is what a two-host config relies on.
+
 Pairing a peer against the local config is one command:
 
 ```sh
 soil-sync permit --config ~/.config/fungos/soil-sync/records-macbook.json \
   --key ~/.mycelium/access.key \
   --peer records.cat-s22 --responder-endpoint <cat-s22-endpoint-id> \
-  --peer-addr 192.168.77.2:18794
+  --peer-addr 192.168.10.101:18795
 ```
 
 It takes this host's identity (audience, installation, producer, endpoint key)
