@@ -84,3 +84,35 @@ fn an_unknown_content_id_is_an_empty_answer_and_a_malformed_one_is_an_error() {
         .expect_err("a zero page is refused");
     assert_eq!(zero, cid::Error::OverBudget);
 }
+
+/// The whole path a viewer walks: an asset record names `blake3:…`, `find` says where it
+/// lives, and `read` hands back the picture. If any link in that chain drifts, a photo grid
+/// draws placeholder tiles and says nothing — which is exactly what this pins.
+#[test]
+fn the_path_find_answers_reads_back_the_bytes_the_record_named() {
+    use soil::vfs_host::vfs;
+
+    let (_root, mut host, _store) = host();
+    let picture = b"a preview, whole, in this workspace";
+    let id = write(&mut host, "photos/one.jpg", picture);
+
+    let page = <VfsHost as cid::Host>::find(&mut host, id, 0, 8).expect("a page");
+    let path = page
+        .entries
+        .first()
+        .expect("the bytes are somewhere")
+        .path
+        .clone();
+    let mut bytes = Vec::new();
+    let mut offset = 0;
+    loop {
+        let chunk =
+            <VfsHost as vfs::Host>::read(&mut host, path.clone(), offset, 4096).expect("a chunk");
+        bytes.extend_from_slice(&chunk.data);
+        offset += chunk.data.len() as u64;
+        if chunk.eof {
+            break;
+        }
+    }
+    assert_eq!(bytes, picture);
+}

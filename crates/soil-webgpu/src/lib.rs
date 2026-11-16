@@ -12,14 +12,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
-use ::soil::principal_host::PrincipalHost;
-use ::soil::vfs_host::VfsHost;
 use ::soil::http_host::{
     self, CredentialProvider, DirectTransport, HttpPolicy, HttpTransport, NoCredentials,
     Request as HttpRequest,
 };
+use ::soil::principal_host::PrincipalHost;
 use ::soil::records_host::{self, Namespace, NamespacedRecordsHost};
+use ::soil::vfs_host::VfsHost;
+use anyhow::{Context, Result};
 use wasi_webgpu_wasmtime::reexports::{wgpu_core, wgpu_types};
 use wasi_webgpu_wasmtime::{WasiWebGpuCtx, WasiWebGpuCtxView, WasiWebGpuOptions};
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
@@ -46,6 +46,10 @@ wasmtime::component::bindgen!({
         // crate's own `soil:vfs` and `soil:principal` types rather than a
         // second generated copy that would need converting field by field.
         "soil:vfs/vfs@1.0.0": ::soil::vfs_host::vfs,
+        // `vfs-cid` answers "where do these bytes live" from the same index `vfs`
+        // lists, so it is the same host object, not a second one that could
+        // disagree with it.
+        "soil:vfs-cid/cid@0.1.0": ::soil::vfs_host::cid,
         "soil:principal/principal@0.1.0": ::soil::principal_host::api,
         // A subscription is host state, not a generated shadow type: the
         // backend keeps the position, so two subscriptions cannot disagree.
@@ -577,7 +581,11 @@ impl RecordsAccess {
     ) -> Self {
         Self {
             root: root.into(),
-            namespaces: vec![Namespace::write(name.into(), book.into(), collection.into())],
+            namespaces: vec![Namespace::write(
+                name.into(),
+                book.into(),
+                collection.into(),
+            )],
         }
     }
 
@@ -860,8 +868,7 @@ impl ::soil::vfs_host::vfs::Host for WebGpuHost {
         parent: String,
         offset: u64,
         limit: u32,
-    ) -> std::result::Result<::soil::vfs_host::vfs::Page, ::soil::vfs_host::vfs::Error>
-    {
+    ) -> std::result::Result<::soil::vfs_host::vfs::Page, ::soil::vfs_host::vfs::Error> {
         self.vfs
             .as_mut()
             .ok_or(::soil::vfs_host::vfs::Error::Denied)?
@@ -871,8 +878,7 @@ impl ::soil::vfs_host::vfs::Host for WebGpuHost {
     fn stat(
         &mut self,
         path: String,
-    ) -> std::result::Result<::soil::vfs_host::vfs::Entry, ::soil::vfs_host::vfs::Error>
-    {
+    ) -> std::result::Result<::soil::vfs_host::vfs::Entry, ::soil::vfs_host::vfs::Error> {
         self.vfs
             .as_mut()
             .ok_or(::soil::vfs_host::vfs::Error::Denied)?
@@ -884,12 +890,29 @@ impl ::soil::vfs_host::vfs::Host for WebGpuHost {
         path: String,
         offset: u64,
         length: u32,
-    ) -> std::result::Result<::soil::vfs_host::vfs::Chunk, ::soil::vfs_host::vfs::Error>
-    {
+    ) -> std::result::Result<::soil::vfs_host::vfs::Chunk, ::soil::vfs_host::vfs::Error> {
         self.vfs
             .as_mut()
             .ok_or(::soil::vfs_host::vfs::Error::Denied)?
             .read(path, offset, length)
+    }
+}
+
+impl ::soil::vfs_host::cid::Host for WebGpuHost {
+    fn find(
+        &mut self,
+        content_id: String,
+        offset: u64,
+        limit: u32,
+    ) -> std::result::Result<::soil::vfs_host::cid::Page, ::soil::vfs_host::cid::Error> {
+        <VfsHost as ::soil::vfs_host::cid::Host>::find(
+            self.vfs
+                .as_mut()
+                .ok_or(::soil::vfs_host::cid::Error::Denied)?,
+            content_id,
+            offset,
+            limit,
+        )
     }
 }
 
@@ -1592,6 +1615,12 @@ impl WebGpuRuntime {
         )
         .map_err(anyhow::Error::from)
         .context("link soil:vfs")?;
+        ::soil::vfs_host::cid::add_to_linker::<WebGpuHost, HasSelf<WebGpuHost>>(
+            &mut linker,
+            |host| host,
+        )
+        .map_err(anyhow::Error::from)
+        .context("link soil:vfs-cid")?;
         ::soil::principal_host::add_to_linker::<WebGpuHost>(&mut linker)
             .context("link soil:principal")?;
         Ok(Self {
