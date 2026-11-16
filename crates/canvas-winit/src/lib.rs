@@ -20,7 +20,7 @@ use url::Url;
 mod terminal;
 
 #[cfg(unix)]
-use ::soil::http_host::GeodeCredentials;
+use ::soil::creds::{GeodeCredentials, HostHandle};
 use ::soil::http_host::{
     DirectTransport, HttpPolicy, HttpTransport, TransportError, TransportRequest, TransportResponse,
 };
@@ -55,6 +55,8 @@ struct LaunchConfig {
     origins: Vec<String>,
     geode_socket: Option<PathBuf>,
     geode_purpose: Option<String>,
+    /// Absolute `geode://` reference the granted handle leases.
+    geode_reference: Option<String>,
     hue_bridge: Option<Url>,
     records_root: Option<PathBuf>,
     /// One workspace the Spore may list and read through `soil:vfs`.
@@ -85,11 +87,15 @@ impl LaunchConfig {
             args.push("--allow-origin".into());
             args.push(origin.into());
         }
-        if let (Some(socket), Some(purpose)) = (&self.geode_socket, &self.geode_purpose) {
+        if let (Some(socket), Some(purpose), Some(reference)) =
+            (&self.geode_socket, &self.geode_purpose, &self.geode_reference)
+        {
             args.push("--geode-socket".into());
             args.push(socket.into());
             args.push("--geode-purpose".into());
             args.push(purpose.into());
+            args.push("--geode-reference".into());
+            args.push(reference.into());
         }
         if let Some(root) = &self.vfs_root {
             args.push("--vfs-root".into());
@@ -1798,11 +1804,17 @@ fn key_name(key: &WinitKey) -> String {
 }
 
 fn build_http(launch: &LaunchConfig) -> Result<Option<HttpAccess>> {
-    match (launch.geode_socket.as_ref(), launch.geode_purpose.as_ref()) {
-        (Some(_), None) | (None, Some(_)) => {
-            anyhow::bail!("--geode-socket and --geode-purpose must be used together");
-        }
-        _ => {}
+    let geode = (
+        launch.geode_socket.as_ref(),
+        launch.geode_purpose.as_ref(),
+        launch.geode_reference.as_ref(),
+    );
+    match geode {
+        (None, None, None) => {}
+        (Some(_), Some(_), Some(_)) => {}
+        _ => anyhow::bail!(
+            "--geode-socket, --geode-reference and --geode-purpose are used together"
+        ),
     }
     // The storefront is the one origin every presenter grants. A Spore that
     // needs another origin says so at launch; the launcher does not guess.
@@ -1821,17 +1833,27 @@ fn build_http(launch: &LaunchConfig) -> Result<Option<HttpAccess>> {
         bridge: launch.hue_bridge.clone(),
         inner: DirectTransport,
     }));
-    if let (Some(socket), Some(purpose)) = (&launch.geode_socket, &launch.geode_purpose) {
+    if let (Some(socket), Some(reference), Some(purpose)) = geode {
         #[cfg(unix)]
         {
-            access = access.with_credentials(Arc::new(GeodeCredentials::new(
-                socket.clone(),
-                purpose.clone(),
-            )));
+            // The guest names a handle. The reference, the purpose and whether
+            // the bytes become a header stay host configuration, so a Spore
+            // cannot address a slot by spelling it.
+            let credentials =
+                GeodeCredentials::new(socket.clone(), "", purpose.clone(), std::time::Duration::from_secs(60))
+                    .with_host_handle(
+                        "default",
+                        HostHandle {
+                            reference: reference.clone(),
+                            purpose: purpose.clone(),
+                            header: Some("authorization".into()),
+                        },
+                    );
+            access = access.with_credentials(Arc::new(credentials));
         }
         #[cfg(not(unix))]
         {
-            let _ = (socket, purpose);
+            let _ = (socket, reference, purpose);
             anyhow::bail!("--geode-socket is only available on Unix hosts");
         }
     }
@@ -1876,6 +1898,8 @@ pub struct Options {
     pub geode_socket: Option<PathBuf>,
     /// Geode purpose the lease is for.
     pub geode_purpose: Option<String>,
+    /// Absolute `geode://` reference the granted handle leases.
+    pub geode_reference: Option<String>,
     /// Bridge `hue.local` maps to.
     pub hue_bridge: Option<Url>,
     /// Records store the Spore may read or write.
@@ -1910,6 +1934,7 @@ impl Default for Options {
             origins: Vec::new(),
             geode_socket: None,
             geode_purpose: None,
+            geode_reference: None,
             hue_bridge: None,
             records_root: None,
             vfs_root: None,
@@ -1944,6 +1969,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
     let mut origins = Vec::new();
     let mut geode_socket = None;
     let mut geode_purpose = None;
+    let mut geode_reference = None;
     let mut hue_bridge = None;
     let mut records_root = None;
     let mut vfs_root: Option<PathBuf> = None;
@@ -2029,6 +2055,13 @@ pub fn parse(args: &[String]) -> Result<Options> {
                         .clone(),
                 );
             }
+            "--geode-reference" => {
+                geode_reference = Some(
+                    args.next()
+                        .context("--geode-reference needs a geode:// reference")?
+                        .clone(),
+                );
+            }
             "--hue-bridge" => {
                 let value = args.next().context("--hue-bridge needs a URL")?;
                 let url = Url::parse(&value).context("--hue-bridge needs an absolute URL")?;
@@ -2062,7 +2095,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
             }
             value if module.is_none() => module = Some(PathBuf::from(value)),
             _ => anyhow::bail!(
-                "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-purpose PURPOSE] [--hue-bridge URL] [--records-root DIR]"
+                "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] [--hue-bridge URL] [--records-root DIR]"
             ),
         }
     }
@@ -2084,6 +2117,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
         origins,
         geode_socket,
         geode_purpose,
+        geode_reference,
         hue_bridge,
         records_root,
         vfs_root,
@@ -2113,6 +2147,7 @@ pub fn run(options: Options) -> Result<()> {
         origins,
         geode_socket,
         geode_purpose,
+        geode_reference,
         hue_bridge,
         records_root,
         vfs_root,
@@ -2143,7 +2178,7 @@ pub fn run(options: Options) -> Result<()> {
             };
             if !candidate.is_file() {
                 anyhow::bail!(
-                    "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-purpose PURPOSE] [--hue-bridge URL] [--vfs-root DIR] [--records-root DIR] [--records-book NAME --records-collection NAME] [--actor WHO]"
+                    "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] [--hue-bridge URL] [--vfs-root DIR] [--records-root DIR] [--records-book NAME --records-collection NAME] [--actor WHO]"
                 );
             }
             candidate
@@ -2256,6 +2291,7 @@ pub fn run(options: Options) -> Result<()> {
         origins,
         geode_socket,
         geode_purpose,
+        geode_reference,
         hue_bridge,
         records_root,
         vfs_root: vfs_root.clone(),
