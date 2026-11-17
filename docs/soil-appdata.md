@@ -104,9 +104,10 @@ either. A host given no root still links it and answers `denied` to every call:
 an import with no implementation does not instantiate at all, and a Spore that
 cannot start is a worse answer than one that cannot write.
 
-`soil spore run` grants the host's own store unless `--appdata-root DIR` says
-otherwise: `<DIR>` defaults to `~/.local/share/fungos/appdata`, and the app
-identity is the Spore manifest's id, never anything the guest sends.
+`soil spore run` grants the host's own store to a window or frame run unless
+`--appdata-root DIR` says otherwise: `<DIR>` defaults to
+`~/.local/share/fungos/appdata`, and the app identity is the Spore manifest's
+id, never anything the guest sends.
 
 ```sh
 soil spore run ./weeper --surface window      # book under ~/.local/share/fungos/appdata
