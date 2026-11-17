@@ -77,6 +77,8 @@ pub mod acp;
 pub mod dispatch;
 #[cfg(feature = "git")]
 pub mod git_host;
+#[cfg(feature = "desktops")]
+pub mod desktops;
 #[cfg(feature = "wasi")]
 pub mod unibus;
 #[cfg(feature = "vfs")]

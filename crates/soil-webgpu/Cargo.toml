@@ -9,7 +9,7 @@ publish = false
 [dependencies]
 libc = "0.2"
 soil-spore = { path = "../soil-spore" }
-soil = { path = "../soil", default-features = false, features = ["http", "principal", "records", "vfs", "wasi", "dispatch", "git"] }
+soil = { path = "../soil", default-features = false, features = ["http", "principal", "records", "vfs", "wasi", "dispatch", "git", "desktops"] }
 soil-agent-host = { path = "../soil-agent-host" }
 ureq = "2"
 anyhow = "1"

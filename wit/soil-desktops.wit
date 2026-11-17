@@ -68,3 +68,7 @@ interface desktops {
   /// Callable while already bound, including for the Desktop it is bound to.
   open: func(id: string) -> result<desktop, error>;
 }
+
+world host {
+  import desktops;
+}

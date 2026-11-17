@@ -16,6 +16,7 @@ use ::soil::http_host::{
     self, CredentialProvider, DirectTransport, HttpPolicy, HttpTransport, NoCredentials,
     Request as HttpRequest,
 };
+use ::soil::desktops::DesktopsHost;
 use ::soil::git_host::GitHost;
 use ::soil::principal_host::PrincipalHost;
 use ::soil::records_host::{self, Namespace, NamespacedRecordsHost};
@@ -55,6 +56,8 @@ wasmtime::component::bindgen!({
         "soil:vfs-cid/cid@0.1.0": ::soil::vfs_host::cid,
         "soil:principal/principal@0.1.0": ::soil::principal_host::api,
         "soil:git/git@0.1.0": ::soil::git_host::git,
+        "soil:vfs-mut/vfs-mut@0.1.0": ::soil::vfs_host::vfs_mut,
+        "soil:desktops/desktops@0.1.0": ::soil::desktops::desktops,
         // A subscription is host state, not a generated shadow type: the
         // backend keeps the position, so two subscriptions cannot disagree.
         "soil:agents/observe.subscription": AgentSubscription,
@@ -628,6 +631,10 @@ pub struct WebGpuHost {
     /// Git about the workspace it is reading, and one that may not cannot. Two
     /// roots would be two answers to "which tree is this".
     git: Option<GitHost>,
+    /// Which Desktops this window may switch between. `None` denies
+    /// `soil:desktops`: a window whose workspace is not a registered Desktop
+    /// has no picker to offer.
+    desktops: Option<DesktopsHost>,
     /// Who the guest is acting as. `None` denies `soil:principal`.
     principal: Option<PrincipalHost>,
     /// The cast of agents this run can see. `NoAgents` refuses every read, so a
@@ -910,6 +917,7 @@ impl WebGpuHost {
         // Read before the workspace is moved into its host: one workspace, two
         // questions (what is in it, which repository is it in).
         let git = setup.vfs.as_ref().map(GitHost::open);
+        let desktops = setup.vfs.as_deref().and_then(DesktopsHost::for_workspace);
         Ok(Self {
             instance: Arc::new(instance),
             table: ResourceTable::new(),
@@ -941,6 +949,7 @@ impl WebGpuHost {
                 .map(|root| VfsHost::open(&root).context("open the workspace for soil:vfs"))
                 .transpose()?,
             git,
+            desktops,
             principal: setup.principal,
             agents: setup.agents,
             dispatch: match setup.dispatch {
@@ -1196,6 +1205,96 @@ impl ::soil::vfs_host::vfs::Host for WebGpuHost {
     }
 }
 
+impl ::soil::vfs_host::vfs_mut::Host for WebGpuHost {
+    fn write(
+        &mut self,
+        path: String,
+        data: Vec<u8>,
+        media_type: String,
+        expected_version: Option<u64>,
+        mode: Option<u32>,
+    ) -> std::result::Result<
+        ::soil::vfs_host::vfs_mut::WriteResult,
+        ::soil::vfs_host::vfs_mut::Error,
+    > {
+        let vfs = self
+            .vfs
+            .as_mut()
+            .ok_or(::soil::vfs_host::vfs_mut::Error::Denied)?;
+        ::soil::vfs_host::vfs_mut::Host::write(
+            vfs,
+            path,
+            data,
+            media_type,
+            expected_version,
+            mode,
+        )
+    }
+
+    fn chmod(
+        &mut self,
+        path: String,
+        mode: u32,
+    ) -> std::result::Result<
+        ::soil::vfs_host::vfs_mut::WriteResult,
+        ::soil::vfs_host::vfs_mut::Error,
+    > {
+        let vfs = self
+            .vfs
+            .as_mut()
+            .ok_or(::soil::vfs_host::vfs_mut::Error::Denied)?;
+        ::soil::vfs_host::vfs_mut::Host::chmod(vfs, path, mode)
+    }
+
+    fn remove(
+        &mut self,
+        path: String,
+    ) -> std::result::Result<(), ::soil::vfs_host::vfs_mut::Error> {
+        let vfs = self
+            .vfs
+            .as_mut()
+            .ok_or(::soil::vfs_host::vfs_mut::Error::Denied)?;
+        ::soil::vfs_host::vfs_mut::Host::remove(vfs, path)
+    }
+
+    fn mkdir(
+        &mut self,
+        path: String,
+    ) -> std::result::Result<(), ::soil::vfs_host::vfs_mut::Error> {
+        let vfs = self
+            .vfs
+            .as_mut()
+            .ok_or(::soil::vfs_host::vfs_mut::Error::Denied)?;
+        ::soil::vfs_host::vfs_mut::Host::mkdir(vfs, path)
+    }
+
+    fn rmdir(
+        &mut self,
+        path: String,
+    ) -> std::result::Result<(), ::soil::vfs_host::vfs_mut::Error> {
+        let vfs = self
+            .vfs
+            .as_mut()
+            .ok_or(::soil::vfs_host::vfs_mut::Error::Denied)?;
+        ::soil::vfs_host::vfs_mut::Host::rmdir(vfs, path)
+    }
+
+    fn rename(
+        &mut self,
+        source: String,
+        target: String,
+    ) -> std::result::Result<
+        ::soil::vfs_host::vfs_mut::WriteResult,
+        ::soil::vfs_host::vfs_mut::Error,
+    > {
+        let vfs = self
+            .vfs
+            .as_mut()
+            .ok_or(::soil::vfs_host::vfs_mut::Error::Denied)?;
+        ::soil::vfs_host::vfs_mut::Host::rename(vfs, source, target)
+    }
+}
+
 impl ::soil::git_host::git::Host for WebGpuHost {
     fn status(
         &mut self,
@@ -1226,6 +1325,44 @@ impl ::soil::vfs_host::cid::Host for WebGpuHost {
             offset,
             limit,
         )
+    }
+}
+
+impl ::soil::desktops::desktops::Host for WebGpuHost {
+    fn available(
+        &mut self,
+    ) -> std::result::Result<
+        Vec<::soil::desktops::desktops::Desktop>,
+        ::soil::desktops::desktops::Error,
+    > {
+        let desktops = self
+            .desktops
+            .as_mut()
+            .ok_or(::soil::desktops::desktops::Error::Denied)?;
+        ::soil::desktops::desktops::Host::available(desktops)
+    }
+
+    fn open(
+        &mut self,
+        id: String,
+    ) -> std::result::Result<
+        ::soil::desktops::desktops::Desktop,
+        ::soil::desktops::desktops::Error,
+    > {
+        let desktops = self
+            .desktops
+            .as_mut()
+            .ok_or(::soil::desktops::desktops::Error::Denied)?;
+        let row = ::soil::desktops::desktops::Host::open(desktops, id)?;
+        // The barrier: rebind the workspace every path-shaped capability reads,
+        // after `open` has already refused anything it could not have.
+        let root = desktops.bound_root();
+        self.vfs = Some(
+            VfsHost::open(&root)
+                .map_err(|_| ::soil::desktops::desktops::Error::Io)?,
+        );
+        self.git = Some(GitHost::open(&root));
+        Ok(row)
     }
 }
 
@@ -1981,6 +2118,12 @@ impl WebGpuRuntime {
         )
         .map_err(anyhow::Error::from)
         .context("link soil:vfs")?;
+        ::soil::vfs_host::vfs_mut::add_to_linker::<WebGpuHost, HasSelf<WebGpuHost>>(
+            &mut linker,
+            |host| host,
+        )
+        .map_err(anyhow::Error::from)
+        .context("link soil:vfs-mut")?;
         ::soil::git_host::git::add_to_linker::<WebGpuHost, HasSelf<WebGpuHost>>(
             &mut linker,
             |host| host,
@@ -1993,6 +2136,12 @@ impl WebGpuRuntime {
         )
         .map_err(anyhow::Error::from)
         .context("link soil:vfs-cid")?;
+        ::soil::desktops::desktops::add_to_linker::<WebGpuHost, HasSelf<WebGpuHost>>(
+            &mut linker,
+            |host| host,
+        )
+        .map_err(anyhow::Error::from)
+        .context("link soil:desktops")?;
         ::soil::principal_host::add_to_linker::<WebGpuHost>(&mut linker)
             .context("link soil:principal")?;
         ::soil::unibus::add_to_linker::<WebGpuHost>(&mut linker).context("link soil:unibus")?;

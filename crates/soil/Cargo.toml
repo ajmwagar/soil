@@ -26,6 +26,9 @@ vfs = ["dep:blake3", "dep:fungos-vfs", "dep:regex", "dep:rusqlite"]
 # Repository status for the workspace a Spore already reads. No dependency: the
 # host asks Git, and Git is the only source of truth about a repository.
 git = []
+# The Desktop registry: which workspaces this machine offers, and the barrier
+# that switches one window from one to another.
+desktops = []
 records = ["dep:fungos-records"]
 principal = ["dep:libc", "dep:serde", "dep:mycelium-peer-protocol"]
 # A principal verified by Mycelium identity rather than an OIDC claim set.
