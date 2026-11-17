@@ -40,6 +40,7 @@ credential resolution stay in host adapters.
 | `soil:terminal-screen@0.1.0` | wired | bounded cell grid for Spores that render a terminal; the host owns the pty |
 | `soil:terminal@0.1.0` | wired | host-rendered terminal surface; `terminal-host` |
 | `soil:view@1.0.0` | contract | host-reviewed web/Spore/retained view |
+| `soil:desktops@0.1.0` | contract | which Desktops this machine offers and which one a window is bound to: `available` + `open` (`list` is a WIT keyword), no host paths |
 | `fungos:mycelium@0.1.0` | contract | Pulse control-plane bridge to myceliumd; host implementation pending |
 | `soil:mycelium@0.1.0` | wired | directory/session; `terminal-host` in Soil |
 | `soil:device@0.1.0` | wired | battery/estimate/lid core-Wasm lowering |

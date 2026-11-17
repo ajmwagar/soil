@@ -119,6 +119,90 @@ Canvas layouts         records or VFS metadata, scoped to the Desktop
 The Desktop is the durable namespace. The checkout is a disposable projection
 of a thread worktree.
 
+## Declares and reveals
+
+Two kinds of thing appear in one tree and must never be treated the same.
+
+| | Declares | Reveals |
+|---|---|---|
+| Owned by the Desktop | yes | no |
+| Travels to another machine | yes | no |
+| Absent on another machine means | fetch it | nothing; that machine simply has no such mount |
+| Example | `projects/engineering-tenets/**` | `/nix`, an external disk, `[[project]] path = "~/src/x"` |
+
+The rule is one sentence: **dotfiles come with you; other people's mounts do
+not.** A sync loop that cannot tell the two apart deletes `~/src`.
+
+In the registry file (`~/.config/fungos/desktops/<id>.toml`) the two are already
+spelled differently:
+
+```toml
+id = "fpl"
+root = "~/.local/share/fungos/desktops/fpl"   # the store
+mount = "~/mnt/fpl"                           # a local projection of it
+projects = "operator,engineering-tenets"      # declares: names inside the store
+
+[[project]]
+path = "~/src/fpl/soil"                        # reveal: a checkout, in place
+```
+
+- `root` is the Desktop's VFS store (`.vfs-state/`), content-addressed.
+- `mount` is where that store is projected as files. The default is
+  `~/mnt/<id>`. `mush origin` *resolves* it and reports `not-mounted` when
+  nothing is there; it deliberately does not mount, because handing back a path
+  where nothing is mounted sends writes into an empty directory that looks like
+  success.
+- `projects = "a,b"` is the older spelling and still reads: each name is a
+  claim on `<mount>/projects/<name>`, which is the namespace path
+  `projects/<name>`. A claim is a name, not content.
+- A `[[project]]` row is a reference to a checkout where the person keeps it.
+
+### A name is not content
+
+A Desktop that declares `projects/operator` owns that namespace and nothing
+more. The bytes arrive separately, and until they do every entry is a
+`placeholder`: a path, a `blake3:` content id, and no content.
+
+Experimental evidence, 2026-11-17, FPL desktop on the Studio: the namespace held
+156 entries under `projects/` and **zero of their content ids existed in the
+machine's 745 MB content store**. Every read failed `not hydrated`. The index was
+not corrupt and the read path was not broken; the store had never been given the
+bytes.
+
+Those declared bytes belong to the machine that wrote the declaration. The same
+Desktop's `projects/engineering-tenets` on `shelf` was eight files *ahead* of the
+local `~/src/fpl/engineering-tenets` (`src/opentofu.rs`, `src/skills.rs`, the
+`skills/**` Spores) and one file *behind* it (`CLAUDE.md`). Ingesting the local
+checkout to fill the gap would have written local state into a shared Desktop and
+called it the Desktop's truth. **Placeholders are filled from the replicas that
+hold the declared content id, never from a convenient local checkout.**
+
+So the recovery procedure is `fetch`, and it is not an ingest:
+
+```sh
+fungos-vfs --root ~/.local/share/fungos/desktops/fpl fetch --prefix projects --dry-run
+fungos-vfs --root ~/.local/share/fungos/desktops/fpl fetch --prefix projects
+```
+
+The replicas come from the Desktop's own `replicas.json`; the caller never names
+a provider. Afterwards `hydration` reads `present` and the placeholder means what
+it should: *not fetched yet*, rather than *never existed*.
+
+### Storage class is part of the distinction
+
+`fungos-vfs project attach` runs under a `git: **` policy: a **clean** checkout
+is recorded as one `(commit, tree)` pointer and its files are skipped entirely
+(`git_skipped`), because Git's tree object already names every file by content
+hash. That is cheap and correct, and it is a **reveal** — the bytes live in that
+checkout's git objects on this machine and nowhere else.
+
+A Desktop that must travel therefore cannot be built from pointers alone: it
+needs one namespace entry per file and the bytes in the content store. Attach is
+the local-checkout view; ingest (or a dirty checkpoint, which falls back to
+blobs) is the travelling one. Choosing between them is a per-Desktop decision,
+not a default — see [Open decisions](#open-decisions).
+
+
 ## Following machines
 
 Yes: **Desktops must follow the principal across machines.**
@@ -353,6 +437,10 @@ archive
 7. Add the same public repository to two Desktops. Each Desktop creates an
    independent thread worktree; neither Desktop can write through the other's
    checkout.
+8. Bind a machine to a Desktop whose content ids are not on it. Every entry
+   reads `placeholder`, no entry claims to be missing, and `fetch` fills them
+   from the Desktop's declared replica. No byte is taken from a machine-local
+   checkout, even when one is present and nearby.
 
 ## Non-goals
 
@@ -375,3 +463,12 @@ archive
 4. Does `soil:doc` become a Desktop text-buffer capability, or remain a VFS text
    layer? Recommendation: VFS text first; `soil:doc` only if editor semantics
    need a stable capability.
+5. Pointer or blobs for a Desktop that travels? `project attach` stores a Git
+   tree pointer for a clean checkout, which is a reveal and cannot cross a
+   machine. Recommendation: blobs for a Desktop that syncs, a pointer for one
+   bound to this machine alone, and the choice recorded on the Desktop rather
+   than inferred from whichever path filled it.
+6. Does the picker list every Desktop on the machine, or only those a grant
+   allows? Recommendation: list all and carry `access` on each row. A hidden
+   Desktop and a refused Desktop are different facts, and only one of them is
+   true.

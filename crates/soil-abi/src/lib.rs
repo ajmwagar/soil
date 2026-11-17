@@ -39,6 +39,12 @@ pub const CONTRACTS: &[Contract] = &[
         interfaces: &[("viewer", &["open"])],
     },
     Contract {
+        file: "wit/soil-desktops.wit",
+        source: include_str!("../../../wit/soil-desktops.wit"),
+        package: "soil:desktops@0.1.0",
+        interfaces: &[("desktops", &["available", "open"])],
+    },
+    Contract {
         file: "wit/soil-time.wit",
         source: include_str!("../../../wit/soil-time.wit"),
         package: "soil:time@1.0.0",
