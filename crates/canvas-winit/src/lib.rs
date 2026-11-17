@@ -1297,6 +1297,26 @@ fn agent_roles(
         ),
         Agents::Acp => {
             let command = acp_cmd.unwrap_or("delta-acp");
+            // Both a service and a stdio source: the harness that runs work and
+            // the transcript source that already has some. They are one roster
+            // to a person, so they are composed, and new work is created through
+            // the service — a transcript source is read, not started.
+            if let (Some(url), Some(threads_cmd)) = (acp_url, acp_cmd) {
+                let harness = ::soil::acp::AcpBackend::attach_http(url)
+                    .map_err(|error| anyhow::anyhow!("acp: {error}"))?;
+                let threads = ::soil::acp::AcpBackend::spawn(threads_cmd)
+                    .map_err(|error| anyhow::anyhow!("acp: {error}"))?;
+                let harness = soil_agent_host::Live::new(harness);
+                let threads = soil_agent_host::Live::new(threads);
+                let roster = soil_agent_host::CompositeAgents::new(vec![
+                    Box::new(harness.clone()) as Box<dyn soil_agent_host::AgentBackend>,
+                    Box::new(threads) as Box<dyn soil_agent_host::AgentBackend>,
+                ]);
+                return Ok((
+                    Box::new(roster) as Box<dyn soil_agent_host::AgentBackend>,
+                    DispatchRole::Own(Box::new(harness)),
+                ));
+            }
             let backend = match (acp_url, broker) {
                 // A harness that is a service: nothing here owns its lifetime,
                 // and a restart costs a `session/list`.
