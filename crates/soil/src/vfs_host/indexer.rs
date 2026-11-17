@@ -34,6 +34,11 @@ pub(crate) trait IndexBackend: Send {
     ) -> Result<index::Page, index::Error>;
     fn search(&self, query: &index::Query) -> Result<index::Page, index::Error>;
     fn entry(&self, path: &str) -> Option<&Node>;
+    /// Every file entry whose whole-content identity is `content_id`, in path
+    /// order. The derived index holds the identity of every entry it has seen,
+    /// so this is the one lookup `soil:vfs` cannot answer: it is a question
+    /// about bytes, not names.
+    fn by_content(&self, content_id: &str) -> Vec<&Node>;
     fn children(&self, parent: &str) -> &[String];
     fn missing_chunks(&self, model: &str, limit: usize) -> anyhow::Result<Vec<(String, String)>>;
     fn put_vector(&mut self, chunk_id: &str, model: &str, vector: &[f32]) -> anyhow::Result<()>;
@@ -673,6 +678,15 @@ impl IndexBackend for SqliteIndex {
 
     fn entry(&self, path: &str) -> Option<&Node> {
         self.nodes.get(path)
+    }
+
+    fn by_content(&self, content_id: &str) -> Vec<&Node> {
+        self.nodes
+            .values()
+            .filter(|node| {
+                node.kind == NodeKind::File && node.entry.content_id.0.as_str() == content_id
+            })
+            .collect()
     }
 
     fn children(&self, parent: &str) -> &[String] {

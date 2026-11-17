@@ -12,6 +12,7 @@ world runner {
   import soil:present/surface@0.1.0;
   import soil:present/input@0.1.0;
   import soil:vfs/vfs@1.0.0;
+  import soil:vfs-cid/cid@0.1.0;
   import soil:records/records@0.1.0;
   import soil:principal/principal@0.1.0;
   import soil:present/cursor@0.1.0;

@@ -7701,6 +7701,7 @@ dependencies = [
  "http",
  "image",
  "pollster 0.4.0",
+ "serde",
  "serde_json",
  "soil",
  "soil-agent-records",

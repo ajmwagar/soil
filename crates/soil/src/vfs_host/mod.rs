@@ -9,7 +9,7 @@ mod indexer;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
-use fungos_vfs::{Expect, Hydration, NodeRole, Vfs, VfsError, normalize_path};
+use fungos_vfs::{Expect, Hydration, Vfs, VfsError, normalize_path};
 use wasmtime::component::{HasSelf, Linker};
 
 wasmtime::component::bindgen!({ path: "wit/vfs", world: "host" });
@@ -19,9 +19,13 @@ pub use embeddings::EmbeddingProvider;
 pub use embeddings::Model2VecEmbedder;
 #[cfg(feature = "remote")]
 pub use embeddings::RemoteEmbeddingProvider;
+/// The role a root plays. Re-exported because [`VfsHost::open_with_role`] takes
+/// one: a caller cannot name a parameter type it cannot reach.
+pub use fungos_vfs::NodeRole;
 use indexer::{IndexBackend, Node, NodeKind, SqliteIndex};
 pub use self::soil::index::index;
 pub use self::soil::vfs::vfs;
+pub use self::soil::vfs_cid::cid;
 pub use self::soil::vfs_mut::vfs_mut;
 
 use self::soil::vfs_mut::vfs_mut as vfs_mut_api;
@@ -380,6 +384,55 @@ impl vfs::Host for VfsHost {
             content_id,
         })
     }
+}
+
+impl cid::Host for VfsHost {
+    fn find(
+        &mut self,
+        content_id: String,
+        offset: u64,
+        limit: u32,
+    ) -> Result<cid::Page, cid::Error> {
+        if limit == 0 || limit > MAX_PAGE {
+            return Err(cid::Error::OverBudget);
+        }
+        if !is_content_id(&content_id) {
+            return Err(cid::Error::Invalid);
+        }
+        // The index is derived and may be stale for a path nobody has touched,
+        // so it is refreshed the same way `ls` and `stat` refresh it. A caller
+        // asking by identity gets the same freshness as one asking by name.
+        self.refresh_index().map_err(|_| cid::Error::Io)?;
+        let index = self.index_read();
+        let hits = index.by_content(&content_id);
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(hits.len());
+        let entries: Vec<vfs::Entry> = hits[start..]
+            .iter()
+            .take(limit as usize)
+            .map(|node| to_entry(node))
+            .collect();
+        let taken = entries.len();
+        let next = if start + taken < hits.len() {
+            Some((start + taken) as u64)
+        } else {
+            None
+        };
+        Ok(cid::Page { entries, next })
+    }
+}
+
+/// A content id as the host spells it: `blake3:` and 64 hex digits.
+///
+/// Checked here rather than in the guest, because the index is keyed by the
+/// same string: a malformed id would be a query that can only ever miss, and a
+/// caller would read that miss as "the bytes are gone".
+fn is_content_id(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix("blake3:") else {
+        return false;
+    };
+    hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 fn normalize_parent(value: &str) -> Result<String, vfs::Error> {

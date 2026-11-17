@@ -273,14 +273,22 @@ pub fn grants(request: &Request, manifest: &Manifest) -> Result<soil_webgpu::Gra
         .grants
         .keys()
         .any(|grant| grant.starts_with("soil:records"));
-    if let Some(root) = request
-        .records_root
-        .clone()
-        .or_else(|| if granted { default_records_root() } else { None })
-    {
-        // The store root is a path; a *book grant* is a collection. Naming
-        // `--records` without one is how a run binds a transcript
-        // (`--agent-session`) without also handing the guest `soil:records`.
+    // What the package says it reads, so an operator does not have to retype a
+    // schema the package itself defines.
+    let declared: Vec<String> = manifest
+        .records
+        .as_ref()
+        .map(|records| records.names().into_iter().map(str::to_owned).collect())
+        .unwrap_or_default();
+    if let Some(root) = request.records_root.clone().or_else(|| {
+        if granted || !declared.is_empty() {
+            default_records_root()
+        } else {
+            None
+        }
+    }) {
+        // An operator naming one collection wins — that is how a write is
+        // granted. Otherwise the manifest's declaration is the grant, read-only.
         match request.collection.clone() {
             Some(collection) => {
                 let book = request.book.clone().unwrap_or_else(|| collection.clone());
@@ -291,10 +299,19 @@ pub fn grants(request: &Request, manifest: &Manifest) -> Result<soil_webgpu::Gra
                     &collection,
                 ));
             }
-            None if granted => {
-                bail!("--records needs --collection: the guest names a collection")
+            None if !declared.is_empty() => {
+                let book = request.book.clone().or_else(|| {
+                    manifest
+                        .records
+                        .as_ref()
+                        .and_then(|records| records.book.clone())
+                });
+                grants.records =
+                    Some(soil_webgpu::RecordsAccess::declared(root, declared, book));
             }
-            None => {}
+            None => bail!(
+                "--records needs --collection, and this package declares none in [records]"
+            ),
         }
     }
     if let Some(spores_root) = &request.spores {
@@ -636,18 +653,25 @@ fn key_event(name: &str, pressed: bool) -> soil_webgpu::InputEvent {
 
 /// Write a captured frame. A `.png` path gets a PNG; anything else is the raw
 /// BGR24 the presenters have always written.
+///
+/// The two outputs disagree about channel order on purpose, and that is the one
+/// thing to get right here: a frame arrives as RGBA (`present_rgba` and the
+/// texture readback both normalize to it), a PNG is stored as RGB, and a raw
+/// frame goes to a framebuffer, which is BGR24. Writing a PNG through the
+/// framebuffer's swap turns every red thing blue — a picture is the only way to
+/// notice, and a test is the only way to keep noticing.
 fn write_frame(path: &Path, frame: &soil_webgpu::CanvasFrame) -> Result<()> {
-    let mut bgr = Vec::with_capacity(frame.width as usize * frame.height as usize * 3);
-    for pixel in frame.rgba.as_chunks::<4>().0 {
-        bgr.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
-    }
     if path.extension().is_some_and(|extension| extension == "png") {
-        let image = image::RgbImage::from_raw(frame.width, frame.height, bgr)
+        let image = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.clone())
             .context("frame does not match its extent")?;
         image
             .save(path)
             .with_context(|| format!("write {}", path.display()))?;
         return Ok(());
+    }
+    let mut bgr = Vec::with_capacity(frame.width as usize * frame.height as usize * 3);
+    for pixel in frame.rgba.as_chunks::<4>().0 {
+        bgr.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
     }
     let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
     std::fs::write(&temporary, bgr).with_context(|| format!("write {}", temporary.display()))?;
@@ -658,6 +682,37 @@ fn write_frame(path: &Path, frame: &soil_webgpu::CanvasFrame) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Red then blue, in the order `soil:present` documents for a frame.
+    fn red_then_blue() -> soil_webgpu::CanvasFrame {
+        soil_webgpu::CanvasFrame {
+            width: 2,
+            height: 1,
+            rgba: vec![255, 0, 0, 255, 0, 0, 255, 255],
+        }
+    }
+
+    #[test]
+    fn a_png_keeps_the_colour_the_guest_presented() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("frame.png");
+        write_frame(&path, &red_then_blue()).unwrap();
+        let image = image::open(&path).expect("a readable png").to_rgb8();
+        assert_eq!(image.get_pixel(0, 0).0, [255, 0, 0], "red stays red");
+        assert_eq!(image.get_pixel(1, 0).0, [0, 0, 255], "blue stays blue");
+    }
+
+    #[test]
+    fn a_raw_frame_is_still_bgr24_for_a_framebuffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("frame.raw");
+        write_frame(&path, &red_then_blue()).unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            vec![0, 0, 255, 255, 0, 0],
+            "a framebuffer takes blue first"
+        );
+    }
 
     #[test]
     fn a_bridge_must_be_an_origin_a_transport_can_use() {

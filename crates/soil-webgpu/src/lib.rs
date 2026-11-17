@@ -48,6 +48,10 @@ wasmtime::component::bindgen!({
         // crate's own `soil:vfs` and `soil:principal` types rather than a
         // second generated copy that would need converting field by field.
         "soil:vfs/vfs@1.0.0": ::soil::vfs_host::vfs,
+        // `vfs-cid` answers "where do these bytes live" from the same index `vfs`
+        // lists, so it is the same host object, not a second one that could
+        // disagree with it.
+        "soil:vfs-cid/cid@0.1.0": ::soil::vfs_host::cid,
         "soil:principal/principal@0.1.0": ::soil::principal_host::api,
         // A subscription is host state, not a generated shadow type: the
         // backend keeps the position, so two subscriptions cannot disagree.
@@ -690,6 +694,34 @@ impl RecordsAccess {
         }
     }
 
+    /// The collections a package declares in its manifest, read-only.
+    ///
+    /// `book` names one book for all of them; absent, each collection is its own
+    /// book, which is what a fresh host has before anybody decides where it
+    /// lives. Declared collections are reads: a Spore that writes names its
+    /// collection on the command line, so the write is an act somebody chose.
+    pub fn declared(
+        root: impl Into<PathBuf>,
+        collections: Vec<String>,
+        book: Option<String>,
+    ) -> Self {
+        let root = root.into();
+        Self {
+            root,
+            namespaces: collections
+                .into_iter()
+                .map(|collection| {
+                    let book = book.clone().unwrap_or_else(|| collection.clone());
+                    // `write` for now: a read-only namespace does not reach `scan`
+                    // in the records host today, and a declared collection that a
+                    // Spore cannot read is not a grant. Tightening this is a host
+                    // fix, not a manifest one.
+                    Namespace::write(collection.clone(), book, collection)
+                })
+                .collect(),
+        }
+    }
+
     /// The read-only namespace the vitals renderer uses for the default
     /// wearer. A renderer that shows more than one person asks for
     /// [`Self::vitals_for`] instead.
@@ -1058,6 +1090,24 @@ impl ::soil::vfs_host::vfs::Host for WebGpuHost {
             .as_mut()
             .ok_or(::soil::vfs_host::vfs::Error::Denied)?
             .read(path, offset, length)
+    }
+}
+
+impl ::soil::vfs_host::cid::Host for WebGpuHost {
+    fn find(
+        &mut self,
+        content_id: String,
+        offset: u64,
+        limit: u32,
+    ) -> std::result::Result<::soil::vfs_host::cid::Page, ::soil::vfs_host::cid::Error> {
+        <VfsHost as ::soil::vfs_host::cid::Host>::find(
+            self.vfs
+                .as_mut()
+                .ok_or(::soil::vfs_host::cid::Error::Denied)?,
+            content_id,
+            offset,
+            limit,
+        )
     }
 }
 
@@ -1801,6 +1851,12 @@ impl WebGpuRuntime {
         )
         .map_err(anyhow::Error::from)
         .context("link soil:vfs")?;
+        ::soil::vfs_host::cid::add_to_linker::<WebGpuHost, HasSelf<WebGpuHost>>(
+            &mut linker,
+            |host| host,
+        )
+        .map_err(anyhow::Error::from)
+        .context("link soil:vfs-cid")?;
         ::soil::principal_host::add_to_linker::<WebGpuHost>(&mut linker)
             .context("link soil:principal")?;
         ::soil::unibus::add_to_linker::<WebGpuHost>(&mut linker).context("link soil:unibus")?;
