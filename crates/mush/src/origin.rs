@@ -228,10 +228,22 @@ fn resolve_in(cwd: &Path, desktops: &[Desktop]) -> Origin {
     };
 
     let mount = desktop.mount.clone();
-    let path = row.map(|row| row.path.clone()).or_else(|| {
-        repo.as_deref()
-            .map(|repo| mount.join("projects").join(repo))
-    });
+    // A row that contains the caller describes the caller. A row that matched by
+    // name or identity may be another checkout of the same project — a primary
+    // beside an agent's worktree — and then the answer is the caller's own tree,
+    // not the row's: `role` and `commit` must describe where the agent is.
+    let path = row
+        .map(|row| {
+            if path_is_under(cwd, &row.path) {
+                row.path.clone()
+            } else {
+                checkout.clone().unwrap_or_else(|| row.path.clone())
+            }
+        })
+        .or_else(|| {
+            repo.as_deref()
+                .map(|repo| mount.join("projects").join(repo))
+        });
     // A row may carry the identity it was attached with; a claim may not, and a
     // projection is only a name until something reads the checkout.
     let identity = row
@@ -522,7 +534,9 @@ mod tests {
         assert_eq!(origin.desktop.as_deref(), Some("acme"));
         assert_eq!(origin.project.as_deref(), Some("owner/repo"));
         assert_eq!(origin.readiness, Readiness::Ready);
-        assert_eq!(origin.path.as_deref(), Some(primary.as_path()));
+        // The row is the primary's; the answer describes the caller's worktree.
+        assert_eq!(origin.path.as_deref(), Some(worktree.as_path()));
+        assert_eq!(origin.to_json()["role"], "worktree");
     }
 
     #[test]
