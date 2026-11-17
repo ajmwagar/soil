@@ -1688,12 +1688,13 @@ impl soil::agents::observe::Host for WebGpuHost {
     /// arrived with the last tick cannot make the picker disagree with the
     /// roster it sits beside.
     fn devices(&mut self) -> Vec<soil::agents::types::Device> {
-        self.dispatch.pump(&mut *self.agents);
+        // No pump: placement and a model catalogue come from the handshake, not
+        // from the bus. Pumping here put a bus read (and, when a notice was
+        // waiting, an adapter re-list over the network) inside a render.
         self.agents.devices().into_iter().map(agent_device).collect()
     }
 
     fn models(&mut self) -> Vec<String> {
-        self.dispatch.pump(&mut *self.agents);
         self.agents.models()
     }
 
