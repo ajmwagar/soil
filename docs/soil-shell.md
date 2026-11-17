@@ -26,6 +26,14 @@ A Spore granted `soil:records` needs `--collection NAME` — the collection its
 guest addresses — and, unless `--records DIR` says otherwise, the host's own
 store at `~/.local/share/fungos/records` is opened read-write for it.
 
+A window or frame run is also granted `soil:appdata`, the Spore's own private
+book for state that is nobody else's business — settings, drafts, a last-seen
+mark. The runner files it under `<root>/apps/<manifest id>` with `<root>` at
+`~/.local/share/fungos/appdata` unless `--appdata-root DIR` names another. The
+Spore never sees the path or the id, only `local` and `synced` scopes. The web
+bridge and the framebuffer path grant none, so a guest that opens a book there
+is told `denied` rather than shown an empty one.
+
 A Spore that reaches the network through `soil:http` names an origin with
 `--allow-origin` and a credential handle. The handle resolves one of two ways:
 `--geode-socket`/`--geode-purpose` leases it from `geoded`, or

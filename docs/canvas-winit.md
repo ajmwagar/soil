@@ -62,9 +62,16 @@ digest:
 - a new build is a new digest, so it compiles once and is cached again.
 
 Until the first frame arrives the window shows the splash: the fungOS mark
-masked to the app-icon shape over two lissajous curves, repainting at 30 fps.
-It is a loading screen for a real wait, not decoration, and it stops the moment
-the Spore presents.
+masked to the app-icon shape over two lissajous curves, repainting at 30 fps,
+with an indeterminate bar under it. It is a loading screen for a real wait, not
+decoration, and it stops the moment the Spore presents. The bar sweeps rather
+than fills: wasmtime reports no progress for the one `instantiate` call that is
+the compile, and a bar that filled on a timer would claim a percentage nobody
+measured.
+
+A compile that has not presented after five minutes is treated as stuck and the
+window closes with a sentence naming the package. `SOIL_STARTUP_DEADLINE_SECS`
+moves that line for a slow machine; the host reads it, the Spore never does.
 
 ## Running it
 

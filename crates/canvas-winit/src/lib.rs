@@ -66,8 +66,26 @@ pub enum Agents {
 ///
 /// A warm package presents in about a second, and a cold one is twenty seconds
 /// of compile: both fit. Past this, the wait is not progress, and a splash that
-/// keeps breathing is a lie.
-const STARTUP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(90);
+/// keeps breathing is a lie. A machine that is merely slow can say so with
+/// `SOIL_STARTUP_DEADLINE_SECS` instead of patching the number.
+const STARTUP_DEADLINE_DEFAULT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// [`STARTUP_DEADLINE_DEFAULT`], or the wait `SOIL_STARTUP_DEADLINE_SECS` asks
+/// for.
+///
+/// The host reads it, never the guest: the splash is the host's, and a Spore
+/// that could shorten its own deadline could cut short a slow compile.
+fn startup_deadline() -> std::time::Duration {
+    static DEADLINE: std::sync::OnceLock<std::time::Duration> = std::sync::OnceLock::new();
+    *DEADLINE.get_or_init(|| {
+        std::env::var("SOIL_STARTUP_DEADLINE_SECS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|secs| *secs > 0)
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(STARTUP_DEADLINE_DEFAULT)
+    })
+}
 
 /// Host grants that follow a Spore when the launcher opens it.
 ///
@@ -83,6 +101,8 @@ struct LaunchConfig {
     geode_reference: Option<String>,
     /// Environment variable the `default` handle resolves to, read once here.
     credential_env: Option<String>,
+    /// The private app store a Spore inherits, when the operator named one.
+    appdata: Option<soil_webgpu::AppDataGrant>,
     /// Which agent cast follows the Spore into the window.
     agents: Agents,
     /// The ACP agent command, when the cast is a real harness.
@@ -1419,6 +1439,7 @@ fn agent_roles(
         let input = self.input.clone();
         let spores = self.spores.clone();
         let http = self.http.clone();
+        let appdata = self.launch.appdata.clone();
         let records = self.records.clone();
         let vfs_root = self.vfs_root.clone();
         let actor = self.actor.clone();
@@ -1461,6 +1482,7 @@ fn agent_roles(
                         interactive: true,
                         catalog: Box::new(catalog),
                         http,
+                        appdata,
                         records,
                         vfs: vfs_root,
                         // A desktop has one user: the window is theirs unless
@@ -1510,7 +1532,7 @@ fn agent_roles(
     /// Give up on a start that is not going to happen, and say why.
     ///
     /// A component that failed has already sent its reason; one that is still
-    /// compiling after [`STARTUP_DEADLINE`] is stuck rather than slow, because a
+    /// compiling after [`startup_deadline`] is stuck rather than slow, because a
     /// warm package presents in a second. Either way the splash stops pretending
     /// and the window closes with a sentence someone can act on.
     fn note_failure(&mut self, event_loop: &ActiveEventLoop) -> Option<String> {
@@ -1518,12 +1540,13 @@ fn agent_roles(
             return None;
         }
         let reported = self.failed.lock().ok().and_then(|slot| slot.clone());
+        let deadline = startup_deadline();
         let message = reported.or_else(|| {
-            (self.frames_seen == 0 && self.opened.elapsed() > STARTUP_DEADLINE).then(|| {
+            (self.frames_seen == 0 && self.opened.elapsed() > deadline).then(|| {
                 format!(
                     "no frame after {}s: {} is still compiling. `soil spore warm {}` compiles it \
-                     once, ahead of the click.",
-                    STARTUP_DEADLINE.as_secs(),
+                     once, ahead of the click. `SOIL_STARTUP_DEADLINE_SECS` waits longer.",
+                    deadline.as_secs(),
                     window_title(&self.module),
                     self.module.display()
                 )
@@ -1643,6 +1666,16 @@ fn agent_roles(
                 );
             }
         }
+        // A Spore compiles before its first frame. wasmtime reports no progress
+        // for that one call, so the bar is deliberately indeterminate: a
+        // segment sweeping a track says "still working" without claiming a
+        // percentage nobody measured.
+        draw_waiting_bar(
+            &mut buffer,
+            width_px,
+            height_px,
+            opened.elapsed().as_secs_f32(),
+        );
         if self.splash == Splash::Logo
             && let Some(logo) = logo_mark()
         {
@@ -2131,6 +2164,35 @@ struct SplashCurve {
     spin: f32,
 }
 
+/// An indeterminate progress bar under the splash.
+///
+/// Compilation is one opaque call in wasmtime: there is no fraction to show.
+/// A bar that filled on a timer would be a lie, so this one sweeps — the window
+/// is alive and working, and the wait is the host's, not the Spore's.
+fn draw_waiting_bar(buffer: &mut [u32], width: u32, height: u32, elapsed: f32) {
+    let track_width = (width as f32 * 0.28).clamp(120.0, 360.0);
+    let left = (width as f32 - track_width) / 2.0;
+    let top = height as f32 * 0.76;
+    let thickness = 3u32;
+    let mut fill = |left: f32, span: f32, color: u32| {
+        let start = left.max(0.0) as u32;
+        let end = ((left + span).min(width as f32)) as u32;
+        for y in 0..thickness {
+            let py = top as u32 + y;
+            if py >= height {
+                break;
+            }
+            for x in start..end {
+                buffer[(py * width + x) as usize] = color;
+            }
+        }
+    };
+    fill(left, track_width, 0x2a2d33);
+    let segment = track_width * 0.30;
+    let sweep = (elapsed * 0.55).fract();
+    fill(left + (track_width - segment) * sweep, segment, 0x8bd5ca);
+}
+
 fn draw_lissajous(buffer: &mut [u32], width: u32, height: u32, phase: f32, curve: SplashCurve) {
     let (half_w, half_h) = (width as f32 / 2.0, height as f32 / 2.0);
     let radius = curve.radius * width.min(height) as f32;
@@ -2465,6 +2527,10 @@ pub struct Options {
     /// handle resolves to. Read once at startup and kept in this process; the
     /// variable is never passed to the Spore.
     pub credential_env: Option<String>,
+    /// Root of the private `soil:appdata` store, when this run has one.
+    pub appdata_root: Option<PathBuf>,
+    /// The app identity the store is filed under: the Spore manifest's id.
+    pub app_id: Option<String>,
     /// Which agent cast to grant the Spore: `none` (the default), `demo`, or
     /// `acp` for a real harness.
     pub agents: Agents,
@@ -2518,6 +2584,8 @@ impl Default for Options {
             geode_purpose: None,
             geode_reference: None,
             credential_env: None,
+            appdata_root: None,
+            app_id: None,
             agents: Agents::None,
             acp_cmd: None,
             acp_socket: None,
@@ -2560,6 +2628,8 @@ pub fn parse(args: &[String]) -> Result<Options> {
     let mut geode_purpose = None;
     let mut geode_reference = None;
     let mut credential_env = None;
+    let mut appdata_root = None;
+    let mut app_id = None;
     let mut agents = Agents::None;
     let mut acp_cmd: Option<String> = None;
     let mut acp_socket: Option<std::path::PathBuf> = None;
@@ -2664,6 +2734,18 @@ pub fn parse(args: &[String]) -> Result<Options> {
                         .clone(),
                 );
             }
+            "--appdata-root" => {
+                appdata_root = Some(PathBuf::from(
+                    args.next().context("--appdata-root needs a directory")?,
+                ));
+            }
+            "--app-id" => {
+                app_id = Some(
+                    args.next()
+                        .context("--app-id needs a package id")?
+                        .clone(),
+                );
+            }
             "--agents" => {
                 agents = match args.next().context("--agents needs demo or none")?.as_str() {
                     "demo" => Agents::Demo,
@@ -2759,6 +2841,8 @@ pub fn parse(args: &[String]) -> Result<Options> {
         records_collection,
         actor,
         credential_env,
+        appdata_root,
+        app_id,
         // A window started from this binary has no recorded session to show; a
         // host that has one (`soil spore run --agent-session`) passes it in.
         agent_session: None,
@@ -2798,6 +2882,8 @@ pub fn run(options: Options) -> Result<()> {
         records_collection,
         actor,
         credential_env,
+        appdata_root,
+        app_id,
         agent_session,
     } = options;
     let module = match module {
@@ -2938,6 +3024,10 @@ pub fn run(options: Options) -> Result<()> {
         geode_purpose,
         geode_reference,
         credential_env,
+        appdata: appdata_root.zip(app_id).map(|(root, app_id)| soil_webgpu::AppDataGrant {
+            root,
+            app_id,
+        }),
         agents,
         acp_cmd,
         acp_socket,

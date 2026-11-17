@@ -42,6 +42,9 @@ pub struct Run {
     /// handle resolves to. Read by the presenter, never passed to the Spore;
     /// it is the alternative to a Geode lease.
     pub credential_env: Option<String>,
+    /// Root of the private `soil:appdata` store. Each app gets one book under
+    /// it, named by the manifest's id; `None` denies the interface.
+    pub appdata_root: Option<PathBuf>,
     /// Serve a web bridge here, so a browser can offer `soil:http`.
     pub bridge: Option<SocketAddr>,
     /// How long to wait for a page to offer `soil:http` before starting anyway.
@@ -77,6 +80,8 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
         geode_purpose: "verify".into(),
         geode_ttl_secs: 600,
         credential_env: None,
+        appdata_root: std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join(".local/share/fungos/appdata")),
         bridge: None,
         bridge_wait: Duration::ZERO,
         allow_origins: Vec::new(),
@@ -138,6 +143,10 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
             }
             "--credential-env" => {
                 run.credential_env = Some(value(index + 1)?);
+                index += 2;
+            }
+            "--appdata-root" => {
+                run.appdata_root = Some(PathBuf::from(value(index + 1)?));
                 index += 2;
             }
             "--bridge" => {
