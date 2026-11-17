@@ -90,6 +90,9 @@ struct LaunchConfig {
     /// An ACP harness that is a service (operator serves HTTP): the window is
     /// a client of it, and nothing here owns its lifetime.
     acp_url: Option<String>,
+    /// A service and the device it is, when this window may place work on more
+    /// than one machine.
+    acp_devices: Vec<DeviceEndpoint>,
     /// Where the session id this window attached to is remembered, so the next
     /// window attaches to the same conversation instead of starting another.
     acp_state: Option<PathBuf>,
@@ -143,6 +146,10 @@ impl LaunchConfig {
             if let Some(cmd) = &self.acp_cmd {
                 args.push("--acp-cmd".into());
                 args.push(cmd.into());
+            }
+            for device in &self.acp_devices {
+                args.push("--device".into());
+                args.push(format!("{}={}", device.label, device.url).into());
             }
         }
         if let Some(root) = &self.vfs_root {
@@ -1319,6 +1326,20 @@ fn agent_backend(
     })
 }
 
+/// The device behind an ACP URL, when that URL is this machine.
+///
+/// `127.0.0.1`/`localhost`/`::1` name the socket this host is already inside,
+/// so the device is the one the kernel says. Every other host stays `None`:
+/// inferring a name from a remote address would put somebody else's machine in
+/// this window's identity.
+fn loopback_device(url: &str) -> Option<String> {
+    let host = Url::parse(url).ok()?.host_str()?.to_ascii_lowercase();
+    if !matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1" | "[::1]") {
+        return None;
+    }
+    ::soil::local_identity::local().and_then(|principal| principal.device)
+}
+
 /// Who shows agents to the Spore, and who creates them.
 ///
 /// ACP is the one adapter that is both, and it is one process: the roster this
@@ -1333,6 +1354,7 @@ fn agent_roles(
     agents: Agents,
     acp_cmd: Option<&str>,
     acp_url: Option<&str>,
+    acp_devices: &[DeviceEndpoint],
     workspace: Option<&std::path::Path>,
     broker: Option<&Broker>,
 ) -> Result<(Box<dyn soil_agent_host::AgentBackend>, DispatchRole)> {
@@ -1349,6 +1371,82 @@ fn agent_roles(
         ),
         Agents::Acp => {
             let command = acp_cmd.unwrap_or("delta-acp");
+            // More than one machine: each endpoint is one device, so the roster
+            // is the union and the dispatcher routes a task to the device it
+            // names. A device that does not answer stays in the list with the
+            // reason — a picker that hides a dead machine teaches the wrong
+            // thing about where the work went.
+            if !acp_devices.is_empty() {
+                let local = ::soil::local_identity::local().and_then(|principal| principal.device);
+                // `--acp-url` is the service on this machine; `--device` adds the
+                // others. Composing the list here means a window told about a
+                // second machine does not lose the first one — which is the
+                // machine a person is sitting in front of.
+                let mut endpoints: Vec<DeviceEndpoint> = Vec::new();
+                if let Some(url) = acp_url {
+                    let label = Self::loopback_device(url).or_else(|| {
+                        Url::parse(url)
+                            .ok()
+                            .and_then(|parsed| parsed.host_str().map(str::to_string))
+                    });
+                    if let Some(label) = label {
+                        endpoints.push(DeviceEndpoint {
+                            label,
+                            url: url.to_string(),
+                        });
+                    }
+                }
+                endpoints.extend(acp_devices.iter().cloned());
+                let mut declared = Vec::new();
+                let mut roster: Vec<Box<dyn soil_agent_host::AgentBackend>> = Vec::new();
+                let mut routes: Vec<(String, Box<dyn soil_agent_host::Sessions>)> = Vec::new();
+                for endpoint in &endpoints {
+                    let current = local.as_deref().is_some_and(|device| {
+                        soil_agent_host::device_key(device)
+                            == soil_agent_host::device_key(&endpoint.label)
+                    });
+                    match ::soil::acp::AcpBackend::attach_http(&endpoint.url) {
+                        Ok(backend) => {
+                            let backend = backend.with_device(endpoint.label.clone());
+                            let backend = match workspace {
+                                Some(path) => backend.with_workspace(path.display().to_string()),
+                                None => backend,
+                            };
+                            declared.push(soil_agent_host::Device {
+                                id: soil_agent_host::device_key(&endpoint.label),
+                                label: endpoint.label.clone(),
+                                current,
+                                attached: true,
+                                detail: None,
+                            });
+                            let live = soil_agent_host::Live::new(backend);
+                            roster.push(Box::new(live.clone()));
+                            routes.push((endpoint.label.clone(), Box::new(live)));
+                        }
+                        Err(error) => declared.push(soil_agent_host::Device {
+                            id: soil_agent_host::device_key(&endpoint.label),
+                            label: endpoint.label.clone(),
+                            current,
+                            attached: false,
+                            detail: Some(error),
+                        }),
+                    }
+                }
+                // The transcript source is not a machine a person chooses: it
+                // is the threads this desktop already has, so it joins the
+                // roster and not the routes.
+                if let Some(threads_cmd) = acp_cmd {
+                    if let Ok(threads) = ::soil::acp::AcpBackend::spawn(threads_cmd) {
+                        roster.push(Box::new(soil_agent_host::Live::new(threads)));
+                    }
+                }
+                let composed = soil_agent_host::CompositeAgents::new(roster);
+                let roster = soil_agent_host::DeclaredDevices::new(declared, Box::new(composed));
+                return Ok((
+                    Box::new(roster) as Box<dyn soil_agent_host::AgentBackend>,
+                    DispatchRole::Own(Box::new(soil_agent_host::RoutedSessions::new(routes))),
+                ));
+            }
             // Both a service and a stdio source: the harness that runs work and
             // the transcript source that already has some. They are one roster
             // to a person, so they are composed, and new work is created through
@@ -1372,8 +1470,19 @@ fn agent_roles(
             let backend = match (acp_url, broker) {
                 // A harness that is a service: nothing here owns its lifetime,
                 // and a restart costs a `session/list`.
-                (Some(url), _) => ::soil::acp::AcpBackend::attach_http(url)
-                    .map_err(|error| anyhow::anyhow!("acp: {error}"))?,
+                (Some(url), _) => {
+                    let backend = ::soil::acp::AcpBackend::attach_http(url)
+                        .map_err(|error| anyhow::anyhow!("acp: {error}"))?;
+                    // A loopback endpoint is this machine by definition of the
+                    // socket, so the window can name its own device without
+                    // being told. Anything else stays unnamed: a remote service
+                    // wearing this host's hostname is the one lie a picker must
+                    // not tell.
+                    match Self::loopback_device(url) {
+                        Some(device) => backend.with_device(device),
+                        None => backend,
+                    }
+                }
                 // A daemon owns the agent: this window is a view of a session
                 // that outlives it, which is what makes rebuilding the UI
                 // something a person can do while their agents keep working.
@@ -1419,6 +1528,7 @@ fn agent_roles(
         let agents = self.launch.agents;
         let acp_cmd = self.launch.acp_cmd.clone();
         let acp_url = self.launch.acp_url.clone();
+        let acp_devices = self.launch.acp_devices.clone();
         let broker = self.launch.broker();
         let launch = self.launch.clone();
         let failed = self.failed.clone();
@@ -1438,6 +1548,7 @@ fn agent_roles(
                     agents,
                     acp_cmd.as_deref(),
                     acp_url.as_deref(),
+                    &acp_devices,
                     vfs_root.as_deref(),
                     broker.as_ref(),
                 )?;
@@ -2373,6 +2484,18 @@ fn build_http(launch: &LaunchConfig) -> Result<Option<HttpAccess>> {
 
 /// Everything one window needs: where the Spore is, what it may reach, and
 /// what a capture should do with the frames it presents.
+/// One ACP service and the device it is.
+///
+/// A window that can reach two machines is what makes a device picker real; a
+/// picker over names nobody attached would be a menu of refusals.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceEndpoint {
+    /// The device, as the fleet spells it (`averys-mac-studio`).
+    pub label: String,
+    /// The ACP service on it (`http://127.0.0.1:8787`).
+    pub url: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Options {
     /// One module (or package) to present.
@@ -2421,6 +2544,12 @@ pub struct Options {
     pub acp_socket: Option<std::path::PathBuf>,
     /// An ACP endpoint that is a service, e.g. `http://127.0.0.1:8787`.
     pub acp_url: Option<String>,
+    /// A service and the device it is, e.g. `averys-mac-studio=http://…:8787`.
+    ///
+    /// One endpoint is one machine, so this is the placement list: a person
+    /// picks a device and the task is routed to that device's dispatcher. A
+    /// device that does not answer is still listed, with the reason.
+    pub acp_devices: Vec<DeviceEndpoint>,
     /// Where to remember the session id this window attached to.
     pub acp_state: Option<std::path::PathBuf>,
     /// Bridge `hue.local` maps to.
@@ -2467,6 +2596,7 @@ impl Default for Options {
             acp_cmd: None,
             acp_socket: None,
             acp_url: None,
+            acp_devices: Vec::new(),
             acp_state: None,
             hue_bridge: None,
             records_root: None,
@@ -2508,6 +2638,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
     let mut acp_cmd: Option<String> = None;
     let mut acp_socket: Option<std::path::PathBuf> = None;
     let mut acp_url: Option<String> = None;
+    let mut acp_devices: Vec<DeviceEndpoint> = Vec::new();
     let mut acp_state: Option<std::path::PathBuf> = None;
     let mut hue_bridge = None;
     let mut records_root = None;
@@ -2623,6 +2754,19 @@ pub fn parse(args: &[String]) -> Result<Options> {
             "--acp-url" => {
                 acp_url = Some(args.next().context("--acp-url needs an http(s) URL")?.clone());
             }
+            "--device" => {
+                let value = args.next().context("--device needs NAME=URL")?;
+                let (label, url) = value
+                    .split_once('=')
+                    .context("--device needs NAME=URL")?;
+                if label.trim().is_empty() || url.trim().is_empty() {
+                    anyhow::bail!("--device needs a name and a URL: NAME=URL");
+                }
+                acp_devices.push(DeviceEndpoint {
+                    label: label.trim().to_string(),
+                    url: url.trim().to_string(),
+                });
+            }
             "--acp-state" => {
                 acp_state = Some(std::path::PathBuf::from(
                     args.next().context("--acp-state needs a path")?,
@@ -2688,6 +2832,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
         acp_cmd,
         acp_socket,
         acp_url,
+        acp_devices,
         acp_state,
         hue_bridge,
         records_root,
@@ -2726,6 +2871,7 @@ pub fn run(options: Options) -> Result<()> {
         acp_cmd,
         acp_socket,
         acp_url,
+        acp_devices,
         acp_state,
         hue_bridge,
         records_root,
@@ -2876,6 +3022,7 @@ pub fn run(options: Options) -> Result<()> {
         acp_cmd,
         acp_socket,
         acp_url,
+        acp_devices,
         acp_state,
         hue_bridge,
         records_root,

@@ -50,6 +50,10 @@ impl AgentBackend for SharedAgents {
         self.with(|backend| backend.scope())
     }
 
+    fn devices(&mut self) -> Vec<crate::Device> {
+        self.with(|backend| backend.devices())
+    }
+
     fn transcript(&mut self, id: &str, before: Option<u64>, limit: u32) -> Result<Page, Error> {
         self.with(|backend| backend.transcript(id, before, limit))
     }
@@ -110,6 +114,10 @@ impl<T: AgentBackend> AgentBackend for Live<T> {
 
     fn scope(&mut self) -> Scope {
         self.0.lock().expect("agent backend poisoned").scope()
+    }
+
+    fn devices(&mut self) -> Vec<crate::Device> {
+        self.0.lock().expect("agent backend poisoned").devices()
     }
 
     fn transcript(&mut self, id: &str, before: Option<u64>, limit: u32) -> Result<Page, Error> {
@@ -205,6 +213,7 @@ mod tests {
                 title: "listed".to_string(),
                 workspace: None,
                 model: None,
+                device: None,
                 phase: Phase::Idle,
                 goal: None,
                 owner: None,
@@ -267,6 +276,7 @@ mod tests {
                 title: title.clone(),
                 workspace: None,
                 model: None,
+                device: Some(task.environment.clone()),
                 phase: Phase::Idle,
                 goal: None,
                 owner: None,

@@ -465,6 +465,13 @@ pub struct AcpBackend {
     /// The directory new sessions are created in. A task names a place, not a
     /// path, so the backend is told this once when it is opened for a surface.
     workspace: Option<String>,
+    /// The device this endpoint is, as the host labels it. Every session this
+    /// backend lists runs there, which is why one endpoint is one device.
+    device: Option<String>,
+    /// Whether this endpoint is this machine by construction: a spawned or
+    /// adopted process is, an attached HTTP service may be anywhere. Only a
+    /// local endpoint borrows the kernel's name for itself.
+    local_endpoint: bool,
     started_at_ms: u64,
 }
 
@@ -473,7 +480,7 @@ impl AcpBackend {
     /// refuses `initialize`, is an error rather than an empty wall of agents.
     pub fn spawn(command: &str) -> Result<Self, String> {
         let (acp, events) = Acp::spawn(command)?;
-        Self::handshake(acp, events, command)
+        Self::handshake(acp, events, command).map(|backend| backend.local())
     }
 
     /// Take over a session that is already running.
@@ -484,7 +491,7 @@ impl AcpBackend {
     #[cfg(unix)]
     pub fn adopt(stream: std::os::unix::net::UnixStream, name: &str) -> Result<Self, String> {
         let (acp, events) = Acp::from_stream(stream)?;
-        Self::handshake(acp, events, name)
+        Self::handshake(acp, events, name).map(|backend| backend.local())
     }
 
     /// Take over a harness that is a service: operator serves ACP over HTTP.
@@ -521,6 +528,8 @@ impl AcpBackend {
             attached: HashSet::new(),
             binding: Binding::default(),
             workspace: None,
+            device: None,
+            local_endpoint: false,
             started_at_ms: now_ms(),
         })
     }
@@ -540,6 +549,42 @@ impl AcpBackend {
     pub fn with_workspace(mut self, workspace: impl Into<String>) -> Self {
         self.workspace = Some(workspace.into());
         self
+    }
+
+    /// Name the device this endpoint is.
+    ///
+    /// One ACP endpoint is one machine, so this is the whole of the placement
+    /// fact for every session it answers: an agent listed here runs there.
+    pub fn with_device(mut self, device: impl Into<String>) -> Self {
+        self.device = Some(device.into());
+        self
+    }
+
+    /// This endpoint is a process this host started, so it is this machine.
+    fn local(mut self) -> Self {
+        self.local_endpoint = true;
+        self
+    }
+
+    /// The device's own name for itself, when nothing named it.
+    ///
+    /// A spawn is this machine by construction, so the kernel's spelling is the
+    /// honest answer; an attach is somebody else's process and stays unnamed
+    /// rather than borrowing the local name.
+    fn resolved_device(&self) -> Option<String> {
+        self.device.clone().or_else(|| {
+            if !self.local_endpoint {
+                return None;
+            }
+            #[cfg(feature = "principal")]
+            {
+                crate::local_identity::local().and_then(|principal| principal.device)
+            }
+            #[cfg(not(feature = "principal"))]
+            {
+                None
+            }
+        })
     }
 
     fn cwd(&self) -> &str {
@@ -571,11 +616,13 @@ impl AcpBackend {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        let device = self.resolved_device();
         merge_listed(
             &mut self.agents,
             &sessions,
             self.started_at_ms,
             &self.harness,
+            device.as_deref(),
         );
     }
 
@@ -583,8 +630,9 @@ impl AcpBackend {
         if let Some(index) = self.agents.iter().position(|agent| agent.id == id) {
             return &mut self.agents[index];
         }
+        let device = self.resolved_device();
         self.agents
-            .push(agent_stub(id, self.started_at_ms, &self.harness));
+            .push(agent_stub(id, self.started_at_ms, &self.harness, device.as_deref()));
         let last = self.agents.len() - 1;
         &mut self.agents[last]
     }
@@ -647,6 +695,23 @@ impl AgentBackend for AcpBackend {
 
     fn binding(&mut self) -> Binding {
         self.binding.clone()
+    }
+
+    /// The one device this endpoint is.
+    ///
+    /// One endpoint is one machine, so this is a list of one. A host that can
+    /// reach several devices composes several of these and gets the union.
+    fn devices(&mut self) -> Vec<soil_agent_host::Device> {
+        let Some(device) = self.resolved_device() else {
+            return Vec::new();
+        };
+        vec![soil_agent_host::Device {
+            id: soil_agent_host::device_key(&device),
+            label: device,
+            current: true,
+            attached: true,
+            detail: None,
+        }]
     }
 
     fn transcript(&mut self, id: &str, before: Option<u64>, limit: u32) -> Result<Page, Error> {
@@ -768,6 +833,17 @@ impl AgentBackend for AcpBackend {
 /// as the first turn. Nothing sets a model — see [`created_from`].
 impl Sessions for AcpBackend {
     fn create(&mut self, task: &Task) -> Result<Created, Error> {
+        // A device is a machine, not a mood. This endpoint is one machine, so a
+        // task that names another one is refused here as well as at the router:
+        // running it here and reporting the session is exactly the failure a
+        // person cannot see from the answer.
+        if let Some(device) = self.resolved_device()
+            && soil_agent_host::device_key(&task.environment)
+                != soil_agent_host::device_key(&device)
+            && !task.environment.trim().is_empty()
+        {
+            return Err(Error::Unsupported);
+        }
         // A model is a request, not a promise: the harness that cannot set one
         // refuses, and the surface says so.
         let mut params = json!({"cwd": self.cwd(), "mcpServers": []});
@@ -838,7 +914,12 @@ fn task_title(text: &str) -> String {
         .collect()
 }
 
-fn agent_from_session(session: &Value, started_at_ms: u64, harness: &str) -> Option<Agent> {
+fn agent_from_session(
+    session: &Value,
+    started_at_ms: u64,
+    harness: &str,
+    device: Option<&str>,
+) -> Option<Agent> {
     let id = session.get("sessionId")?.as_str()?;
     let archived = session
         .get("archived")
@@ -870,6 +951,7 @@ fn agent_from_session(session: &Value, started_at_ms: u64, harness: &str) -> Opt
             .get("model")
             .and_then(Value::as_str)
             .map(str::to_string),
+        device: device.map(str::to_string),
         phase: if archived {
             Phase::Finished
         } else {
@@ -886,13 +968,14 @@ fn agent_from_session(session: &Value, started_at_ms: u64, harness: &str) -> Opt
     })
 }
 
-fn agent_stub(id: &str, started_at_ms: u64, harness: &str) -> Agent {
+fn agent_stub(id: &str, started_at_ms: u64, harness: &str, device: Option<&str>) -> Agent {
     Agent {
         id: id.to_string(),
         harness: harness.to_string(),
         title: id.chars().take(12).collect(),
         workspace: None,
         model: None,
+        device: device.map(str::to_string),
         phase: Phase::Thinking,
         goal: None,
         owner: None,
@@ -911,18 +994,26 @@ fn agent_stub(id: &str, started_at_ms: u64, harness: &str) -> Agent {
 /// and existence, while the stream owns activity, prompts, usage and the
 /// transcript. A session created through `session/new` can stream before it is
 /// listable, so a missing row is not a removal.
-fn merge_listed(agents: &mut Vec<Agent>, sessions: &[Value], started_at_ms: u64, harness: &str) {
+fn merge_listed(
+    agents: &mut Vec<Agent>,
+    sessions: &[Value],
+    started_at_ms: u64,
+    harness: &str,
+    device: Option<&str>,
+) {
     for session in sessions {
-        let Some(listed) = agent_from_session(session, started_at_ms, harness) else {
+        let Some(listed) = agent_from_session(session, started_at_ms, harness, device) else {
             continue;
         };
         if let Some(existing) = agents.iter_mut().find(|agent| agent.id == listed.id) {
             let changed = existing.title != listed.title
                 || existing.workspace != listed.workspace
-                || existing.model != listed.model;
+                || existing.model != listed.model
+                || existing.device != listed.device;
             existing.title = listed.title;
             existing.workspace = listed.workspace;
             existing.model = listed.model;
+            existing.device = listed.device;
             if existing.prompts.is_empty() {
                 existing.phase = listed.phase;
             }
@@ -1119,13 +1210,24 @@ mod tests {
     }
 
     /// A task as `agent.task.v1` carries it.
+    ///
+    /// No environment: an empty one means the task names no device, which is
+    /// what a notice from a surface that has no picker looks like. The host
+    /// routes it; a backend alone cannot tell whether the router already chose.
     fn task(title: Option<&str>, text: &str) -> Task {
         Task {
             text: text.to_string(),
             harness: "operator".to_string(),
-            environment: "boat".to_string(),
+            environment: String::new(),
             title: title.map(str::to_string),
             model: None,
+        }
+    }
+
+    fn task_on(environment: &str, text: &str) -> Task {
+        Task {
+            environment: environment.to_string(),
+            ..task(None, text)
         }
     }
 
@@ -1207,6 +1309,7 @@ mod tests {
             &[listed("s1", "first"), listed("s2", "new lane")],
             7,
             "acp",
+            None,
         );
 
         let ids: Vec<&str> = agents.iter().map(|agent| agent.id.as_str()).collect();
@@ -1217,7 +1320,7 @@ mod tests {
     #[test]
     fn a_relist_keeps_what_the_stream_owns() {
         let mut agents = Vec::new();
-        merge_listed(&mut agents, &[listed("s1", "first")], 7, "acp");
+        merge_listed(&mut agents, &[listed("s1", "first")], 7, "acp", None);
         // The stream has since reported a turn in flight and a question.
         agents[0].phase = Phase::NeedsYou;
         agents[0].revision = 4;
@@ -1235,7 +1338,7 @@ mod tests {
         });
 
         // The harness renamed the session; the prompt is still the person's.
-        merge_listed(&mut agents, &[listed("s1", "renamed")], 7, "acp");
+        merge_listed(&mut agents, &[listed("s1", "renamed")], 7, "acp", None);
 
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].title, "renamed");
@@ -1253,11 +1356,12 @@ mod tests {
             &[listed("s1", "first"), listed("s2", "second")],
             7,
             "acp",
+            None,
         );
 
         // A session created through `session/new` can stream before it is
         // listable, so an absent row is not a removal.
-        merge_listed(&mut agents, &[listed("s1", "first")], 7, "acp");
+        merge_listed(&mut agents, &[listed("s1", "first")], 7, "acp", None);
 
         let ids: Vec<&str> = agents.iter().map(|agent| agent.id.as_str()).collect();
         assert_eq!(ids, ["s1", "s2"]);
@@ -1274,8 +1378,10 @@ mod tests {
             }),
             7,
             "acp",
+            Some("averys-macbook-neo"),
         )
         .expect("a session with an id");
+        assert_eq!(agent.device.as_deref(), Some("averys-macbook-neo"));
         assert_eq!(agent.id, "s1");
         assert_eq!(agent.title, "Agent surfaces");
         assert_eq!(
@@ -1284,12 +1390,12 @@ mod tests {
         );
         assert_eq!(agent.workspace.as_deref(), Some("/w"));
         assert_eq!(agent.phase, Phase::Idle);
-        assert!(agent_from_session(&json!({"title": "no id"}), 0, "acp").is_none());
+        assert!(agent_from_session(&json!({"title": "no id"}), 0, "acp", None).is_none());
     }
 
     #[test]
     fn an_update_without_a_session_still_folds() {
-        let mut agent = agent_stub("s1", 0, "acp");
+        let mut agent = agent_stub("s1", 0, "acp", None);
         apply_update(
             &mut agent,
             &json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "hi"}}),
@@ -1299,14 +1405,47 @@ mod tests {
     }
 
     #[test]
+    fn a_task_for_another_device_is_refused_before_anything_starts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("soil-acp-refuse-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let log = dir.join("session-new.jsonl");
+        let script = dir.join("fake-agent.sh");
+        std::fs::write(
+            &script,
+            FAKE_AGENT.replace("__LOG__", &log.display().to_string()),
+        )
+        .expect("write the agent");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("make the agent runnable");
+
+        let mut backend = AcpBackend::spawn(&format!("sh {}", script.display()))
+            .expect("start the agent")
+            .with_device("averys-macbook-neo");
+        assert_eq!(
+            backend.create(&task_on("averys-mac-studio", "port the lane")),
+            Err(Error::Unsupported)
+        );
+        // Nothing reached the harness: a refusal that still asked for a session
+        // would leave work running on the wrong machine.
+        let asked = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            !asked.contains("session/new"),
+            "the harness was asked anyway: {asked}"
+        );
+    }
+
+    #[test]
     fn an_archived_thread_is_finished_not_idle() {
-        let idle =
-            agent_from_session(&json!({"sessionId": "s1", "title": "live"}), 0, "acp").unwrap();
+        let idle = agent_from_session(&json!({"sessionId": "s1", "title": "live"}), 0, "acp", None)
+            .unwrap();
         assert_eq!(idle.phase, Phase::Idle);
         let archived = agent_from_session(
             &json!({"sessionId": "s2", "title": "done", "archived": true}),
             0,
             "acp",
+            None,
         )
         .unwrap();
         assert_eq!(archived.phase, Phase::Finished);
@@ -1314,7 +1453,7 @@ mod tests {
 
     #[test]
     fn a_turn_frame_decides_whether_a_thread_is_active() {
-        let mut agent = agent_stub("s1", 0, "acp");
+        let mut agent = agent_stub("s1", 0, "acp", None);
         apply_update(
             &mut agent,
             &json!({"sessionUpdate": "turn", "state": "running"}),
@@ -1329,7 +1468,7 @@ mod tests {
 
     #[test]
     fn a_tool_call_and_its_update_are_one_station() {
-        let mut agent = agent_stub("s1", 0, "acp");
+        let mut agent = agent_stub("s1", 0, "acp", None);
         apply_update(
             &mut agent,
             &json!({"sessionUpdate": "tool_call", "toolCallId": "t", "title": "cargo test", "kind": "execute", "status": "in_progress"}),
@@ -1350,7 +1489,7 @@ mod tests {
 
     #[test]
     fn activity_is_bounded() {
-        let mut agent = agent_stub("s1", 0, "acp");
+        let mut agent = agent_stub("s1", 0, "acp", None);
         for index in 0..(ACTIVITY_LIMIT + 4) {
             apply_update(
                 &mut agent,
@@ -1591,6 +1730,7 @@ done
 
         let mut backend = AcpBackend::spawn(&format!("sh {}", script.display()))
             .expect("start the agent")
+            .with_device("averys-macbook-neo")
             .with_workspace("/w");
         let created = backend
             .create(&task(Some("flaky lane"), "fix the flaky lane"))

@@ -179,6 +179,10 @@ impl RecordsAgents {
             title: title(session, first_user),
             workspace: None,
             model: None,
+            // A recorded transcript is a conversation, not a machine: the book
+            // does not carry where the session ran, and inventing this host
+            // would claim the work happened here.
+            device: None,
             phase: if prompts.is_empty() {
                 phase
             } else {
