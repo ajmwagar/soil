@@ -465,6 +465,10 @@ pub struct AcpBackend {
     /// Sessions this backend asked the agent to stream. Attaching opens a live
     /// stream, so it is done per agent rather than for a whole roster.
     attached: HashSet<String>,
+    /// Sessions whose on-disk transcript has already been asked for. One ask
+    /// per session: a harness that has no history is not asked again on every
+    /// scroll, and a page that came back empty is still an answer.
+    history_fetched: HashSet<String>,
     binding: Binding,
     /// The directory new sessions are created in. A task names a place, not a
     /// path, so the backend is told this once when it is opened for a surface.
@@ -571,6 +575,7 @@ impl AcpBackend {
             harness,
             catalog,
             attached: HashSet::new(),
+            history_fetched: HashSet::new(),
             binding: Binding::default(),
             workspace: None,
             device: None,
@@ -683,19 +688,31 @@ impl AcpBackend {
         &mut self.agents[last]
     }
 
-    /// Open one session's stream and fold what it already had, so the first
-    /// read of an agent describes a turn in progress rather than a blank card.
-    /// Bounded: it stops after a short silence, or at the budget.
-    fn attach(&mut self, id: &str) {
+    /// Bind a session on the harness so its stream exists: `session/load`, and
+    /// no drain. Called when somebody prompts, not when somebody looks.
+    fn open_session(&mut self, id: &str) -> bool {
+        if self.attached.contains(id) {
+            return true;
+        }
         let loaded = self.acp.request(
             "session/load",
             json!({"sessionId": id, "cwd": "/", "mcpServers": []}),
             REQUEST_TIMEOUT,
         );
         if loaded.is_err() {
-            return;
+            return false;
         }
         self.attached.insert(id.to_string());
+        true
+    }
+
+    /// Open one session's stream and fold what it already had, so the first
+    /// read of an agent describes a turn in progress rather than a blank card.
+    /// Bounded: it stops after a short silence, or at the budget.
+    fn attach(&mut self, id: &str) {
+        if !self.open_session(id) {
+            return;
+        }
         let budget = Instant::now() + Duration::from_millis(3000);
         let mut quiet = 0;
         while Instant::now() < budget && quiet < 2 {
@@ -733,9 +750,10 @@ impl AgentBackend for AcpBackend {
         if self.agents.is_empty() {
             self.relist();
         }
-        if !self.attached.contains(id) {
-            self.attach(id);
-        }
+        // Deliberately no `attach`: opening a session is seconds of work on the
+        // harness (a session is built, not read) and a click in a rail must not
+        // pay for it. The transcript is served from the harness's own record
+        // until somebody prompts, which is when [`Self::send`] opens the stream.
         self.agents.iter().find(|agent| agent.id == id).cloned()
     }
 
@@ -766,8 +784,44 @@ impl AgentBackend for AcpBackend {
     }
 
     fn transcript(&mut self, id: &str, before: Option<u64>, limit: u32) -> Result<Page, Error> {
-        // Serve what the stream has delivered. A session that has not streamed
-        // yet is an empty page, not a refusal: `session/load` is what fills it.
+        // The stream is the live half; the harness's own record is the cheap
+        // half. A thread nobody has prompted has no stream, and reading its
+        // bundle costs one file — far less than loading a session to show text
+        // that was already written.
+        if !self.turns.contains_key(id) && self.history_fetched.insert(id.to_string()) {
+            if let Ok(reply) = self.acp.request(
+                "session/history",
+                json!({"sessionId": id}),
+                REQUEST_TIMEOUT,
+            ) {
+                let mut turns = Vec::new();
+                for turn in reply
+                    .get("turns")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let (Some(role), Some(text)) = (
+                        turn.get("role").and_then(Value::as_str),
+                        turn.get("text").and_then(Value::as_str),
+                    ) else {
+                        continue;
+                    };
+                    turns.push(Turn {
+                        role: match role {
+                            "user" => Role::User,
+                            "tool" => Role::Tool,
+                            _ => Role::Assistant,
+                        },
+                        text: text.to_string(),
+                        at_ms: turn.get("atMs").and_then(Value::as_u64).unwrap_or(0),
+                    });
+                }
+                if !turns.is_empty() {
+                    self.turns.insert(id.to_string(), turns);
+                }
+            }
+        }
         let turns = self.turns.get(id).map(Vec::as_slice).unwrap_or_default();
         Ok(page(turns, before, limit))
     }
@@ -793,6 +847,12 @@ impl AgentBackend for AcpBackend {
             // An answer is not a message: the host refuses one while a prompt
             // is open.
             return Err(Error::Invalid);
+        }
+        // Sending is where a session is resumed: the stream has to exist for
+        // the turn to stream back, and this is the moment the person asked for
+        // one. No drain here — the prompt's own updates are the replay.
+        if !self.attached.contains(id) {
+            self.open_session(id);
         }
         let acp = Arc::clone(&self.acp);
         let events = self.acp.events();
