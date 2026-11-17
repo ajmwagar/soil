@@ -207,6 +207,10 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
                 run.present.whole_book = true;
                 index += 1;
             }
+            "--records-book" => {
+                run.present.records_books.push(value(index + 1)?);
+                index += 2;
+            }
             "--actor" => {
                 run.present.actor = Some(value(index + 1)?);
                 index += 2;
