@@ -238,6 +238,7 @@ fn task_from_body(body: &[u8]) -> Option<Task> {
             .unwrap_or("local")
             .to_string(),
         title: value.get("title").and_then(Value::as_str).map(str::to_string),
+        model: value.get("model").and_then(Value::as_str).map(str::to_string),
     })
 }
 
