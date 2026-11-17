@@ -83,6 +83,10 @@ pub struct Request {
     /// The book is the collection: its ids are the store's own, not
     /// `<collection>:<id>`. A book written by the records CLI needs this.
     pub whole_book: bool,
+    /// Extra `NAME=BOOK` grants, each a whole book. A Spore that reads more
+    /// than one corpus — ohmOS reads contacts and the agenda — needs several,
+    /// and each is named by the guest, not by the store's layout.
+    pub records_books: Vec<String>,
     pub actor: Option<String>,
     pub spores: Option<PathBuf>,
     /// One recorded transcript to present as the agent set: a session id whose
@@ -115,6 +119,7 @@ impl Default for Request {
             collection: None,
             namespace: None,
             whole_book: false,
+            records_books: Vec::new(),
             actor: None,
             spores: None,
             agent_session: None,
@@ -332,6 +337,31 @@ pub fn grants(request: &Request, manifest: &Manifest) -> Result<soil_webgpu::Gra
             None => bail!(
                 "--records needs --collection, and this package declares none in [records]"
             ),
+        }
+    }
+    // Every extra `NAME=BOOK` grant is a whole book: the guest names the
+    // namespace and the store keeps its own ids.
+    if !request.records_books.is_empty() {
+        let root = request
+            .records_root
+            .clone()
+            .or_else(default_records_root)
+            .context("no records store: pass --records DIR")?;
+        let access = grants
+            .records
+            .get_or_insert_with(|| soil_webgpu::RecordsAccess {
+                root: root.clone(),
+                namespaces: Vec::new(),
+            });
+        for grant in &request.records_books {
+            let (name, book) = grant
+                .split_once('=')
+                .with_context(|| format!("--records-book {grant} is NAME=BOOK"))?;
+            access.namespaces.push(soil::records_host::Namespace::write(
+                name.trim(),
+                book.trim(),
+                String::new(),
+            ));
         }
     }
     if let Some(spores_root) = &request.spores {
