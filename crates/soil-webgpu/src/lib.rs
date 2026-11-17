@@ -568,6 +568,26 @@ const FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
 /// evdev reader, or a script's `--keys`.
 pub type InputQueue = Arc<Mutex<VecDeque<InputEvent>>>;
 
+/// The host's UTC offset right now, in seconds east of UTC.
+///
+/// Read from libc rather than from a zoneinfo parser: the host already has a
+/// correct local time, and the guest only needs the number.
+fn local_utc_offset_secs() -> i64 {
+    #[cfg(unix)]
+    unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&now, &mut tm).is_null() {
+            return 0;
+        }
+        tm.tm_gmtoff
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
+}
+
 pub struct WebGpuHost {
     instance: Arc<wgpu_core::global::Global>,
     table: ResourceTable,
@@ -870,7 +890,13 @@ impl WebGpuHost {
             // A Spore's stderr is the only place its own error text can go: a
             // trap carries a backtrace, not the message. Inherit it so a failing
             // guest says why.
-            wasi: WasiCtxBuilder::new().inherit_stderr().build(),
+            wasi: WasiCtxBuilder::new()
+                .inherit_stderr()
+                // A guest has no zoneinfo, so the host says what local means.
+                // `wasi:clocks` is UTC by definition; the offset is the only
+                // part of "the time" a wasm Spore cannot work out for itself.
+                .env("SOIL_UTC_OFFSET", local_utc_offset_secs().to_string())
+                .build(),
             presenter: setup.presenter,
             input: setup.input,
             interactive: setup.interactive,
