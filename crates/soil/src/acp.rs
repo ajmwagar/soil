@@ -768,13 +768,15 @@ impl AgentBackend for AcpBackend {
 /// as the first turn. Nothing sets a model — see [`created_from`].
 impl Sessions for AcpBackend {
     fn create(&mut self, task: &Task) -> Result<Created, Error> {
+        // A model is a request, not a promise: the harness that cannot set one
+        // refuses, and the surface says so.
+        let mut params = json!({"cwd": self.cwd(), "mcpServers": []});
+        if let Some(model) = task.model.as_deref().filter(|model| !model.trim().is_empty()) {
+            params["model"] = json!(model);
+        }
         let reply = self
             .acp
-            .request(
-                "session/new",
-                json!({"cwd": self.cwd(), "mcpServers": []}),
-                REQUEST_TIMEOUT,
-            )
+            .request("session/new", params, REQUEST_TIMEOUT)
             .map_err(|_| Error::Io)?;
         let created = created_from(&reply, task, &self.harness, self.workspace.as_deref())?;
         self.note_created(&created);
@@ -1123,6 +1125,7 @@ mod tests {
             harness: "operator".to_string(),
             environment: "boat".to_string(),
             title: title.map(str::to_string),
+            model: None,
         }
     }
 

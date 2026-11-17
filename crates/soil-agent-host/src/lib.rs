@@ -40,6 +40,9 @@ pub struct Task {
     pub harness: String,
     pub environment: String,
     pub title: Option<String>,
+    /// The model the person asked for, when they named one. A harness that
+    /// cannot set it must refuse rather than silently run another.
+    pub model: Option<String>,
 }
 
 /// A session that now exists, as [`SESSION_NOTICE`] reports it.

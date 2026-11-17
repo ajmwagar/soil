@@ -245,6 +245,7 @@ mod tests {
                 harness: "operator".to_string(),
                 environment: "boat".to_string(),
                 title: Some("lane".to_string()),
+                model: None,
             })
             .expect("create");
 
