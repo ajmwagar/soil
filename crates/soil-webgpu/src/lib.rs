@@ -103,6 +103,11 @@ impl CanvasGpuPresenter for DiscardPresenter {
 pub struct FrameCapture {
     frame: Arc<Mutex<Option<CanvasFrame>>>,
     size: (u32, u32),
+    /// How many frames this run may present. A still capture takes one and
+    /// fails if the guest offers more, which is how a guest that ignores the
+    /// one-frame contract gets caught. A capture driven by keys wants the frame
+    /// the run *ends* on, so it keeps the last one it is given.
+    budget: usize,
 }
 
 impl FrameCapture {
@@ -110,6 +115,16 @@ impl FrameCapture {
         Self {
             frame: Arc::new(Mutex::new(None)),
             size: (width, height),
+            budget: 1,
+        }
+    }
+
+    /// A capture that keeps the last frame instead of the only frame.
+    pub fn streaming(width: u32, height: u32) -> Self {
+        Self {
+            frame: Arc::new(Mutex::new(None)),
+            size: (width, height),
+            budget: usize::MAX,
         }
     }
 
@@ -124,8 +139,9 @@ impl CanvasGpuPresenter for FrameCapture {
     }
 
     fn present(&mut self, frame: CanvasFrame) -> Result<()> {
+        anyhow::ensure!(self.budget > 0, "present budget");
+        self.budget = self.budget.saturating_sub(1);
         let mut slot = self.frame.lock().expect("frame capture poisoned");
-        anyhow::ensure!(slot.is_none(), "present budget");
         *slot = Some(frame);
         Ok(())
     }
@@ -545,6 +561,12 @@ pub enum InputEvent {
 /// talk its way past it, because the wait happens on the host's side of the
 /// call.
 const FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
+
+/// The queue a presenter fills and the host drains: `soil:present/input`.
+///
+/// One queue per host, shared with whatever produces events — a window, an
+/// evdev reader, or a script's `--keys`.
+pub type InputQueue = Arc<Mutex<VecDeque<InputEvent>>>;
 
 pub struct WebGpuHost {
     instance: Arc<wgpu_core::global::Global>,
@@ -2117,9 +2139,33 @@ pub fn run_component_capture_with_grants(
     height: u32,
     grants: Grants,
 ) -> Result<(u32, Option<CanvasFrame>)> {
+    run_component_capture_with_input(bytes, width, height, grants, None)
+}
+
+/// A capture run that can be driven by keys.
+///
+/// The headless surface is the one a script can check, so it has to take keys
+/// too: a run with no window is otherwise a single frame of whatever the guest
+/// drew first, and a screen behind a menu is unreachable. `input` is the queue
+/// the caller fills (from `--keys`, or an evdev reader); a non-empty queue also
+/// makes the host interactive, which is what tells the guest to keep going.
+pub fn run_component_capture_with_input(
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+    grants: Grants,
+    input: Option<InputQueue>,
+) -> Result<(u32, Option<CanvasFrame>)> {
     let runtime = WebGpuRuntime::new()?;
-    let capture = FrameCapture::new(width, height);
+    let capture = match &input {
+        Some(_) => FrameCapture::streaming(width, height),
+        None => FrameCapture::new(width, height),
+    };
     let mut setup = HostSetup::capture(Box::new(capture.clone()));
+    if let Some(input) = input {
+        setup.input = input;
+        setup.interactive = true;
+    }
     setup.vfs = grants.vfs;
     setup.records = grants.records;
     setup.principal = grants.principal;
