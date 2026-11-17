@@ -537,6 +537,11 @@ pub enum InputEvent {
 }
 
 /// Host state for one component instance.
+/// The fastest the host takes frames: the panel's own 60 Hz. A guest cannot
+/// talk its way past it, because the wait happens on the host's side of the
+/// call.
+const FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
+
 pub struct WebGpuHost {
     instance: Arc<wgpu_core::global::Global>,
     table: ResourceTable,
@@ -569,6 +574,9 @@ pub struct WebGpuHost {
     bus: Arc<MemoryBus>,
     /// Frame accounting for `SOIL_WEBGPU_STATS=1`.
     stats: FrameStats,
+    /// When the last frame was presented, so the host can hold the next one to
+    /// `FRAME_INTERVAL` rather than taking whatever rate the guest offers.
+    last_frame: Option<Instant>,
 }
 
 /// Frame accounting for `SOIL_WEBGPU_STATS=1`: how often the Spore presents, and
@@ -836,7 +844,24 @@ impl WebGpuHost {
             clipboard: setup.clipboard,
             bus: Arc::new(MemoryBus::default()),
             stats: FrameStats::new(),
+            last_frame: None,
         })
+    }
+
+    /// Hold the next frame to [`FRAME_INTERVAL`].
+    ///
+    /// A framebuffer guest has no clock it can trust and no vsync to wait on,
+    /// so a guest that renders in a loop spins every core it can reach: ohmOS
+    /// on the phone sat at ~250% of one core drawing the same still home
+    /// screen. The cap is the host's promise, not the guest's discipline.
+    fn pace(&mut self) {
+        if let Some(last) = self.last_frame {
+            let elapsed = last.elapsed();
+            if elapsed < FRAME_INTERVAL {
+                std::thread::sleep(FRAME_INTERVAL - elapsed);
+            }
+        }
+        self.last_frame = Some(Instant::now());
     }
 }
 
@@ -923,6 +948,7 @@ impl soil::present::surface::Host for WebGpuHost {
         &mut self,
         frame: soil::present::types::RgbaFrame,
     ) -> std::result::Result<(), String> {
+        self.pace();
         let (width, height) = self.presenter.size();
         if frame.width != width || frame.height != height {
             return Err(format!(
@@ -953,6 +979,7 @@ impl soil::present::surface::Host for WebGpuHost {
         &mut self,
         texture: wasmtime::component::Resource<wasi_webgpu_wasmtime::Texture>,
     ) -> std::result::Result<(), String> {
+        self.pace();
         let started = Instant::now();
         let image = wasi_webgpu_wasmtime::read_texture_rgba(&self.instance, &self.table, texture)
             .map_err(|e| e.to_string())?;
