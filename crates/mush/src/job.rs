@@ -27,6 +27,7 @@ use serde_json::{Value, json};
 use crate::{
     Runtime,
     outcome::{Executed, State},
+    shell::Output,
 };
 
 /// Patience for a command that is expected to be slow and has no history yet:
@@ -73,9 +74,9 @@ const PATIENT: &[&str] = &[
 ];
 
 fn patient(key: &str) -> bool {
-    PATIENT
-        .iter()
-        .any(|prefix| key == *prefix || (key.starts_with(prefix) && key[prefix.len()..].starts_with(' ')))
+    PATIENT.iter().any(|prefix| {
+        key == *prefix || (key.starts_with(prefix) && key[prefix.len()..].starts_with(' '))
+    })
 }
 
 /// The bucket a command's durations are recorded under.
@@ -211,7 +212,14 @@ impl Jobs {
         let worker_control_budget = runtime.budget();
         let mut runtime = runtime;
         let worker = thread::spawn(move || {
-            while let Ok(Task { id, command, shell, budget, live }) = receiver.recv() {
+            while let Ok(Task {
+                id,
+                command,
+                shell,
+                budget,
+                live,
+            }) = receiver.recv()
+            {
                 // Cancelled while it sat in the queue: never run it.
                 if {
                     let mut inner = worker_shared.inner.lock().expect("job lock");
@@ -474,7 +482,8 @@ fn run_command(
         let captured = match live {
             Some(live) if shell => {
                 let mut tee = crate::shell::Tee::new(live);
-                match crate::shell::run_line_with(&mut tee, runtime, root, store, command, control) {
+                match crate::shell::run_line_with(&mut tee, runtime, root, store, command, control)
+                {
                     Ok(status) => (Ok((status, tee.captured.out, tee.captured.err))),
                     Err(error) => (Err(error)),
                 }
@@ -498,15 +507,20 @@ fn run_command(
             Err(error) => Executed::done(String::new(), format!("mush: {error:#}\n"), false, 1),
         };
     }
-    let mut output = String::new();
-    let mut stderr = String::new();
+    // The exec branch runs one line at a time and used to keep the text to
+    // itself: a streaming caller saw `{"done":true}` and nothing else, because
+    // only the shell branch had a tee. Send each line's output to the live sink
+    // as it comes back, and keep the same bytes in the job record.
+    let mut tee = live.map(crate::shell::Tee::new);
     let mut status = 0;
     let mut state = State::Done;
     for line in command.lines() {
         match runtime.execute(line) {
             Ok(executed) => {
-                output.push_str(&executed.output);
-                stderr.push_str(&executed.stderr);
+                if let Some(tee) = tee.as_mut() {
+                    tee.stdout(&executed.output);
+                    tee.stderr(&executed.stderr);
+                }
                 status = executed.status;
                 if executed.state != State::Done {
                     state = executed.state;
@@ -516,15 +530,19 @@ fn run_command(
                 }
             }
             Err(error) => {
-                stderr.push_str(&format!("mush: {error:#}\n"));
+                let message = format!("mush: {error:#}\n");
+                if let Some(tee) = tee.as_mut() {
+                    tee.stderr(&message);
+                }
                 status = 1;
                 break;
             }
         }
     }
+    let capture = tee.map(|tee| tee.captured).unwrap_or_default();
     Executed {
-        output,
-        stderr,
+        output: capture.out,
+        stderr: capture.err,
         exit: false,
         status,
         state,
