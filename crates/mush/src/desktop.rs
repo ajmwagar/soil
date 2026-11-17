@@ -156,6 +156,10 @@ pub fn attach_project_at(base: &Path, id: &str, project: ProjectRef) -> Result<(
         .iter_mut()
         .find(|row| crate::project::normalized(&row.path) == path)
     {
+        // A path that has not moved and still resolves to the same project is
+        // already recorded: a start-up that registers every checkout must not
+        // rewrite the registry every time it runs.
+        Some(row) if *row == project => return Ok(()),
         Some(row) => *row = project,
         None => desktop.projects.push(project),
     }
@@ -209,6 +213,9 @@ fn write_config(path: &Path, desktop: &Desktop) -> Result<()> {
         if let Some(identity) = &project.project {
             text.push_str(&format!("project = \"{}\"\n", escape(identity)));
         }
+        if let Some(host) = &project.host {
+            text.push_str(&format!("host = \"{}\"\n", escape(host)));
+        }
         text.push_str(&format!(
             "path = \"{}\"\n",
             escape(&project.path.display().to_string())
@@ -252,6 +259,7 @@ fn parse(id: &str, text: &str) -> Result<Desktop> {
         if let Some(row) = row.as_mut() {
             match key {
                 "project" => row.project = Some(value),
+                "host" => row.host = Some(value),
                 "path" => row.path = crate::config::expand_home(&value),
                 other => bail!(
                     "Desktop {id} line {}: unknown project key {other:?}",
@@ -400,7 +408,8 @@ mod tests {
             base.path(),
             "acme",
             ProjectRef {
-                project: Some("github.com/mycelium-linux/soil".into()),
+                project: Some("mycelium-linux/soil".into()),
+                host: Some("github.com".into()),
                 path: checkout.clone(),
             },
         )
@@ -410,7 +419,8 @@ mod tests {
             base.path(),
             "acme",
             ProjectRef {
-                project: Some("github.com/mycelium-linux/soil".into()),
+                project: Some("mycelium-linux/soil".into()),
+                host: Some("github.com".into()),
                 path: checkout.clone(),
             },
         )
@@ -419,8 +429,9 @@ mod tests {
         assert_eq!(loaded.projects.len(), 1);
         assert_eq!(
             loaded.projects[0].project.as_deref(),
-            Some("github.com/mycelium-linux/soil")
+            Some("mycelium-linux/soil")
         );
+        assert_eq!(loaded.projects[0].host.as_deref(), Some("github.com"));
 
         let removed = detach_project_at(base.path(), "acme", &checkout.join("crates"))
             .unwrap()

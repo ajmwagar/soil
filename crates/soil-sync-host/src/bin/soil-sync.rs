@@ -22,13 +22,13 @@ use fungos_records::{PeerEndpoint, Store};
 use iroh::{Endpoint, RelayMode, SecretKey, endpoint::presets};
 use mycelium_peer_protocol::{AccessRecord, AccessStatement};
 use serde::{Deserialize, Serialize};
-use soil_sync_host::{RecordPeerHost, sync_records_with_transport};
+use soil_sync_host::{RecordPeerHost, VerifierSet, sync_records_with_transport};
 use unibus::{
     DirectSessionVerifier, IrohPeerEndpoint, PeerAccessPolicy, PeerBinding, PeerCandidate,
 };
 use unibus_iroh::{
     PEER_ALPN,
-    grant::{GrantVerifier, Permit, TrustDocument, permit_scope},
+    grant::{Permit, TrustDocument, permit_scope},
     transport::{IrohListener, IrohTransport, SessionConfig},
 };
 
@@ -84,20 +84,34 @@ struct PermitArgs {
     /// Mycelium access signing key (raw 32 bytes or 64-char hex).
     #[arg(long)]
     key: PathBuf,
+    /// Host config that supplies this host's identity: audience, installation,
+    /// local producer, endpoint key, and where a `--peer` document is written.
     #[arg(long)]
-    out: PathBuf,
+    config: Option<PathBuf>,
+    /// Trust document to write. Defaults to `records-trust-<peer>.json` beside
+    /// `--config` when `--peer` is given.
     #[arg(long)]
-    audience: String,
+    out: Option<PathBuf>,
+    /// Peer producer to pair with. Sets the responder producer, names the trust
+    /// document, and prints the matching `peers[]` and `trust_files[]` stanza.
+    #[arg(long, conflicts_with = "responder_producer")]
+    peer: Option<String>,
     #[arg(long)]
-    installation: String,
+    audience: Option<String>,
     #[arg(long)]
-    initiator_producer: String,
+    installation: Option<String>,
     #[arg(long)]
-    initiator_endpoint: String,
+    initiator_producer: Option<String>,
     #[arg(long)]
-    responder_producer: String,
+    initiator_endpoint: Option<String>,
     #[arg(long)]
-    responder_endpoint: String,
+    responder_producer: Option<String>,
+    #[arg(long)]
+    responder_endpoint: Option<String>,
+    /// Direct address to advertise for `--peer` in the printed `peers[]` entry.
+    /// Repeat for more than one address.
+    #[arg(long = "peer-addr")]
+    peer_addrs: Vec<SocketAddr>,
     #[arg(long, default_value = DEFAULT_KINDS)]
     kinds: String,
     #[arg(long, default_value_t = DEFAULT_MAX_PAYLOAD)]
@@ -122,7 +136,13 @@ struct SyncConfig {
     installation_id: String,
     local_producer: String,
     audience: String,
-    trust_file: PathBuf,
+    /// The single-peer trust document. Kept as the default so a two-host
+    /// config needs no `trust_files`, and additive with it when both are set.
+    #[serde(default)]
+    trust_file: Option<PathBuf>,
+    /// One trust document per additional peer.
+    #[serde(default)]
+    trust_files: Vec<PathBuf>,
     /// Explicit Mycelium access-issuer public keys. Never discovered remotely.
     issuers: Vec<String>,
     #[serde(default)]
@@ -149,6 +169,16 @@ struct PeerConfig {
     endpoint_id: String,
     #[serde(default)]
     direct_addresses: Vec<SocketAddr>,
+    /// Books this peer takes part in. Empty keeps the older meaning: every book
+    /// this host lists, which is what a two-host config relies on.
+    #[serde(default)]
+    books: Vec<String>,
+}
+
+impl PeerConfig {
+    fn syncs(&self, book: &str) -> bool {
+        self.books.is_empty() || self.books.iter().any(|allowed| allowed == book)
+    }
 }
 
 fn default_bind_addr() -> String {
@@ -161,6 +191,21 @@ fn default_sync_interval() -> u64 {
 
 fn default_push_poll() -> u64 {
     500
+}
+
+impl SyncConfig {
+    /// Every trust document this host verifies against: `trust_file` first,
+    /// then `trust_files`. Exact duplicates collapse so a config that lists the
+    /// same document twice still loads.
+    fn trust_paths(&self) -> Vec<PathBuf> {
+        let mut paths = Vec::with_capacity(1 + self.trust_files.len());
+        for path in self.trust_file.iter().chain(&self.trust_files) {
+            if !paths.contains(path) {
+                paths.push(path.clone());
+            }
+        }
+        paths
+    }
 }
 
 fn main() {
@@ -211,6 +256,65 @@ fn permit(args: PermitArgs) -> anyhow::Result<()> {
     if not_after <= not_before {
         bail!("--not-after must be after --not-before");
     }
+    let config = match &args.config {
+        Some(path) => Some(read_config(path)?),
+        None => None,
+    };
+    // This host's identity is already in its config; taking it from there keeps
+    // a permit from drifting from the endpoint it authorizes.
+    let from_config = |explicit: Option<String>, flag: &str, pick: fn(&SyncConfig) -> String| match (
+        explicit,
+        config.as_ref(),
+    ) {
+        (Some(value), _) => Ok(value),
+        (None, Some(config)) => Ok(pick(config)),
+        (None, None) => bail!("{flag} is required without --config"),
+    };
+    let audience = from_config(args.audience, "--audience", |config| {
+        config.audience.clone()
+    })?;
+    let installation = from_config(args.installation, "--installation", |config| {
+        config.installation_id.clone()
+    })?;
+    let initiator_producer =
+        from_config(args.initiator_producer, "--initiator-producer", |config| {
+            config.local_producer.clone()
+        })?;
+    let initiator_endpoint = match args.initiator_endpoint {
+        Some(endpoint) => endpoint,
+        None => match &config {
+            Some(config) => load_endpoint_key(&config.endpoint_key_file)?
+                .public()
+                .to_string(),
+            None => bail!("--initiator-endpoint is required without --config"),
+        },
+    };
+    let responder_producer = match (args.peer.clone(), args.responder_producer) {
+        (Some(peer), _) => peer,
+        (None, Some(producer)) => producer,
+        (None, None) => bail!("--peer or --responder-producer is required"),
+    };
+    if responder_producer == initiator_producer {
+        bail!("cannot pair {initiator_producer} with itself");
+    }
+    let responder_endpoint = args
+        .responder_endpoint
+        .ok_or_else(|| anyhow::anyhow!("--responder-endpoint is required"))?;
+    let out = match args.out {
+        Some(out) => out,
+        None => {
+            let Some(peer) = &args.peer else {
+                bail!("--out is required without --peer");
+            };
+            let dir = args
+                .config
+                .as_deref()
+                .and_then(Path::parent)
+                .filter(|dir| !dir.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            dir.join(format!("records-trust-{peer}.json"))
+        }
+    };
     let kinds = args
         .kinds
         .split(',')
@@ -222,16 +326,16 @@ fn permit(args: PermitArgs) -> anyhow::Result<()> {
         bail!("permit needs at least one message kind");
     }
     let permit = Permit {
-        audience: args.audience,
-        installation: args.installation,
+        audience,
+        installation,
         initiator: PeerBinding {
-            producer_id: args.initiator_producer,
-            key_binding: format!("iroh:{}", args.initiator_endpoint),
+            producer_id: initiator_producer,
+            key_binding: format!("iroh:{initiator_endpoint}"),
             candidates: vec![],
         },
         responder: PeerBinding {
-            producer_id: args.responder_producer,
-            key_binding: format!("iroh:{}", args.responder_endpoint),
+            producer_id: responder_producer,
+            key_binding: format!("iroh:{responder_endpoint}"),
             candidates: vec![],
         },
         kinds,
@@ -259,14 +363,33 @@ fn permit(args: PermitArgs) -> anyhow::Result<()> {
         revocations: vec![],
         permit,
     };
-    if let Some(parent) = args.out.parent() {
+    if let Some(parent) = out.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&args.out, serde_json::to_vec_pretty(&document)?)?;
-    set_owner_only(&args.out)?;
+    fs::write(&out, serde_json::to_vec_pretty(&document)?)?;
+    set_owner_only(&out)?;
     println!("issuer={}", document.grant.signer);
     println!("scope={scope}");
-    println!("trust={}", args.out.display());
+    println!("trust={}", out.display());
+    if let Some(peer) = &args.peer {
+        let mut entry = serde_json::json!({
+            "producer_id": peer,
+            "endpoint_id": responder_endpoint,
+        });
+        if !args.peer_addrs.is_empty() {
+            entry["direct_addresses"] = serde_json::json!(
+                args.peer_addrs
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            );
+        }
+        // The stanza is for the config that runs this command; the same trust
+        // document goes on the peer, mirrored.
+        let trust = fs::canonicalize(&out).unwrap_or_else(|_| out.clone());
+        println!("peers[]={}", serde_json::to_string(&entry)?);
+        println!("trust_files[]={}", serde_json::to_string(&[trust])?);
+    }
     Ok(())
 }
 
@@ -275,7 +398,7 @@ async fn run_peer(config_path: PathBuf) -> anyhow::Result<()> {
     if config.books.is_empty() {
         eprintln!("soil-sync: no books configured; serve-only");
     }
-    let verifier = make_verifier(&config)?;
+    let verifier = make_verifiers(&config)?;
     let endpoint = bind_endpoint(&config).await?;
     // The session handler and the dispatcher use separate SQLite connections.
     // A single shared mutex would deadlock when both sides push concurrently:
@@ -286,12 +409,15 @@ async fn run_peer(config_path: PathBuf) -> anyhow::Result<()> {
     )?));
     let dispatch_store = Store::open(&config.records_root, &config.records_root.join("device_id"))?;
     {
-        let peers = config
-            .peers
-            .iter()
-            .map(|peer| peer.producer_id.clone())
-            .collect::<Vec<_>>();
+        // A peer's outbox only holds the books it is scoped to, so a phone
+        // added for contacts does not attract the rest of the host's books.
         for book in &config.books {
+            let peers = config
+                .peers
+                .iter()
+                .filter(|peer| peer.syncs(book))
+                .map(|peer| peer.producer_id.clone())
+                .collect::<Vec<_>>();
             dispatch_store.set_sync_peers(book, &peers)?;
         }
     }
@@ -317,8 +443,12 @@ async fn run_peer(config_path: PathBuf) -> anyhow::Result<()> {
     let transport = IrohTransport::new(endpoint.clone(), session_config(&config, verifier.clone()));
     eprintln!("soil-sync: producer={}", config.local_producer);
     eprintln!(
-        "soil-sync: endpoint_id={} books={:?} peers={:?}",
+        "soil-sync: endpoint_id={} trust_documents={}",
         endpoint.id(),
+        verifier.len()
+    );
+    eprintln!(
+        "soil-sync: books={:?} peers={:?}",
         config.books,
         config
             .peers
@@ -351,7 +481,7 @@ async fn supervise(
     config: Arc<SyncConfig>,
     store: Arc<tokio::sync::Mutex<Store>>,
     transport: IrohTransport,
-    verifier: Arc<GrantVerifier>,
+    verifier: Arc<VerifierSet>,
     #[cfg(feature = "notify")] notify: Option<Arc<soil_notify_host::NotifyPeerAdapter>>,
 ) -> anyhow::Result<()> {
     let poll = std::time::Duration::from_millis(config.push_poll_ms.max(100));
@@ -372,7 +502,7 @@ async fn supervise(
             last_notify_flush = now;
             for peer in &config.peers {
                 let candidate = candidate_for(&config, peer, now_s());
-                if let Ok(assertion) = verifier.assertion(now_s()) {
+                if let Ok(assertion) = verifier.assertion_for(&peer.endpoint_id, now_s()) {
                     match soil_sync_host::flush_notify_with_transport(
                         &transport, &candidate, &assertion, adapter, now, 100,
                     )
@@ -398,7 +528,7 @@ async fn supervise(
             // The sweep reconciles every book with every peer, including the
             // pairs with nothing queued. That is what makes it the backstop.
             for book in &config.books {
-                for peer in &config.peers {
+                for peer in config.peers.iter().filter(|peer| peer.syncs(book)) {
                     sync_one(&config, &store, &transport, &verifier, book, peer).await;
                 }
             }
@@ -426,7 +556,10 @@ async fn pending_pairs<'a>(
     let mut due = Vec::new();
     let store = store.lock().await;
     for book in &config.books {
-        for peer in &config.peers {
+        // A peer that is scoped to some books must not be scheduled for the
+        // others: the sweep would open a session just to reconcile a book the
+        // peer was never granted.
+        for peer in config.peers.iter().filter(|peer| peer.syncs(book)) {
             if !store
                 .pending_outbox(book, &peer.producer_id, now, 1)?
                 .is_empty()
@@ -442,7 +575,7 @@ async fn sync_one(
     config: &SyncConfig,
     store: &Arc<tokio::sync::Mutex<Store>>,
     transport: &IrohTransport,
-    verifier: &GrantVerifier,
+    verifier: &VerifierSet,
     book: &str,
     peer: &PeerConfig,
 ) {
@@ -456,7 +589,7 @@ async fn sync_one(
             }
         }
     };
-    let assertion = match verifier.assertion(now_s()) {
+    let assertion = match verifier.assertion_for(&peer.endpoint_id, now_s()) {
         Ok(assertion) => assertion,
         Err(error) => {
             eprintln!("soil-sync: permit {book}/{}: {error}", peer.producer_id);
@@ -526,7 +659,7 @@ fn candidate_for(_config: &SyncConfig, peer: &PeerConfig, now: u64) -> PeerCandi
 async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
     let config = read_config(&config_path)?;
     let endpoint = bind_endpoint(&config).await?;
-    let verifier = make_verifier(&config)?;
+    let verifier = make_verifiers(&config)?;
     let session = session_config(&config, verifier);
     let listener = IrohListener::new(endpoint.clone(), session);
     let store = Store::open(&config.records_root, &config.records_root.join("device_id"))?;
@@ -553,8 +686,11 @@ async fn sync(config_path: PathBuf, peer: &str, book: &str) -> anyhow::Result<()
         .iter()
         .find(|p| p.producer_id == peer)
         .ok_or_else(|| anyhow::anyhow!("peer `{peer}` is not configured"))?;
-    let verifier = make_verifier(&config)?;
-    let assertion = verifier.assertion(now_s())?;
+    if !peer_config.syncs(book) {
+        bail!("peer `{peer}` is not configured for book `{book}`");
+    }
+    let verifier = make_verifiers(&config)?;
+    let assertion = verifier.assertion_for(&peer_config.endpoint_id, now_s())?;
     let endpoint = bind_endpoint(&config).await?;
     let transport = IrohTransport::new(endpoint.clone(), session_config(&config, verifier));
     let candidate = PeerCandidate {
@@ -614,15 +750,21 @@ fn read_config(path: &Path) -> anyhow::Result<SyncConfig> {
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
 }
 
-fn make_verifier(config: &SyncConfig) -> anyhow::Result<Arc<GrantVerifier>> {
+fn make_verifiers(config: &SyncConfig) -> anyhow::Result<Arc<VerifierSet>> {
     let issuers = config.issuers.iter().cloned().collect::<BTreeSet<_>>();
-    Ok(Arc::new(GrantVerifier::new(
-        config.trust_file.clone(),
-        issuers,
-    )?))
+    let paths = config.trust_paths();
+    if paths.is_empty() {
+        bail!("config needs trust_file or trust_files");
+    }
+    let local_endpoint = load_endpoint_key(&config.endpoint_key_file)?
+        .public()
+        .to_string();
+    let verifiers = VerifierSet::load(&paths, issuers, &local_endpoint)
+        .with_context(|| format!("load {} trust document(s)", paths.len()))?;
+    Ok(Arc::new(verifiers))
 }
 
-fn session_config(config: &SyncConfig, verifier: Arc<GrantVerifier>) -> SessionConfig {
+fn session_config(config: &SyncConfig, verifier: Arc<VerifierSet>) -> SessionConfig {
     let verifier_dyn: Arc<dyn DirectSessionVerifier> = verifier.clone();
     let policy: Arc<dyn PeerAccessPolicy> = verifier;
     SessionConfig {
@@ -787,5 +929,84 @@ mod tests {
             due.is_empty(),
             "an idle tick must not open a session for every pair"
         );
+    }
+
+    /// Parse the way a config file is read, so these assert the `serde`
+    /// defaults that existing configs depend on.
+    fn parse(value: serde_json::Value) -> SyncConfig {
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn base() -> serde_json::Value {
+        serde_json::json!({
+            "endpoint_key_file": "/config/endpoint.key",
+            "installation_id": "home",
+            "local_producer": "records.macbook",
+            "audience": "unibus:soil-records",
+            "issuers": ["issuer"],
+            "records_root": "/records",
+        })
+    }
+
+    #[test]
+    fn trust_file_alone_is_still_enough() {
+        let mut value = base();
+        value["trust_file"] = "/config/records-trust.json".into();
+        assert_eq!(
+            parse(value).trust_paths(),
+            [PathBuf::from("/config/records-trust.json")]
+        );
+    }
+
+    #[test]
+    fn trust_files_are_additive_and_deduplicated() {
+        let mut value = base();
+        value["trust_file"] = "/config/records-trust.json".into();
+        value["trust_files"] = serde_json::json!([
+            "/config/records-trust.json",
+            "/config/records-trust-records.cat-s22.json"
+        ]);
+        assert_eq!(
+            parse(value).trust_paths(),
+            [
+                PathBuf::from("/config/records-trust.json"),
+                PathBuf::from("/config/records-trust-records.cat-s22.json")
+            ]
+        );
+    }
+
+    #[test]
+    fn trust_files_stand_alone_for_a_new_host() {
+        let mut value = base();
+        value["trust_files"] = serde_json::json!(["/config/records-trust-records.macbook.json"]);
+        assert_eq!(
+            parse(value).trust_paths(),
+            [PathBuf::from("/config/records-trust-records.macbook.json")]
+        );
+    }
+
+    #[test]
+    fn a_peer_without_books_takes_every_book() {
+        let mut value = base();
+        value["peers"] =
+            serde_json::json!([{ "producer_id": "records.studio", "endpoint_id": "e" }]);
+        let mut config = parse(value);
+        let peer = config.peers.remove(0);
+        assert!(peer.syncs("personal/avery/contacts"));
+        assert!(peer.syncs("personal/avery/marbles"));
+    }
+
+    #[test]
+    fn a_peer_with_books_is_scoped_to_them() {
+        let mut value = base();
+        value["peers"] = serde_json::json!([{
+            "producer_id": "records.cat-s22",
+            "endpoint_id": "e",
+            "books": ["personal/avery/contacts"]
+        }]);
+        let mut config = parse(value);
+        let peer = config.peers.remove(0);
+        assert!(peer.syncs("personal/avery/contacts"));
+        assert!(!peer.syncs("personal/avery/marbles"));
     }
 }

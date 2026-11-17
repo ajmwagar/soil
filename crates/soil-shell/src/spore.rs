@@ -38,6 +38,10 @@ pub struct Run {
     pub geode_prefix: String,
     pub geode_purpose: String,
     pub geode_ttl_secs: u64,
+    /// Environment variable holding the bearer token `soil:http`'s `default`
+    /// handle resolves to. Read by the presenter, never passed to the Spore;
+    /// it is the alternative to a Geode lease.
+    pub credential_env: Option<String>,
     /// Serve a web bridge here, so a browser can offer `soil:http`.
     pub bridge: Option<SocketAddr>,
     /// How long to wait for a page to offer `soil:http` before starting anyway.
@@ -72,6 +76,7 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
         // separate capability and must be asked for explicitly.
         geode_purpose: "verify".into(),
         geode_ttl_secs: 600,
+        credential_env: None,
         bridge: None,
         bridge_wait: Duration::ZERO,
         allow_origins: Vec::new(),
@@ -131,6 +136,10 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
                     .context("--geode-ttl-secs is seconds")?;
                 index += 2;
             }
+            "--credential-env" => {
+                run.credential_env = Some(value(index + 1)?);
+                index += 2;
+            }
             "--bridge" => {
                 run.bridge = Some(value(index + 1)?.parse().context("--bridge is addr:port")?);
                 index += 2;
@@ -161,6 +170,14 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
                 run.present.framebuffer = Some(value(index + 1)?);
                 index += 2;
             }
+            "--input" => {
+                run.present.input = Some(PathBuf::from(value(index + 1)?));
+                index += 2;
+            }
+            "--cache" => {
+                run.present.cache = Some(PathBuf::from(value(index + 1)?));
+                index += 2;
+            }
             "--size" => {
                 let size = value(index + 1)?;
                 let (width, height) =
@@ -189,6 +206,18 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
             }
             "--collection" => {
                 run.present.collection = Some(value(index + 1)?);
+                index += 2;
+            }
+            "--namespace" => {
+                run.present.namespace = Some(value(index + 1)?);
+                index += 2;
+            }
+            "--whole-book" => {
+                run.present.whole_book = true;
+                index += 1;
+            }
+            "--records-book" => {
+                run.present.records_books.push(value(index + 1)?);
                 index += 2;
             }
             "--actor" => {
@@ -234,6 +263,14 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
 
 /// Run a Spore until the listener closes.
 pub fn run(args: &[String]) -> Result<()> {
+    // `soil spore warm <path>`: compile it into the window host's AOT cache and
+    // stop. This is the wait an install pays so the first click does not.
+    if args.first().map(String::as_str) == Some("warm") {
+        let path = args
+            .get(1)
+            .context("usage: soil spore warm <spore-dir|package.spore>")?;
+        return warm(Path::new(path));
+    }
     // A host that cannot say what it is doing is a host nobody can operate. The
     // default is `info` for the host crates, so a plain launch is not silent; an
     // operator can widen or narrow it with `RUST_LOG`, exactly as they can for
@@ -264,9 +301,82 @@ pub fn run(args: &[String]) -> Result<()> {
     crate::present::show(&spore.root, &spore.manifest, &run.present, &surfaces, Some(&run))
 }
 
-/// Serve the hosts a Spore claims in its `[http]` table, until the listener
-/// closes.
+/// `soil install --id <id>`: fetch, verify, write and compile a listing.
 ///
+/// The window that asked names an id and nothing else: which store, which cache,
+/// and which root are the machine's, so they default here and each can be
+/// pointed somewhere else when it is not.
+pub fn install(args: &[String]) -> Result<()> {
+    let value = |name: &str| {
+        args.iter()
+            .position(|argument| argument == name)
+            .and_then(|index| args.get(index + 1))
+            .cloned()
+    };
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .context("HOME is not set, so the store paths cannot be found")?;
+    let id = value("--id").context("usage: soil install --id SPORE [--json]")?;
+    let root = value("--root")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share/fungos/spores"));
+    let index = value("--index")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share/fungos/store/index.json"));
+    let packages = value("--packages")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share/fungos/store/packages"));
+    let origin = value("--origin").unwrap_or_else(|| "http://127.0.0.1:8800".into());
+
+    let state = soil_install::install_id(&id, &index, &packages, Some(&origin), &root)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    // Installing and starting are the same promise: a package that was just
+    // written is compiled now, so the click that follows does not pay for it.
+    let package = root.join(state.tree_name());
+    if let Err(error) = canvas_winit::prewarm(&package) {
+        eprintln!("soil: installed {} but could not compile it: {error:#}", state.id);
+    }
+    if args.iter().any(|argument| argument == "--json") {
+        println!(
+            "{}",
+            serde_json::json!({
+                "id": state.id,
+                "version": state.version,
+                "digest": state.digest,
+            })
+        );
+    } else {
+        println!("installed {} {} ({})", state.id, state.version, state.digest);
+    }
+    Ok(())
+}
+
+/// Compile a package for the window that will open it.
+///
+/// The cache is the window host's, keyed by the module's digest, and
+/// [`canvas_winit::prewarm`] is the only thing that writes it — the same call
+/// the launcher makes for the Spores it has not warmed yet. A composition has no
+/// module, which is a fact about the package rather than a failure.
+fn warm(path: &Path) -> Result<()> {
+    let spore = Spore::resolve(path)?;
+    if spore.manifest.module.is_none() {
+        println!(
+            "soil: {} ships no module; nothing to compile",
+            spore.manifest.spore.id
+        );
+        return Ok(());
+    }
+    let file = canvas_winit::prewarm(&spore.root)?;
+    println!(
+        "soil: warmed {} ({})",
+        spore.manifest.spore.id,
+        file.display()
+    );
+    Ok(())
+}
+
+/// Serve the hosts a Spore claims in its `[http]` table, until the listener
+/// closes.///
 /// It takes the package directory rather than a resolved `Spore` because a
 /// composite run serves these hosts on their own thread while a window is open
 /// on this one.

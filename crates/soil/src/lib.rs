@@ -41,6 +41,12 @@
 //! others in, because those modules are written against it. `cli` adds the
 //! `soil-*` commands.
 
+// One clock for the whole host: a bus frame, a lease, an invocation fact and an
+// agent record all mean the same thing by "now". It is compiled only where
+// something reads it — the WASI profile stamps `context`, the ACP client stamps
+// agent records — so a host that grants neither carries no clock at all.
+#[cfg(any(feature = "wasi", feature = "acp"))]
+mod clock;
 #[cfg(feature = "wasi")]
 pub mod context;
 #[cfg(feature = "wasi")]
@@ -65,6 +71,8 @@ mod service;
 pub mod time;
 // The dispatch seam: a task notice becomes a session, and a created session is
 // announced on the bus. Host-side only — a Spore never starts a process.
+#[cfg(feature = "acp")]
+pub mod acp;
 #[cfg(feature = "dispatch")]
 pub mod dispatch;
 #[cfg(feature = "git")]

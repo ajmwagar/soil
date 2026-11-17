@@ -160,6 +160,39 @@ The root can be a native checkout or a `fungos-vfs` FUSE mount. Regex file
 searches then use tgrep's trigram index and JSON stream; the host still owns
 the binary, root, and query. Native regex search remains the fallback.
 
+## Content ids
+
+`soil:index` answers questions about names and text. `soil:vfs-cid` answers the one question
+the namespace cannot: *where do these bytes live?*
+
+```wit
+// wit/soil-vfs-cid.wit
+interface cid {
+  use soil:vfs/vfs@1.0.0.{entry};
+  find: func(content-id: string, offset: u64, limit: u32) -> result<page, error>;
+}
+```
+
+A record that names bytes — a photo, an attachment, a built artifact — carries
+`blake3:<hex>`, because a path is host state and a tombstone is not a cache miss. `find`
+returns the entries inside the workspace whose identity is that id, in path order, on the
+same page budget as `ls`. It is not authority: the answer is everything the caller could
+already see by walking the namespace, and never a host path or provider locator.
+
+It is a separate package rather than a `soil:vfs` version bump, for the same reason
+`soil:vfs-mut` is: a host opts in to a new grant without re-versioning the interface every
+existing Spore already imports.
+
+```rust
+// in a host that links it beside soil:vfs
+let page = <VfsHost as soil::vfs_cid::cid::Host>::find(&mut host, content_id, 0, 32)?;
+for entry in page.entries { /* entry.path is readable through soil:vfs */ }
+```
+
+The implementation is index-backed (`IndexBackend::by_content`, both paths for the same
+bytes), refreshed on the same rules as `stat`, and tested in
+`crates/soil-host/tests/vfs_cid.rs`.
+
 ## Browser inspector
 
 `soil-vfs-web` is a read-only local UI over the `soil:vfs` and `soil:index`

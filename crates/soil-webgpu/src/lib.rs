@@ -49,6 +49,10 @@ wasmtime::component::bindgen!({
         // crate's own `soil:vfs` and `soil:principal` types rather than a
         // second generated copy that would need converting field by field.
         "soil:vfs/vfs@1.0.0": ::soil::vfs_host::vfs,
+        // `vfs-cid` answers "where do these bytes live" from the same index `vfs`
+        // lists, so it is the same host object, not a second one that could
+        // disagree with it.
+        "soil:vfs-cid/cid@0.1.0": ::soil::vfs_host::cid,
         "soil:principal/principal@0.1.0": ::soil::principal_host::api,
         "soil:git/git@0.1.0": ::soil::git_host::git,
         // A subscription is host state, not a generated shadow type: the
@@ -101,6 +105,11 @@ impl CanvasGpuPresenter for DiscardPresenter {
 pub struct FrameCapture {
     frame: Arc<Mutex<Option<CanvasFrame>>>,
     size: (u32, u32),
+    /// How many frames this run may present. A still capture takes one and
+    /// fails if the guest offers more, which is how a guest that ignores the
+    /// one-frame contract gets caught. A capture driven by keys wants the frame
+    /// the run *ends* on, so it keeps the last one it is given.
+    budget: usize,
 }
 
 impl FrameCapture {
@@ -108,6 +117,16 @@ impl FrameCapture {
         Self {
             frame: Arc::new(Mutex::new(None)),
             size: (width, height),
+            budget: 1,
+        }
+    }
+
+    /// A capture that keeps the last frame instead of the only frame.
+    pub fn streaming(width: u32, height: u32) -> Self {
+        Self {
+            frame: Arc::new(Mutex::new(None)),
+            size: (width, height),
+            budget: usize::MAX,
         }
     }
 
@@ -122,8 +141,9 @@ impl CanvasGpuPresenter for FrameCapture {
     }
 
     fn present(&mut self, frame: CanvasFrame) -> Result<()> {
+        anyhow::ensure!(self.budget > 0, "present budget");
+        self.budget = self.budget.saturating_sub(1);
         let mut slot = self.frame.lock().expect("frame capture poisoned");
-        anyhow::ensure!(slot.is_none(), "present budget");
         *slot = Some(frame);
         Ok(())
     }
@@ -220,11 +240,27 @@ impl From<CatalogError> for CatalogFailure {
     }
 }
 
+/// What installing a listing produced.
+#[derive(Clone, Debug)]
+pub struct CatalogInstalled {
+    pub id: String,
+    pub version: String,
+    pub digest: String,
+}
+
 /// The host's installed-Spore catalogue. `launch` is host-owned: the guest
-/// asks, the host starts the process or opens the window.
+/// asks, the host starts the process or opens the window. `install` is the same
+/// division of labour: the window names a listing, the host fetches and writes.
 pub trait CatalogHost: Send {
     fn entries(&mut self) -> Result<Vec<CatalogEntry>, CatalogError>;
     fn launch(&mut self, id: &str, surface: &str) -> Result<CatalogLaunched, CatalogFailure>;
+    /// Install a listing this host can reach. A host with no store says so.
+    fn install(&mut self, id: &str) -> Result<CatalogInstalled, CatalogFailure> {
+        Err(CatalogFailure::new(
+            CatalogError::Denied,
+            format!("{id} cannot be installed here: this host has no store"),
+        ))
+    }
     /// The ids this host started and has not seen exit.
     ///
     /// The host is what starts and reaps a Spore, so it is the only thing that
@@ -539,6 +575,37 @@ pub enum InputEvent {
 }
 
 /// Host state for one component instance.
+/// The fastest the host takes frames: the panel's own 60 Hz. A guest cannot
+/// talk its way past it, because the wait happens on the host's side of the
+/// call.
+const FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
+
+/// The queue a presenter fills and the host drains: `soil:present/input`.
+///
+/// One queue per host, shared with whatever produces events — a window, an
+/// evdev reader, or a script's `--keys`.
+pub type InputQueue = Arc<Mutex<VecDeque<InputEvent>>>;
+
+/// The host's UTC offset right now, in seconds east of UTC.
+///
+/// Read from libc rather than from a zoneinfo parser: the host already has a
+/// correct local time, and the guest only needs the number.
+fn local_utc_offset_secs() -> i64 {
+    #[cfg(unix)]
+    unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&now, &mut tm).is_null() {
+            return 0;
+        }
+        tm.tm_gmtoff
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
+}
+
 pub struct WebGpuHost {
     instance: Arc<wgpu_core::global::Global>,
     table: ResourceTable,
@@ -577,6 +644,9 @@ pub struct WebGpuHost {
     bus: Arc<MemoryBus>,
     /// Frame accounting for `SOIL_WEBGPU_STATS=1`.
     stats: FrameStats,
+    /// When the last frame was presented, so the host can hold the next one to
+    /// `FRAME_INTERVAL` rather than taking whatever rate the guest offers.
+    last_frame: Option<Instant>,
 }
 
 /// Frame accounting for `SOIL_WEBGPU_STATS=1`: how often the Spore presents, and
@@ -695,6 +765,34 @@ impl RecordsAccess {
                 book.into(),
                 collection.into(),
             )],
+        }
+    }
+
+    /// The collections a package declares in its manifest, read-only.
+    ///
+    /// `book` names one book for all of them; absent, each collection is its own
+    /// book, which is what a fresh host has before anybody decides where it
+    /// lives. Declared collections are reads: a Spore that writes names its
+    /// collection on the command line, so the write is an act somebody chose.
+    pub fn declared(
+        root: impl Into<PathBuf>,
+        collections: Vec<String>,
+        book: Option<String>,
+    ) -> Self {
+        let root = root.into();
+        Self {
+            root,
+            namespaces: collections
+                .into_iter()
+                .map(|collection| {
+                    let book = book.clone().unwrap_or_else(|| collection.clone());
+                    // `write` for now: a read-only namespace does not reach `scan`
+                    // in the records host today, and a declared collection that a
+                    // Spore cannot read is not a grant. Tightening this is a host
+                    // fix, not a manifest one.
+                    Namespace::write(collection.clone(), book, collection)
+                })
+                .collect(),
         }
     }
 
@@ -819,7 +917,13 @@ impl WebGpuHost {
             // A Spore's stderr is the only place its own error text can go: a
             // trap carries a backtrace, not the message. Inherit it so a failing
             // guest says why.
-            wasi: WasiCtxBuilder::new().inherit_stderr().build(),
+            wasi: WasiCtxBuilder::new()
+                .inherit_stderr()
+                // A guest has no zoneinfo, so the host says what local means.
+                // `wasi:clocks` is UTC by definition; the offset is the only
+                // part of "the time" a wasm Spore cannot work out for itself.
+                .env("SOIL_UTC_OFFSET", local_utc_offset_secs().to_string())
+                .build(),
             presenter: setup.presenter,
             input: setup.input,
             interactive: setup.interactive,
@@ -848,7 +952,24 @@ impl WebGpuHost {
             clipboard: setup.clipboard,
             bus: Arc::new(MemoryBus::default()),
             stats: FrameStats::new(),
+            last_frame: None,
         })
+    }
+
+    /// Hold the next frame to [`FRAME_INTERVAL`].
+    ///
+    /// A framebuffer guest has no clock it can trust and no vsync to wait on,
+    /// so a guest that renders in a loop spins every core it can reach: ohmOS
+    /// on the phone sat at ~250% of one core drawing the same still home
+    /// screen. The cap is the host's promise, not the guest's discipline.
+    fn pace(&mut self) {
+        if let Some(last) = self.last_frame {
+            let elapsed = last.elapsed();
+            if elapsed < FRAME_INTERVAL {
+                std::thread::sleep(FRAME_INTERVAL - elapsed);
+            }
+        }
+        self.last_frame = Some(Instant::now());
     }
 }
 
@@ -935,6 +1056,7 @@ impl soil::present::surface::Host for WebGpuHost {
         &mut self,
         frame: soil::present::types::RgbaFrame,
     ) -> std::result::Result<(), String> {
+        self.pace();
         let (width, height) = self.presenter.size();
         if frame.width != width || frame.height != height {
             return Err(format!(
@@ -965,6 +1087,7 @@ impl soil::present::surface::Host for WebGpuHost {
         &mut self,
         texture: wasmtime::component::Resource<wasi_webgpu_wasmtime::Texture>,
     ) -> std::result::Result<(), String> {
+        self.pace();
         let started = Instant::now();
         let image = wasi_webgpu_wasmtime::read_texture_rgba(&self.instance, &self.table, texture)
             .map_err(|e| e.to_string())?;
@@ -1077,12 +1200,32 @@ impl ::soil::git_host::git::Host for WebGpuHost {
     fn status(
         &mut self,
         path: String,
-    ) -> std::result::Result<::soil::git_host::git::Repository, ::soil::git_host::git::Error> {
+    ) -> std::result::Result<::soil::git_host::git::Repository, ::soil::git_host::git::Error>
+    {
         let git = self
             .git
             .as_mut()
             .ok_or(::soil::git_host::git::Error::Denied)?;
         ::soil::git_host::git::Host::status(git, path)
+    }
+}
+
+impl ::soil::vfs_host::cid::Host for WebGpuHost {
+    fn find(
+        &mut self,
+        content_id: String,
+        offset: u64,
+        limit: u32,
+    ) -> std::result::Result<::soil::vfs_host::cid::Page, ::soil::vfs_host::cid::Error>
+    {
+        <VfsHost as ::soil::vfs_host::cid::Host>::find(
+            self.vfs
+                .as_mut()
+                .ok_or(::soil::vfs_host::cid::Error::Denied)?,
+            content_id,
+            offset,
+            limit,
+        )
     }
 }
 
@@ -1312,6 +1455,18 @@ impl soil::spore::catalog::Host for WebGpuHost {
 
     fn stop(&mut self, id: String) -> std::result::Result<(), soil::spore::catalog::Failure> {
         self.catalog.stop(&id).map_err(catalog_failure)
+    }
+
+    fn install(
+        &mut self,
+        id: String,
+    ) -> std::result::Result<soil::spore::catalog::Installed, soil::spore::catalog::Failure> {
+        let installed = self.catalog.install(&id).map_err(catalog_failure)?;
+        Ok(soil::spore::catalog::Installed {
+            id: installed.id,
+            version: installed.version,
+            digest: installed.digest,
+        })
     }
 }
 
@@ -1746,6 +1901,23 @@ impl WasiWebGpuCtxView for WebGpuHost {
     }
 }
 
+/// The file a compiled component is cached in: `<sha256 of the module>.cwasm`.
+///
+/// The digest is the whole contract between whoever writes this file and whoever
+/// reads it — `soil spore warm` on one side, a window on the other — so it is
+/// derived in one place rather than twice and kept in step by hand.
+#[must_use]
+pub fn component_cache_file(directory: &std::path::Path, bytes: &[u8]) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    let mut name = String::with_capacity(digest.len() * 2 + 8);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(name, "{byte:02x}");
+    }
+    directory.join(format!("{name}.cwasm"))
+}
+
 /// A reusable engine/linker pair. Each invocation gets a fresh store and
 /// resource table, so two guests never share handles or validation state.
 pub struct WebGpuRuntime {
@@ -1815,6 +1987,12 @@ impl WebGpuRuntime {
         )
         .map_err(anyhow::Error::from)
         .context("link soil:git")?;
+        ::soil::vfs_host::cid::add_to_linker::<WebGpuHost, HasSelf<WebGpuHost>>(
+            &mut linker,
+            |host| host,
+        )
+        .map_err(anyhow::Error::from)
+        .context("link soil:vfs-cid")?;
         ::soil::principal_host::add_to_linker::<WebGpuHost>(&mut linker)
             .context("link soil:principal")?;
         ::soil::unibus::add_to_linker::<WebGpuHost>(&mut linker).context("link soil:unibus")?;
@@ -1848,16 +2026,10 @@ impl WebGpuRuntime {
 
     /// Compile a component, or reuse the cached compilation of the same bytes.
     fn component(&self, bytes: &[u8]) -> Result<Component> {
-        let cache_path = self.component_cache.as_ref().map(|directory| {
-            use sha2::{Digest, Sha256};
-            let digest = Sha256::digest(bytes);
-            let mut name = String::with_capacity(digest.len() * 2 + 8);
-            for byte in digest {
-                use std::fmt::Write as _;
-                let _ = write!(name, "{byte:02x}");
-            }
-            directory.join(format!("{name}.cwasm"))
-        });
+        let cache_path = self
+            .component_cache
+            .as_ref()
+            .map(|directory| component_cache_file(directory, bytes));
         if let Some(path) = &cache_path
             && let Ok(serialized) = std::fs::read(path)
         {
@@ -2054,9 +2226,33 @@ pub fn run_component_capture_with_grants(
     height: u32,
     grants: Grants,
 ) -> Result<(u32, Option<CanvasFrame>)> {
+    run_component_capture_with_input(bytes, width, height, grants, None)
+}
+
+/// A capture run that can be driven by keys.
+///
+/// The headless surface is the one a script can check, so it has to take keys
+/// too: a run with no window is otherwise a single frame of whatever the guest
+/// drew first, and a screen behind a menu is unreachable. `input` is the queue
+/// the caller fills (from `--keys`, or an evdev reader); a non-empty queue also
+/// makes the host interactive, which is what tells the guest to keep going.
+pub fn run_component_capture_with_input(
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+    grants: Grants,
+    input: Option<InputQueue>,
+) -> Result<(u32, Option<CanvasFrame>)> {
     let runtime = WebGpuRuntime::new()?;
-    let capture = FrameCapture::new(width, height);
+    let capture = match &input {
+        Some(_) => FrameCapture::streaming(width, height),
+        None => FrameCapture::new(width, height),
+    };
     let mut setup = HostSetup::capture(Box::new(capture.clone()));
+    if let Some(input) = input {
+        setup.input = input;
+        setup.interactive = true;
+    }
     setup.vfs = grants.vfs;
     setup.records = grants.records;
     setup.principal = grants.principal;

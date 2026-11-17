@@ -92,11 +92,8 @@ fn new_request_id() -> String {
     format!("{nanos:032x}{sequence:016x}")
 }
 
-pub(crate) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
+/// The host's one clock, reachable at the module that stamps invocation facts.
+///
+/// This is a re-export rather than a second `SystemTime` call: two copies of
+/// "now" is how a host ends up with two epochs.
+pub(crate) use crate::clock::now_ms;

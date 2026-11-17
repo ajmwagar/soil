@@ -48,6 +48,9 @@ unibus = ["dep:unibus", "dep:unibus-sdk"]
 # which is why it is one feature rather than a flag on either. Host-side only —
 # a Spore never starts a process.
 dispatch = ["wasi", "dep:soil-agent-host"]
+# The ACP client: one harness conversation over stdio, normalized into the same
+# agent record every other adapter speaks. Host-side only.
+acp = ["dep:soil-agent-host"]
 creds = ["dep:base64", "dep:ed25519-dalek", "dep:hmac", "dep:sha2", "dep:tempfile"]
 # The WASI p2 profile around the capabilities: `wasi:http` in and out,
 # clocks, filesystem, sockets, the credential and bus sessions, and the policy

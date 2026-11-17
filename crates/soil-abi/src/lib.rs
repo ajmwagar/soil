@@ -114,8 +114,8 @@ pub const CONTRACTS: &[Contract] = &[
     Contract {
         file: "wit/soil-spore.wit",
         source: include_str!("../../../wit/soil-spore.wit"),
-        package: "soil:spore@0.2.0",
-        interfaces: &[("catalog", &["entries", "launch", "running", "stop"])],
+        package: "soil:spore@0.3.0",
+        interfaces: &[("catalog", &["entries", "launch", "running", "stop", "install"])],
     },
     Contract {
         file: "wit/soil-search.wit",

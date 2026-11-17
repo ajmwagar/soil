@@ -16,6 +16,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use fungos_vfs::Vfs;
 
+mod evdev;
 mod present;
 mod spore;
 
@@ -31,13 +32,16 @@ fn usage() -> &'static str {
      commands:\n\
        spore run <dir|package.spore> [--listen ADDR] [--hub ADDR]... [--unibus-config FILE]\n\
                                     [--bridge ADDR] [--bridge-wait SECS] [--allow-origin URL]...\n\
-                                    [--hue-bridge URL] [--surface window|web|frame|fb]...\n\
+                                    [--credential-env NAME] [--hue-bridge URL] [--surface window|web|frame|fb]...\n\
+       spore warm <dir|package.spore>   compile it into the window host's cache\n\
+       install --id SPORE [--json] [--root DIR] [--index FILE] [--packages DIR] [--origin URL]\n\
        shell [--mount DIR] [--fuse-binary PATH] [--shell PATH] [--no-mount] [-- command...]\n\
        ls [PREFIX]\n\
        stat PATH\n\
        cat PATH\n\
        history PATH\n\
        rm PATH...\n\
+       content import --manifest FILE [--prefix DIR] [--limit N]\n\
        search QUERY\
      \
      whoami                      the principal this machine runs as"
@@ -74,8 +78,11 @@ fn run() -> Result<()> {
         // Any `.spore` on the names it claims: the same launcher for every
         // Spore, so a product never ships its own host again.
         "spore" => spore::run(&args),
+        "install" => spore::install(&args),
         "shell" => shell(&root, args),
         "rm" => remove(&root, args),
+        // The bytes a record points at, put into the workspace by identity.
+        "content" => content(&root, args),
         "ls" => list(&root, args),
         "stat" => stat(&root, args),
         "cat" => cat(&root, args),
@@ -309,6 +316,96 @@ fn take_option(args: &mut Vec<String>, name: &str) -> Option<String> {
     let value = args.remove(index + 1);
     args.remove(index);
     Some(value)
+}
+
+/// `soil content import`: put the bytes a manifest names into the workspace.
+///
+/// A manifest is what an exporter writes when records point at files it holds:
+/// `[{content_id, path, media_type, size}]`, `content_id` a `blake3:` digest of
+/// the file. Importing names each file by its own identity, so the same bytes
+/// imported twice are one object and a record's `content_id` resolves wherever
+/// a machine has imported it.
+fn content(root: &Path, mut args: Vec<String>) -> Result<()> {
+    let Some(command) = args.first().cloned() else {
+        bail!("usage: soil content import --manifest FILE [--prefix DIR] [--limit N]");
+    };
+    if command != "import" {
+        bail!("unknown content command {command}");
+    }
+    args.remove(0);
+    let manifest = take_option(&mut args, "--manifest")
+        .context("--manifest FILE is required: it lists the content ids to import")?;
+    let prefix = take_option(&mut args, "--prefix").unwrap_or_else(|| "photos".to_string());
+    let limit = take_option(&mut args, "--limit")
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .context("--limit is a number")?;
+    if let Some(other) = args.first() {
+        bail!("unknown argument {other}");
+    }
+    import(root, &expand_home(&manifest), &prefix, limit)
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestEntry {
+    content_id: String,
+    path: String,
+    #[serde(default)]
+    media_type: String,
+}
+
+fn import(root: &Path, manifest: &Path, prefix: &str, limit: Option<usize>) -> Result<()> {
+    let text = std::fs::read_to_string(manifest)
+        .with_context(|| format!("read {}", manifest.display()))?;
+    let entries: Vec<ManifestEntry> =
+        serde_json::from_str(&text).context("parse the content manifest")?;
+    let mut host = ::soil::vfs_host::VfsHost::open(root).context("open the workspace")?;
+    let mut imported = 0usize;
+    let mut written = 0u64;
+    for entry in entries.iter().take(limit.unwrap_or(usize::MAX)) {
+        let bytes = std::fs::read(&entry.path).with_context(|| format!("read {}", entry.path))?;
+        let digest = entry
+            .content_id
+            .strip_prefix("blake3:")
+            .unwrap_or(&entry.content_id);
+        let path = format!("{prefix}/{digest}.{}", extension(&entry.media_type));
+        let result = <::soil::vfs_host::VfsHost as ::soil::vfs_host::vfs_mut::Host>::write(
+            &mut host,
+            path.clone(),
+            bytes.clone(),
+            entry.media_type.clone(),
+            None,
+            None,
+        )
+        .with_context(|| format!("write {path}"))?;
+        // A manifest is a claim. An import that stored different bytes would be
+        // a record pointing at the wrong picture, so the id it lands under is
+        // checked against the id it was asked for.
+        if result.content_id != entry.content_id {
+            bail!(
+                "{} hashed to {}, the manifest says {}",
+                entry.path,
+                result.content_id,
+                entry.content_id
+            );
+        }
+        imported += 1;
+        written += result.size;
+    }
+    println!("imported {imported} files, {written} bytes into {prefix}/");
+    Ok(())
+}
+
+fn extension(media_type: &str) -> &'static str {
+    match media_type {
+        "image/jpeg" => "jpg",
+        "image/heic" | "image/heif" => "heic",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "video/mp4" => "mp4",
+        "video/quicktime" => "mov",
+        _ => "bin",
+    }
 }
 
 fn expand_home(value: &str) -> PathBuf {

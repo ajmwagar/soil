@@ -78,6 +78,10 @@ pub struct InstallOptions<'a> {
     /// A delegated publisher public key. When present, it replaces the local
     /// keyring for this package's sidecar signature.
     pub public_key: Option<&'a [u8]>,
+    /// The runner that will open this package, when there is one. Install ends
+    /// with the package compiled for it: a Spore that is installed but not warm
+    /// greets its first click with a splash that looks like a hang.
+    pub warm: Option<&'a Path>,
 }
 
 /// Install a verified package, replacing the current directory only after the
@@ -107,7 +111,14 @@ pub fn install(
         .as_ref()
         .is_some_and(|state| state.digest == lock.digest)
     {
-        return Ok(existing.expect("checked above"));
+        let state = existing.expect("checked above");
+        // Nothing changed, but the cache may have been cleared: warming an
+        // installed package is cheap and is the difference between "installed"
+        // and "installed and ready".
+        if let Some(runner) = options.warm {
+            warm_package(&root.join(state.tree_name()), runner)?;
+        }
+        return Ok(state);
     }
 
     ensure_layout(root)?;
@@ -173,7 +184,42 @@ pub fn install(
         installed_at: now(),
     };
     write_state(root, &state)?;
+    // Installed and compiled are one act. A package nobody has warmed pays for
+    // a twelve-megabyte compile at the first click, which reads as a hang.
+    if let Some(runner) = options.warm {
+        warm_package(&current, runner)?;
+    }
     Ok(state)
+}
+
+/// Compile an installed package with the host that will run it.
+///
+/// The AOT file belongs to the window host, so the host writes it: this runs
+/// `soil spore warm`, and the file it produces is the one the window reads.
+/// A composition has no module to compile, which the runner reports and returns
+/// success for — that is a fact about the package, not a failed install.
+fn warm_package(package: &Path, runner: &Path) -> Result<(), Error> {
+    let status = std::process::Command::new(runner)
+        .arg("spore")
+        .arg("warm")
+        .arg(package)
+        .stdin(std::process::Stdio::null())
+        .status()
+        .map_err(|error| Error::Io(format!("run {}: {error}", runner.display())))?;
+    if !status.success() {
+        return Err(Error::Io(format!(
+            "{} spore warm {} exited with {status}",
+            runner.display(),
+            package.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Warm what is installed under `id`, by the name it was installed as.
+fn warm_installed(root: &Path, id: &str, runner: &Path) -> Result<(), Error> {
+    let state = read_state(root, id)?;
+    warm_package(&root.join(state.tree_name()), runner)
 }
 
 /// Roll back to the one previous digest. The tar must still be in `.packages`.
@@ -384,6 +430,9 @@ fn advance(
         root,
         InstallOptions {
             publisher: entry.publisher.as_deref(),
+            // The warm step is recorded as its own phase below, so the install
+            // itself does not do it twice.
+            warm: None,
             ..Default::default()
         },
     )?;
@@ -392,18 +441,7 @@ fn advance(
     record_run(root, run)?;
 
     if let Some(warm) = options.warm {
-        let status = std::process::Command::new(warm)
-            .arg("--root")
-            .arg(root)
-            .arg("warm")
-            .status()
-            .map_err(|error| Error::Io(format!("run {}: {error}", warm.display())))?;
-        if !status.success() {
-            return Err(Error::Io(format!(
-                "{} warm exited with {status}",
-                warm.display()
-            )));
-        }
+        warm_installed(root, &pending.spore_id, warm)?;
         run.phase = "warm".into();
         run.updated_at = now();
         record_run(root, run)?;
@@ -594,6 +632,7 @@ pub fn apply(root: &Path, options: ApplyOptions<'_>) -> Result<Vec<ApplyOutcome>
                 key: None,
                 publisher: entry.and_then(|entry| entry.publisher.as_deref()),
                 public_key,
+                ..Default::default()
             },
         )?;
         outcomes.push(ApplyOutcome {
@@ -1303,6 +1342,29 @@ fn operator_key_path(seed: &Path) -> PathBuf {
 /// to, so a CID installs the same way a tar does once it is found: the cache
 /// first, then the store origin. A peer fetch is the same lookup with a
 /// different transport.
+/// Install the listing `id` from the store `index` describes.
+///
+/// A window knows the id it drew and nothing else: the index is the store's, the
+/// package cache is where a fetched tar lands, and both belong to the host. A
+/// listing that is not in the index is `not-found` — the window names what it
+/// can see, the host refuses what it cannot fetch.
+pub fn install_id(
+    id: &str,
+    index: &Path,
+    packages: &Path,
+    origin: Option<&str>,
+    root: &Path,
+) -> Result<InstalledState, Error> {
+    let store = soil_store::Index::read(index)?;
+    let entry = store
+        .entries
+        .iter()
+        .find(|entry| entry.spore_id == id)
+        .ok_or_else(|| Error::NotFound(format!("no listing for {id} in {}", index.display())))?;
+    let cid = entry.package.clone();
+    install_cid(&cid, index, packages, origin, root)
+}
+
 pub fn install_cid(
     cid: &str,
     index: &Path,
@@ -1333,6 +1395,14 @@ pub fn install_cid(
             .into_reader()
             .read_to_end(&mut bytes)
             .map_err(|error| Error::Io(format!("{url}: {error}")))?;
+        // The cache is a directory this code owns the first time it runs: a
+        // fresh machine that has never installed anything has no `packages/`,
+        // and a fetch that downloads a package and then cannot write it is a
+        // download for nothing.
+        if let Some(parent) = package.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| Error::Io(format!("{}: {error}", parent.display())))?;
+        }
         fs::write(&package, &bytes)
             .map_err(|error| Error::Io(format!("{}: {error}", package.display())))?;
     }

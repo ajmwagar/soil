@@ -21,8 +21,10 @@ mod terminal;
 
 #[cfg(unix)]
 use ::soil::creds::{GeodeCredentials, HostHandle};
+use ::soil::dispatch::DispatchRole;
 use ::soil::http_host::{
-    DirectTransport, HttpPolicy, HttpTransport, TransportError, TransportRequest, TransportResponse,
+    BearerCredential, DirectTransport, HttpPolicy, HttpTransport, TransportError, TransportRequest,
+    TransportResponse,
 };
 use soil_webgpu::{
     CanvasFrame, CanvasGpuPresenter, CatalogEntry, CatalogError, CatalogFailure, CatalogHost,
@@ -55,7 +57,17 @@ pub enum Agents {
     /// The built-in fixture cast. It is the only cast that raises prompts, so it
     /// is what a UI pass, a screenshot, or `--capture` runs against.
     Demo,
+    /// A real harness over ACP: one session per conversation, spoken on stdio.
+    Acp,
 }
+
+/// How long a Spore may take to show a frame before the window admits it is
+/// stuck.
+///
+/// A warm package presents in about a second, and a cold one is twenty seconds
+/// of compile: both fit. Past this, the wait is not progress, and a splash that
+/// keeps breathing is a lie.
+const STARTUP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// Host grants that follow a Spore when the launcher opens it.
 ///
@@ -69,8 +81,21 @@ struct LaunchConfig {
     geode_purpose: Option<String>,
     /// Absolute `geode://` reference the granted handle leases.
     geode_reference: Option<String>,
+    /// Environment variable the `default` handle resolves to, read once here.
+    credential_env: Option<String>,
     /// Which agent cast follows the Spore into the window.
     agents: Agents,
+    /// The ACP agent command, when the cast is a real harness.
+    acp_cmd: Option<String>,
+    /// A session daemon to attach to instead of spawning the agent here: the
+    /// window becomes a view of a session it does not own.
+    acp_socket: Option<PathBuf>,
+    /// An ACP harness that is a service (operator serves HTTP): the window is
+    /// a client of it, and nothing here owns its lifetime.
+    acp_url: Option<String>,
+    /// Where the session id this window attached to is remembered, so the next
+    /// window attaches to the same conversation instead of starting another.
+    acp_state: Option<PathBuf>,
     hue_bridge: Option<Url>,
     records_root: Option<PathBuf>,
     /// One workspace the Spore may list and read through `soil:vfs`.
@@ -111,9 +136,22 @@ impl LaunchConfig {
             args.push("--geode-reference".into());
             args.push(reference.into());
         }
+        if let Some(name) = &self.credential_env {
+            // The name travels; the token stays in this process's environment.
+            args.push("--credential-env".into());
+            args.push(name.into());
+        }
         if self.agents == Agents::Demo {
             args.push("--agents".into());
             args.push("demo".into());
+        }
+        if self.agents == Agents::Acp {
+            args.push("--agents".into());
+            args.push("acp".into());
+            if let Some(cmd) = &self.acp_cmd {
+                args.push("--acp-cmd".into());
+                args.push(cmd.into());
+            }
         }
         if let Some(root) = &self.vfs_root {
             args.push("--vfs-root".into());
@@ -382,6 +420,53 @@ impl CatalogHost for SporeCatalog {
         self.running.keys().cloned().collect()
     }
 
+    fn install(
+        &mut self,
+        id: &str,
+    ) -> Result<soil_webgpu::CatalogInstalled, CatalogFailure> {
+        // The catalogue knows what is installed; the store knows what exists. A
+        // listing this host has never seen is the ordinary case for installing,
+        // so nothing is refused for being absent from here.
+        let runner = self.runner.clone().ok_or_else(|| {
+            CatalogFailure::new(
+                CatalogError::Unsupported,
+                format!("{id} cannot be installed: this machine has no soil runner"),
+            )
+        })?;
+        let output = std::process::Command::new(&runner)
+            .args(["install", "--id", id, "--json"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|error| {
+                CatalogFailure::new(CatalogError::Io, format!("install {id}: {error}"))
+            })?;
+        if !output.status.success() {
+            let said = failure_sentence(&String::from_utf8_lossy(&output.stderr))
+                .unwrap_or_else(|| format!("{id} did not install ({})", output.status));
+            return Err(CatalogFailure::new(CatalogError::Unsupported, said));
+        }
+        let printed = String::from_utf8_lossy(&output.stdout);
+        let line = printed
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with('{'))
+            .next_back()
+            .ok_or_else(|| {
+                CatalogFailure::new(
+                    CatalogError::Io,
+                    format!("install {id}: the runner printed no result"),
+                )
+            })?;
+        let value: serde_json::Value = serde_json::from_str(line).map_err(|error| {
+            CatalogFailure::new(CatalogError::Io, format!("install {id}: {error}"))
+        })?;
+        Ok(soil_webgpu::CatalogInstalled {
+            id: value["id"].as_str().unwrap_or(id).to_owned(),
+            version: value["version"].as_str().unwrap_or_default().to_owned(),
+            digest: value["digest"].as_str().unwrap_or_default().to_owned(),
+        })
+    }
+
     fn stop(&mut self, id: &str) -> Result<(), CatalogFailure> {
         let Some(mut running) = self.running.remove(id) else {
             return Err(CatalogFailure::new(
@@ -500,8 +585,7 @@ impl SporeCatalog {
                     return Err(CatalogFailure::new(
                         CatalogError::Unsupported,
                         format!(
-                            "{title} imports soil:vfs and this machine names no 
-\
+                            "{title} imports soil:vfs and this machine names no \
                              workspace: pass --vfs-root, or declare a desktop in \
                              ~/.config/fungos/desktops"
                         ),
@@ -703,6 +787,11 @@ fn log_launch_output(
 /// linker, not the app, and the guest that asked has no way to know either.
 fn failure_detail(log: &std::path::Path) -> Option<String> {
     let text = std::fs::read_to_string(log).ok()?;
+    failure_sentence(&text)
+}
+
+/// The same sentence, from text a caller already has.
+fn failure_sentence(text: &str) -> Option<String> {
     let line = text
         .lines()
         .map(str::trim)
@@ -886,14 +975,18 @@ fn spore_bundle(app: &std::path::Path, package: &std::path::Path) -> Option<std:
     std::fs::create_dir_all(&resources).ok()?;
 
     let runner = runner_binary()?;
-    refresh_copy(&runner, &macos.join("soil"))?;
+    // A copy of a binary that was signed as part of the *launcher's* bundle
+    // carries a signature that names the wrong bundle, and launchd refuses to
+    // exec it — `open` reports "Launch failed" (POSIX 162) and the tile simply
+    // does nothing. The bundle is signed as a bundle once it is complete, which
+    // is the only way the executable and its resources agree.
+    let copied = refresh_copy(&runner, &macos.join("soil"))?;
     for path in manifest.package_paths() {
         let target = resources.join(&path);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).ok()?;
         }
-        refresh_copy(&package.join(&path), &target)?;
-    }
+        refresh_copy(&package.join(&path), &target)?;    }
     // The icon comes from the launcher's own bundle, so every Spore is a fungOS
     // app rather than a generic executable.
     let icon = app.join("Contents/Resources/fungos.icns");
@@ -919,12 +1012,20 @@ fn spore_bundle(app: &std::path::Path, package: &std::path::Path) -> Option<std:
         version = manifest.spore.version,
     );
     std::fs::write(contents.join("Info.plist"), plist).ok()?;
+    // Signing is per bundle, not per file: a signature made for a bare binary
+    // that is then dropped inside an `.app` says "no resources" while launchd
+    // expects them. Re-seal only when something inside changed.
+    let sealed = contents.join("_CodeSignature/CodeResources").is_file();
+    if copied || !sealed {
+        sign_bundle(&bundle);
+    }
     Some(bundle)
 }
 
 /// Copy `source` over `destination` when the destination is missing, older, or a
-/// different size. A stale copy would run yesterday's binary.
-fn refresh_copy(source: &std::path::Path, destination: &std::path::Path) -> Option<()> {
+/// different size. A stale copy would run yesterday's binary. Answers whether it
+/// copied, because a copied binary needs signing and an unchanged one does not.
+fn refresh_copy(source: &std::path::Path, destination: &std::path::Path) -> Option<bool> {
     let fresh = match (
         std::fs::metadata(source).ok(),
         std::fs::metadata(destination).ok(),
@@ -936,9 +1037,36 @@ fn refresh_copy(source: &std::path::Path, destination: &std::path::Path) -> Opti
         _ => false,
     };
     if fresh {
-        return Some(());
+        return Some(false);
     }
-    std::fs::copy(source, destination).ok().map(|_| ())
+    std::fs::copy(source, destination).ok().map(|_| true)
+}
+
+/// Seal a Spore's `.app` with an ad-hoc signature.
+///
+/// macOS will not run an executable whose embedded signature belongs to a
+/// different bundle, and a Spore's `.app` is built at runtime from the launcher's
+/// own copy of the runner. Signing the finished bundle is what makes `open`
+/// start it instead of failing with a number nobody can act on (POSIX 162).
+/// Failure is not fatal: the bundle is still there, and the launch reports what
+/// happened.
+fn sign_bundle(bundle: &std::path::Path) {
+    match std::process::Command::new("/usr/bin/codesign")
+        .args(["--force", "--deep", "--sign", "-"])
+        .arg(bundle)
+        .output()
+    {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => eprintln!(
+            "canvas-winit: codesign {}: {}",
+            bundle.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+        Err(error) => eprintln!(
+            "canvas-winit: codesign {}: {error}",
+            bundle.display()
+        ),
+    }
 }
 
 /// The `.app` an executable lives in, if it lives in one.
@@ -1034,6 +1162,72 @@ struct App {
     command: Option<String>,
     modifiers: ModifiersState,
     started: bool,
+    /// Why the Spore never came up, shared with the thread that runs it. That
+    /// thread is the only place that knows, and the window is the only place a
+    /// person looks, so it is a slot both can see.
+    failed: Arc<Mutex<Option<String>>>,
+    /// Set when the Spore's own `run` returned. A window whose Spore has stopped
+    /// is a window with nothing behind it: the launcher acknowledged its modal,
+    /// and leaving the frame on screen would be a dialog that cannot be closed.
+    finished: Arc<Mutex<bool>>,
+    /// Set once the failure has been shown and the window is on its way out.
+    failure: Option<String>,
+}
+
+/// The session daemon this window attaches to, when it was given one.
+///
+/// A window that is only a view of a session must not own the agent: the
+/// daemon holds it, and the id in `state` is how the next window finds the
+/// same conversation instead of starting another.
+#[derive(Clone, Debug)]
+struct Broker {
+    socket: std::path::PathBuf,
+    state: Option<std::path::PathBuf>,
+}
+
+impl Broker {
+    fn connect(
+        &self,
+        command: &str,
+        workspace: Option<&std::path::Path>,
+    ) -> Result<::soil::acp::AcpBackend> {
+        if let Some(state) = &self.state
+            && let Ok(id) = std::fs::read_to_string(state)
+        {
+            let id = id.trim();
+            if !id.is_empty() {
+                match soil_agentsd::attach_at(&self.socket, id) {
+                    Ok(stream) => {
+                        return ::soil::acp::AcpBackend::adopt(stream, id)
+                            .map_err(|error| anyhow::anyhow!("acp: {error}"));
+                    }
+                    // A session that died with its daemon is not a window's
+                    // error: the window starts the next one.
+                    Err(error) => eprintln!("canvas-winit: {error}; starting a session"),
+                }
+            }
+        }
+        let (id, stream) = soil_agentsd::open_at(&self.socket, command, workspace)
+            .map_err(|error| anyhow::anyhow!("acp: {error}"))?;
+        if let Some(state) = &self.state {
+            if let Some(parent) = state.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(error) = std::fs::write(state, &id) {
+                eprintln!("canvas-winit: cannot remember session {id}: {error}");
+            }
+        }
+        ::soil::acp::AcpBackend::adopt(stream, &id).map_err(|error| anyhow::anyhow!("acp: {error}"))
+    }
+}
+
+impl LaunchConfig {
+    fn broker(&self) -> Option<Broker> {
+        self.acp_socket.clone().map(|socket| Broker {
+            socket,
+            state: self.acp_state.clone(),
+        })
+    }
 }
 
 impl App {
@@ -1133,7 +1327,86 @@ fn agent_backend(
     })
 }
 
-    fn start_component(&mut self, window: Arc<Window>) {        if self.started {
+/// Who shows agents to the Spore, and who creates them.
+///
+/// ACP is the one adapter that is both, and it is one process: the roster this
+/// window draws and the sessions a task notice creates through are the same
+/// adapter under one lock. A second adapter would be a second process, and a
+/// session created through it would be missing from the roster that asked for
+/// it. Every other cast observes and cannot create, so its dispatcher refuses
+/// loudly — `agent.task.failed.v1` — rather than dropping the work.
+fn agent_roles(
+    session: Option<&str>,
+    records_root: Option<&std::path::Path>,
+    agents: Agents,
+    acp_cmd: Option<&str>,
+    acp_url: Option<&str>,
+    workspace: Option<&std::path::Path>,
+    broker: Option<&Broker>,
+) -> Result<(Box<dyn soil_agent_host::AgentBackend>, DispatchRole)> {
+    // A book is read, never written, so a window over one cannot pretend to
+    // drive its harness and must not create sessions.
+    if session.is_some() {
+        return Ok((Self::agent_backend(session, records_root)?, DispatchRole::default()));
+    }
+    Ok(match agents {
+        Agents::None => (Box::new(NoAgents), DispatchRole::default()),
+        Agents::Demo => (
+            Box::new(soil_agent_host::FixtureAgents::new()),
+            DispatchRole::default(),
+        ),
+        Agents::Acp => {
+            let command = acp_cmd.unwrap_or("delta-acp");
+            // Both a service and a stdio source: the harness that runs work and
+            // the transcript source that already has some. They are one roster
+            // to a person, so they are composed, and new work is created through
+            // the service — a transcript source is read, not started.
+            if let (Some(url), Some(threads_cmd)) = (acp_url, acp_cmd) {
+                let harness = ::soil::acp::AcpBackend::attach_http(url)
+                    .map_err(|error| anyhow::anyhow!("acp: {error}"))?;
+                let threads = ::soil::acp::AcpBackend::spawn(threads_cmd)
+                    .map_err(|error| anyhow::anyhow!("acp: {error}"))?;
+                let harness = soil_agent_host::Live::new(harness);
+                let threads = soil_agent_host::Live::new(threads);
+                let roster = soil_agent_host::CompositeAgents::new(vec![
+                    Box::new(harness.clone()) as Box<dyn soil_agent_host::AgentBackend>,
+                    Box::new(threads) as Box<dyn soil_agent_host::AgentBackend>,
+                ]);
+                return Ok((
+                    Box::new(roster) as Box<dyn soil_agent_host::AgentBackend>,
+                    DispatchRole::Own(Box::new(harness)),
+                ));
+            }
+            let backend = match (acp_url, broker) {
+                // A harness that is a service: nothing here owns its lifetime,
+                // and a restart costs a `session/list`.
+                (Some(url), _) => ::soil::acp::AcpBackend::attach_http(url)
+                    .map_err(|error| anyhow::anyhow!("acp: {error}"))?,
+                // A daemon owns the agent: this window is a view of a session
+                // that outlives it, which is what makes rebuilding the UI
+                // something a person can do while their agents keep working.
+                (None, Some(broker)) => broker.connect(command, workspace)?,
+                (None, None) => ::soil::acp::AcpBackend::spawn(command)
+                    .map_err(|error| anyhow::anyhow!("acp: {error}"))?,
+            };
+            // The window's `soil:vfs` grant is the workspace a session can be
+            // created in; a window given none hands the agent `/`, which is
+            // what `session/load` already uses.
+            let backend = match workspace {
+                Some(path) => backend.with_workspace(path.display().to_string()),
+                None => backend,
+            };
+            let live = soil_agent_host::Live::new(backend);
+            (
+                Box::new(live.clone()) as Box<dyn soil_agent_host::AgentBackend>,
+                DispatchRole::Own(Box::new(live)),
+            )
+        }
+    })
+}
+
+    fn start_component(&mut self, window: Arc<Window>) {
+        if self.started {
             return;
         }
         self.started = true;
@@ -1152,7 +1425,12 @@ fn agent_backend(
         let agent_session = self.agent_session.clone();
         let records_root = self.records_root.clone();
         let agents = self.launch.agents;
+        let acp_cmd = self.launch.acp_cmd.clone();
+        let acp_url = self.launch.acp_url.clone();
+        let broker = self.launch.broker();
         let launch = self.launch.clone();
+        let failed = self.failed.clone();
+        let finished = self.finished.clone();
         thread::spawn(move || {
             let result = (|| -> Result<()> {
                 let bytes =
@@ -1162,6 +1440,15 @@ fn agent_backend(
                 let runtime = WebGpuRuntime::new()?.with_component_cache(component_cache(&module));
                 let catalog = SporeCatalog::new(&spores, launch)
                     .map_err(|error| anyhow::anyhow!("catalog: {error:?}"))?;
+                let (agents, dispatch) = Self::agent_roles(
+                    agent_session.as_deref(),
+                    records_root.as_deref(),
+                    agents,
+                    acp_cmd.as_deref(),
+                    acp_url.as_deref(),
+                    vfs_root.as_deref(),
+                    broker.as_ref(),
+                )?;
                 let status = pollster::block_on(runtime.run_component_with(
                     &bytes,
                     HostSetup {
@@ -1185,48 +1472,70 @@ fn agent_backend(
                             }
                             None => ::soil::principal_host::PrincipalHost::local(),
                         },
-                        // A window shows agents only when the operator named a
-                        // transcript; a book is read, never written, so a
-                        // window over one cannot pretend to drive its harness.
-                        // Otherwise `--agents` decides, and its default is none.
-                        agents: match agent_session.as_deref() {
-                            Some(_) => Self::agent_backend(
-                                agent_session.as_deref(),
-                                records_root.as_deref(),
-                            )?,
-                            None => match agents {
-                                Agents::None => Box::new(NoAgents),
-                                Agents::Demo => {
-                                    Box::new(soil_agent_host::FixtureAgents::new())
-                                        as Box<dyn soil_agent_host::AgentBackend>
-                                }
-                            },
-                        },
-                        // This window owns dispatch, but no adapter here can
-                        // start a session yet, so a task is announced as failed.
-                        dispatch: Default::default(),
+                        agents,
+                        dispatch,
                         // One window per process today, so a bus per surface is a
                         // bus per process; hoisting this onto `App` is the
                         // multi-window step.
                         bus: ::soil_webgpu::in_process_bus(),
                         store_origin: None,
                         terminal: Box::new(Terminals::new(80, 24, command)),
-                        cursor: Some(Box::new(WindowCursor(window))),
+                        cursor: Some(Box::new(WindowCursor(window.clone()))),
                         clipboard: Some(Box::new(SystemClipboard)),
                     },
                 ))?;
                 eprintln!("canvas-winit: guest returned {status}");
                 anyhow::ensure!(status == 0, "guest returned status {status}");
+                // The Spore is done with this window — it closed itself by
+                // returning. Say so, and let the loop take the frame down.
+                if let Ok(mut done) = finished.lock() {
+                    *done = true;
+                }
+                window.request_redraw();
                 Ok(())
             })();
             if let Err(error) = result {
                 eprintln!("canvas-winit: {error:#}");
+                // The window is all a person can see, and it is still breathing
+                // a splash at them. Hand the reason back so the next turn of the
+                // loop can stop pretending.
+                if let Ok(mut slot) = failed.lock() {
+                    *slot = Some(format!("{error:#}"));
+                }
+                window.request_redraw();
             }
         });
     }
 
-    fn take_frames(&mut self, event_loop: &ActiveEventLoop) {
-        while let Ok(frame) = self.rx.try_recv() {
+    /// Give up on a start that is not going to happen, and say why.
+    ///
+    /// A component that failed has already sent its reason; one that is still
+    /// compiling after [`STARTUP_DEADLINE`] is stuck rather than slow, because a
+    /// warm package presents in a second. Either way the splash stops pretending
+    /// and the window closes with a sentence someone can act on.
+    fn note_failure(&mut self, event_loop: &ActiveEventLoop) -> Option<String> {
+        if self.failure.is_some() {
+            return None;
+        }
+        let reported = self.failed.lock().ok().and_then(|slot| slot.clone());
+        let message = reported.or_else(|| {
+            (self.frames_seen == 0 && self.opened.elapsed() > STARTUP_DEADLINE).then(|| {
+                format!(
+                    "no frame after {}s: {} is still compiling. `soil spore warm {}` compiles it \
+                     once, ahead of the click.",
+                    STARTUP_DEADLINE.as_secs(),
+                    window_title(&self.module),
+                    self.module.display()
+                )
+            })
+        })?;
+        self.failure = Some(message.clone());
+        report_startup_failure(&message);
+        event_loop.exit();
+        Some(message)
+    }
+
+    fn take_frames(&mut self, event_loop: &ActiveEventLoop) {        while let Ok(frame) = self.rx.try_recv() {
             eprintln!("canvas-winit: frame {}x{}", frame.width, frame.height);
             if let Some(path) = &self.capture
                 && let Err(error) = std::fs::write(path, &frame.rgba)
@@ -1594,6 +1903,17 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.settle_resize();
+        // A Spore that returned has closed its own window. A capture that has
+        // its frame is the same thing: there is nothing left to wait for.
+        if self.finished.lock().map(|done| *done).unwrap_or(false) {
+            event_loop.exit();
+            return;
+        }
+        // A start that died, or one that is still going after the deadline, is
+        // the one thing the splash must not keep pretending to be doing.
+        if self.note_failure(event_loop).is_some() {
+            return;
+        }
         // Come back on a clock while there is something to animate: the splash
         // before the first frame, and a resize settling. With a frame on screen
         // and nothing moving, wait for an event instead of spinning.
@@ -1622,6 +1942,68 @@ impl ApplicationHandler for App {
     }
 }
 
+/// Say, out loud, that a Spore did not start.
+///
+/// A Dock app has no terminal: its stderr goes to the system log, where nobody is
+/// looking. On macOS the alert is the shortest honest path from "this window is
+/// stuck" to a sentence a person can act on. The message is on stderr either way,
+/// because that is what a shell and a log both read.
+fn report_startup_failure(message: &str) {
+    eprintln!("canvas-winit: {message}");
+    #[cfg(target_os = "macos")]
+    {
+        // One alert, bounded: a Rust error chain is longer than a dialog, and a
+        // quote or a backslash in it would end the AppleScript string early.
+        let text: String = message
+            .chars()
+            .map(|character| {
+                if character == '"' || character == '\\' || character.is_control() {
+                    '\''
+                } else {
+                    character
+                }
+            })
+            .take(600)
+            .collect();
+        let script =
+            format!("display alert \"This Spore could not start\" message \"{text}\" as critical");
+        let _ = std::process::Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(script)
+            .spawn();
+    }
+}
+
+/// Compile a package's module into this host's AOT cache, and answer the file.
+///
+/// The window reads exactly this file the next time it opens the package, so
+/// warming is what makes an install mean *ready* rather than *downloaded*: a
+/// twelve-megabyte guest is twenty seconds of compile, and paying that at the
+/// first click is a splash that looks like a hang.
+///
+/// This is a library function on purpose — `soil spore warm` and the launcher
+/// itself must write the file the window will read, and the only way to be sure
+/// is for both to call this.
+pub fn prewarm(package: &std::path::Path) -> Result<std::path::PathBuf> {
+    let manifest = Manifest::load(package)?;
+    let module = manifest.module.as_ref().with_context(|| {
+        format!(
+            "{} ships no module, so there is nothing to compile",
+            manifest.spore.id
+        )
+    })?;
+    prewarm_module(&package.join(&module.path))
+}
+
+/// Compile one module into the cache its own digest names.
+fn prewarm_module(module: &std::path::Path) -> Result<std::path::PathBuf> {
+    let bytes = std::fs::read(module).with_context(|| format!("read {}", module.display()))?;
+    let cache = component_cache(module);
+    let runtime = WebGpuRuntime::new()?.with_component_cache(&cache);
+    runtime.prewarm(&bytes)?;
+    Ok(soil_webgpu::component_cache_file(&cache, &bytes))
+}
+
 /// Compile the Spores this machine has, in the background, so opening one from
 /// the launcher does not pay for it. The module already running is skipped; a
 /// Spore whose cache is warm costs a file read and a deserialize to check.
@@ -1648,14 +2030,7 @@ fn warm_installed(roots: &[std::path::PathBuf], running: &std::path::Path) {
     }
     std::thread::spawn(move || {
         for module in modules {
-            let Ok(bytes) = std::fs::read(&module) else {
-                continue;
-            };
-            let Ok(runtime) = WebGpuRuntime::new() else {
-                continue;
-            };
-            let runtime = runtime.with_component_cache(component_cache(&module));
-            if let Err(error) = runtime.prewarm(&bytes) {
+            if let Err(error) = prewarm_module(&module) {
                 eprintln!("canvas-winit: warm {}: {error:#}", module.display());
             }
         }
@@ -1948,23 +2323,54 @@ fn key_name(key: &WinitKey) -> String {
 }
 
 fn build_http(launch: &LaunchConfig) -> Result<Option<HttpAccess>> {
-    let geode = (
+    match (
         launch.geode_socket.as_ref(),
         launch.geode_purpose.as_ref(),
         launch.geode_reference.as_ref(),
-    );
-    match geode {
+    ) {
         (None, None, None) => {}
         (Some(_), Some(_), Some(_)) => {}
         _ => anyhow::bail!(
             "--geode-socket, --geode-reference and --geode-purpose are used together"
         ),
     }
+    let geode = match (
+        launch.geode_socket.as_deref(),
+        launch.geode_purpose.as_deref(),
+        launch.geode_reference.as_deref(),
+    ) {
+        (Some(socket), Some(purpose), Some(reference)) => Some((socket, purpose, reference)),
+        _ => None,
+    };
+    http_access(
+        &launch.origins,
+        launch.credential_env.as_deref(),
+        geode,
+        launch.hue_bridge.as_ref(),
+    )
+}
+
+/// The `soil:http` grant one run's surfaces share: the origins a Spore may
+/// reach and the one credential source the operator named.
+///
+/// `credential_env` names an environment variable holding a bearer token for
+/// the `default` handle; it is read once here and never passed to a Spore.
+/// `--credential-env` and Geode are alternatives: a run that names both is
+/// refused rather than silently preferring one.
+pub fn http_access(
+    origins: &[String],
+    credential_env: Option<&str>,
+    geode: Option<(&std::path::Path, &str, &str)>,
+    hue_bridge: Option<&Url>,
+) -> Result<Option<HttpAccess>> {
+    if credential_env.is_some() && geode.is_some() {
+        anyhow::bail!("--credential-env and --geode-socket are alternatives; pass one");
+    }
     // The storefront is the one origin every presenter grants. A Spore that
     // needs another origin says so at launch; the launcher does not guess.
-    let mut origins = launch.origins.clone();
+    let mut origins = origins.to_vec();
     origins.push(soil_webgpu::LOCAL_STORE_ORIGIN.to_string());
-    if launch.hue_bridge.is_some() {
+    if hue_bridge.is_some() {
         origins.push("http://hue.local".to_string());
     }
     let policy = HttpPolicy::new(
@@ -1974,30 +2380,41 @@ fn build_http(launch: &LaunchConfig) -> Result<Option<HttpAccess>> {
     )
     .context("http policy")?;
     let mut access = HttpAccess::new(policy).with_transport(Arc::new(HueTransport {
-        bridge: launch.hue_bridge.clone(),
+        bridge: hue_bridge.cloned(),
         inner: DirectTransport,
     }));
-    if let (Some(socket), Some(reference), Some(purpose)) = geode {
+    if let Some(name) = credential_env {
+        let token = std::env::var(name)
+            .ok()
+            .filter(|token| !token.trim().is_empty())
+            .with_context(|| format!("--credential-env {name}: the variable is unset or empty"))?;
+        access = access.with_credentials(Arc::new(BearerCredential::new(token)));
+    }
+    if let Some((socket, purpose, reference)) = geode {
         #[cfg(unix)]
         {
             // The guest names a handle. The reference, the purpose and whether
             // the bytes become a header stay host configuration, so a Spore
             // cannot address a slot by spelling it.
-            let credentials =
-                GeodeCredentials::new(socket.clone(), "", purpose.clone(), std::time::Duration::from_secs(60))
-                    .with_host_handle(
-                        "default",
-                        HostHandle {
-                            reference: reference.clone(),
-                            purpose: purpose.clone(),
-                            header: Some("authorization".into()),
-                        },
-                    );
+            let credentials = GeodeCredentials::new(
+                socket.to_path_buf(),
+                "",
+                purpose.to_owned(),
+                std::time::Duration::from_secs(60),
+            )
+            .with_host_handle(
+                "default",
+                HostHandle {
+                    reference: reference.to_owned(),
+                    purpose: purpose.to_owned(),
+                    header: Some("authorization".into()),
+                },
+            );
             access = access.with_credentials(Arc::new(credentials));
         }
         #[cfg(not(unix))]
         {
-            let _ = (socket, reference, purpose);
+            let _ = (socket, purpose, reference);
             anyhow::bail!("--geode-socket is only available on Unix hosts");
         }
     }
@@ -2044,8 +2461,22 @@ pub struct Options {
     pub geode_purpose: Option<String>,
     /// Absolute `geode://` reference the granted handle leases.
     pub geode_reference: Option<String>,
-    /// Which agent cast to grant the Spore: `none` (the default) or `demo`.
+    /// Environment variable holding the bearer token `soil:http`'s `default`
+    /// handle resolves to. Read once at startup and kept in this process; the
+    /// variable is never passed to the Spore.
+    pub credential_env: Option<String>,
+    /// Which agent cast to grant the Spore: `none` (the default), `demo`, or
+    /// `acp` for a real harness.
     pub agents: Agents,
+    /// The ACP agent command to spawn when the cast is `acp`.
+    pub acp_cmd: Option<String>,
+    /// A session daemon to attach to, instead of spawning the agent in this
+    /// process. `auto` means the daemon's default socket.
+    pub acp_socket: Option<std::path::PathBuf>,
+    /// An ACP endpoint that is a service, e.g. `http://127.0.0.1:8787`.
+    pub acp_url: Option<String>,
+    /// Where to remember the session id this window attached to.
+    pub acp_state: Option<std::path::PathBuf>,
     /// Bridge `hue.local` maps to.
     pub hue_bridge: Option<Url>,
     /// Records store the Spore may read or write.
@@ -2086,7 +2517,12 @@ impl Default for Options {
             geode_socket: None,
             geode_purpose: None,
             geode_reference: None,
+            credential_env: None,
             agents: Agents::None,
+            acp_cmd: None,
+            acp_socket: None,
+            acp_url: None,
+            acp_state: None,
             hue_bridge: None,
             records_root: None,
             vfs_root: None,
@@ -2123,7 +2559,12 @@ pub fn parse(args: &[String]) -> Result<Options> {
     let mut geode_socket = None;
     let mut geode_purpose = None;
     let mut geode_reference = None;
+    let mut credential_env = None;
     let mut agents = Agents::None;
+    let mut acp_cmd: Option<String> = None;
+    let mut acp_socket: Option<std::path::PathBuf> = None;
+    let mut acp_url: Option<String> = None;
+    let mut acp_state: Option<std::path::PathBuf> = None;
     let mut hue_bridge = None;
     let mut records_root = None;
     let mut vfs_root: Option<PathBuf> = None;
@@ -2216,12 +2657,39 @@ pub fn parse(args: &[String]) -> Result<Options> {
                         .clone(),
                 );
             }
+            "--credential-env" => {
+                credential_env = Some(
+                    args.next()
+                        .context("--credential-env needs a variable name")?
+                        .clone(),
+                );
+            }
             "--agents" => {
                 agents = match args.next().context("--agents needs demo or none")?.as_str() {
                     "demo" => Agents::Demo,
+                    "acp" => Agents::Acp,
                     "none" => Agents::None,
-                    other => anyhow::bail!("--agents takes demo or none, not {other}"),
+                    other => anyhow::bail!("--agents takes demo, acp or none, not {other}"),
                 };
+            }
+            "--acp-cmd" => {
+                acp_cmd = Some(args.next().context("--acp-cmd needs a command")?.clone());
+            }
+            "--acp-socket" => {
+                let value = args.next().context("--acp-socket needs a path or `auto`")?;
+                acp_socket = Some(if value == "auto" {
+                    soil_agentsd::default_socket()
+                } else {
+                    std::path::PathBuf::from(value)
+                });
+            }
+            "--acp-url" => {
+                acp_url = Some(args.next().context("--acp-url needs an http(s) URL")?.clone());
+            }
+            "--acp-state" => {
+                acp_state = Some(std::path::PathBuf::from(
+                    args.next().context("--acp-state needs a path")?,
+                ));
             }
             "--hue-bridge" => {
                 let value = args.next().context("--hue-bridge needs a URL")?;
@@ -2256,7 +2724,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
             }
             value if module.is_none() => module = Some(PathBuf::from(value)),
             _ => anyhow::bail!(
-                "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] [--agents demo] [--hue-bridge URL] [--records-root DIR]"
+                "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] [--credential-env NAME] [--agents demo] [--hue-bridge URL] [--records-root DIR]"
             ),
         }
     }
@@ -2280,12 +2748,17 @@ pub fn parse(args: &[String]) -> Result<Options> {
         geode_purpose,
         geode_reference,
         agents,
+        acp_cmd,
+        acp_socket,
+        acp_url,
+        acp_state,
         hue_bridge,
         records_root,
         vfs_root,
         records_book,
         records_collection,
         actor,
+        credential_env,
         // A window started from this binary has no recorded session to show; a
         // host that has one (`soil spore run --agent-session`) passes it in.
         agent_session: None,
@@ -2314,12 +2787,17 @@ pub fn run(options: Options) -> Result<()> {
         geode_purpose,
         geode_reference,
         agents,
+        acp_cmd,
+        acp_socket,
+        acp_url,
+        acp_state,
         hue_bridge,
         records_root,
         vfs_root,
         records_book,
         records_collection,
         actor,
+        credential_env,
         agent_session,
     } = options;
     let module = match module {
@@ -2345,7 +2823,7 @@ pub fn run(options: Options) -> Result<()> {
             };
             if !candidate.is_file() {
                 anyhow::bail!(
-                    "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] [--agents demo] [--hue-bridge URL] [--vfs-root DIR] [--records-root DIR] [--records-book NAME --records-collection NAME] [--actor WHO]"
+                    "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] [--credential-env NAME] [--agents demo] [--hue-bridge URL] [--vfs-root DIR] [--records-root DIR] [--records-book NAME --records-collection NAME] [--actor WHO]"
                 );
             }
             candidate
@@ -2459,7 +2937,12 @@ pub fn run(options: Options) -> Result<()> {
         geode_socket,
         geode_purpose,
         geode_reference,
+        credential_env,
         agents,
+        acp_cmd,
+        acp_socket,
+        acp_url,
+        acp_state,
         hue_bridge,
         records_root,
         vfs_root: vfs_root.clone(),
@@ -2516,6 +2999,9 @@ pub fn run(options: Options) -> Result<()> {
         actor,
         agent_session,
         launch,
+        failed: Arc::new(Mutex::new(None)),
+        finished: Arc::new(Mutex::new(false)),
+        failure: None,
         spores: spores.map(|path| vec![path]).unwrap_or_else(|| {
             let home = std::env::var_os("HOME")
                 .map(PathBuf::from)
@@ -2536,6 +3022,11 @@ pub fn run(options: Options) -> Result<()> {
     };
     let event_loop = EventLoop::new()?;
     event_loop.run_app(&mut app)?;
+    if let Some(failure) = app.failure {
+        // The window already said this out loud; the exit code says it to
+        // anything that started this window and is waiting.
+        anyhow::bail!("{failure}");
+    }
     Ok(())
 }
 
@@ -2735,6 +3226,40 @@ mod catalog_tests {
         .expect("catalogue");
         catalog.runner = Some(runner);
         catalog
+    }
+
+    /// A Spore opens as its own `.app`, and macOS will not exec a binary whose
+    /// embedded signature belongs to another bundle: `open` reports POSIX 162
+    /// and the tile does nothing. The copy is signed when it is made.
+    #[test]
+    fn a_spore_bundle_carries_its_own_signed_binary() {
+        let root = scratch("bundle");
+        let package = package(&root);
+        let launcher = root.join("Launcher.app");
+        std::fs::create_dir_all(launcher.join("Contents/Resources")).expect("launcher");
+        std::fs::write(launcher.join("Contents/Resources/fungos.icns"), b"").expect("icon");
+
+        let bundle = spore_bundle(&launcher, &package).expect("bundle");
+        let binary = bundle.join("Contents/MacOS/soil");
+        assert!(binary.is_file(), "the bundle carries the runner");
+        assert!(
+            bundle.join("Contents/Resources/spore.toml").is_file(),
+            "the bundle carries the package"
+        );
+        for (what, target) in [("the bundle", &bundle), ("its runner", &binary)] {
+            let verified = std::process::Command::new("/usr/bin/codesign")
+                .args(["--verify", "--strict"])
+                .arg(target)
+                .output()
+                .expect("codesign");
+            assert!(
+                verified.status.success(),
+                "{what} must verify for itself: {}",
+                String::from_utf8_lossy(&verified.stderr).trim()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&bundle);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
