@@ -1113,6 +1113,8 @@ fn the_spore_reads_the_checkouts_its_desktop_knows() {
     std::fs::create_dir_all(&root).unwrap();
     let checkout = home.path().join("src/soil");
     std::fs::create_dir_all(&checkout).unwrap();
+    // A folder inside the Desktop's own VFS, attached beside the checkout.
+    std::fs::create_dir_all(root.join("notes")).unwrap();
     let status = std::process::Command::new("git")
         .arg("-C")
         .arg(&checkout)
@@ -1127,10 +1129,11 @@ fn the_spore_reads_the_checkouts_its_desktop_knows() {
     std::fs::write(
         registry.join("acme.toml"),
         format!(
-            "id = \"acme\"\nname = \"Acme\"\nroot = \"{}\"\nmount = \"{}\"\ntheme = \"deep\"\n\n[[project]]\nproject = \"owner/repo\"\npath = \"{}\"\n",
+            "id = \"acme\"\nname = \"Acme\"\nroot = \"{}\"\nmount = \"{}\"\ntheme = \"deep\"\n\n[[project]]\nproject = \"owner/repo\"\npath = \"{}\"\n\n[[project]]\nproject = \"vfs:acme/notes\"\npath = \"{}\"\n",
             root.display(),
             home.path().join("mnt/acme").display(),
-            checkout.display()
+            checkout.display(),
+            home.path().join("mnt/acme/notes").display()
         ),
     )
     .unwrap();
@@ -1154,4 +1157,6 @@ fn the_spore_reads_the_checkouts_its_desktop_knows() {
     assert!(stdout.contains("owner/repo"), "{stdout}");
     assert!(stdout.contains("primary"), "{stdout}");
     assert!(stdout.contains("soil"), "{stdout}");
+    // A VFS folder is a row too: same projection, no git facts.
+    assert!(stdout.contains("vfs:acme/notes"), "{stdout}");
 }

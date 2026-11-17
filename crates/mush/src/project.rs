@@ -289,11 +289,18 @@ pub fn run_attach(config: &crate::config::Config, mut args: Vec<String>) -> Resu
     let desktop_id = desktop::selected(config, &mut args).ok_or_else(|| {
         anyhow::anyhow!("no Desktop selected: pass --desktop ID (nothing claims this directory)")
     })?;
-    let Some(path) = args.first().cloned() else {
+    let Some(source) = args.first().cloned() else {
         bail!("usage: mush attach <path> [--desktop ID] [--json]");
     };
-    let project = snapshot(&crate::config::expand_home(&path))?;
     let desktop = desktop::load(&desktop_id)?;
+    // An absolute path is a checkout on this device; a relative one is a folder
+    // inside the Desktop's own VFS (`notes`, `projects/shared`). Nothing is
+    // attached by default: you name the folders an agent should also see.
+    let project = if source.starts_with('/') || source.starts_with('~') {
+        snapshot(&crate::config::expand_home(&source))?
+    } else {
+        desktop::vfs_row(&desktop, &source)?
+    };
     desktop::attach_project(&desktop_id, project.clone())?;
     if as_json {
         println!(
@@ -302,14 +309,23 @@ pub fn run_attach(config: &crate::config::Config, mut args: Vec<String>) -> Resu
         );
     } else {
         let facts = facts(&project.path);
-        println!(
-            "attached {} at {} to Desktop {} ({}, branch {})",
-            project.identity().as_deref().unwrap_or("project"),
-            project.path.display(),
-            desktop.id,
-            facts.role,
-            facts.branch.as_deref().unwrap_or("(detached)"),
-        );
+        if facts.role == "none" {
+            println!(
+                "attached {} at {} to Desktop {} (a VFS folder)",
+                project.identity().as_deref().unwrap_or("project"),
+                project.path.display(),
+                desktop.id,
+            );
+        } else {
+            println!(
+                "attached {} at {} to Desktop {} ({}, branch {})",
+                project.identity().as_deref().unwrap_or("project"),
+                project.path.display(),
+                desktop.id,
+                facts.role,
+                facts.branch.as_deref().unwrap_or("(detached)"),
+            );
+        }
     }
     Ok(())
 }
@@ -324,7 +340,12 @@ pub fn run_detach(config: &crate::config::Config, mut args: Vec<String>) -> Resu
     let Some(path) = args.first().cloned() else {
         bail!("usage: mush detach <path> [--desktop ID] [--json]");
     };
-    let path = crate::config::expand_home(&path);
+    let desktop = desktop::load(&desktop_id)?;
+    let path = if path.starts_with('/') || path.starts_with('~') {
+        crate::config::expand_home(&path)
+    } else {
+        desktop.mount.join(path.trim_matches('/'))
+    };
     let Some(project) = detach(&desktop_id, &path)? else {
         // Removing nothing is a wrong path, not a success.
         if as_json {
@@ -348,7 +369,7 @@ pub fn run_detach(config: &crate::config::Config, mut args: Vec<String>) -> Resu
         );
     } else {
         println!(
-            "detached {} from Desktop {desktop_id} (the checkout is untouched)",
+            "detached {} from Desktop {desktop_id} (nothing on disk changed)",
             project.path.display()
         );
     }
