@@ -1692,6 +1692,11 @@ impl soil::agents::observe::Host for WebGpuHost {
         self.agents.devices().into_iter().map(agent_device).collect()
     }
 
+    fn models(&mut self) -> Vec<String> {
+        self.dispatch.pump(&mut *self.agents);
+        self.agents.models()
+    }
+
     fn transcript(
         &mut self,
         id: String,

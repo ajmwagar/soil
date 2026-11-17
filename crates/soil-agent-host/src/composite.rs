@@ -93,6 +93,20 @@ impl AgentBackend for CompositeAgents {
         devices
     }
 
+    /// Every model any adapter accepts, once each, in the order the adapters
+    /// were composed. A harness that names none contributes nothing.
+    fn models(&mut self) -> Vec<String> {
+        let mut models: Vec<String> = Vec::new();
+        for backend in &mut self.backends {
+            for model in backend.models() {
+                if !models.contains(&model) {
+                    models.push(model);
+                }
+            }
+        }
+        models
+    }
+
     fn transcript(&mut self, id: &str, before: Option<u64>, limit: u32) -> Result<Page, Error> {
         self.owner(id)
             .ok_or(Error::NotFound)?

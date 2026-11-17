@@ -458,6 +458,10 @@ pub struct AcpBackend {
     /// What the agent called itself in `initialize` — `operator`, `delta-acp`,
     /// `claude-code`. A view shows this instead of the transport's name.
     harness: String,
+    /// Model ids the harness says it accepts, from the `initialize` extension.
+    /// Empty when the harness advertises none: a picker with no list leaves the
+    /// choice to the harness rather than inventing strings that cannot run.
+    catalog: Vec<String>,
     /// Sessions this backend asked the agent to stream. Attaching opens a live
     /// stream, so it is done per agent rather than for a whole roster.
     attached: HashSet<String>,
@@ -546,12 +550,26 @@ impl AcpBackend {
             .filter(|name| !name.trim().is_empty())
             .unwrap_or("acp")
             .to_string();
+        let catalog = hello
+            .get("models")
+            .and_then(Value::as_array)
+            .map(|models| {
+                models
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
         Ok(Self {
             acp,
             events,
             agents: Vec::new(),
             turns: HashMap::new(),
             harness,
+            catalog,
             attached: HashSet::new(),
             binding: Binding::default(),
             workspace: None,
@@ -723,6 +741,11 @@ impl AgentBackend for AcpBackend {
 
     fn binding(&mut self) -> Binding {
         self.binding.clone()
+    }
+
+    /// The model ids this harness advertised at handshake.
+    fn models(&mut self) -> Vec<String> {
+        self.catalog.clone()
     }
 
     /// The one device this endpoint is.

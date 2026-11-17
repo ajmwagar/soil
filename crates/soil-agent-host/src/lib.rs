@@ -412,6 +412,15 @@ pub trait AgentBackend: Send {
         Vec::new()
     }
 
+    /// Model ids the harness will accept, in the harness's own order.
+    ///
+    /// Empty when it advertises none, which is a fact a picker shows by not
+    /// offering a list. These are runnable strings — the harness said so — and
+    /// a view must not add to them.
+    fn models(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// The next change, waiting up to `timeout_ms`. `None` means "nothing yet",
     /// never "nothing will ever happen". A backend with no stream returns
     /// `None` immediately and a guest re-reads `list` after its own actions.

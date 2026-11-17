@@ -305,6 +305,13 @@ interface observe {
   /// with no devices leaves its picker out; it does not invent a name.
   devices: func() -> list<device>;
 
+  /// The models the harnesses will accept, in the host's order.
+  ///
+  /// Only strings a harness advertised: a picker that offered a name nobody
+  /// serves would be asking a person to choose a failure. Empty when no
+  /// harness named any, and then the picker is left out.
+  models: func() -> list<string>;
+
   get: func(id: string) -> result<agent, error>;
 
   /// The launch intent the host chose for this surface.

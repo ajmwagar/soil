@@ -2516,8 +2516,9 @@ pub struct Options {
     pub command: Option<String>,
     /// Pointer position to seed.
     pub pointer: Option<(f32, f32)>,
-    /// Click to seed.
-    pub click: Option<(f32, f32)>,
+    /// Clicks to seed, in order. Two presses are how a capture reaches a
+    /// control that only exists after the first one (a chip in task mode).
+    pub click: Vec<(f32, f32)>,
     /// Drag to seed.
     pub drag: Option<((f32, f32), (f32, f32))>,
     /// Delay before seeded input, so the Spore has painted.
@@ -2585,7 +2586,7 @@ impl Default for Options {
             keys: None,
             command: None,
             pointer: None,
-            click: None,
+            click: Vec::new(),
             drag: None,
             after: None,
             splash: Splash::Flow,
@@ -2627,7 +2628,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
     let mut keys = None;
     let mut command = None;
     let mut pointer = None;
-    let mut click = None;
+    let mut click: Vec<(f32, f32)> = Vec::new();
     let mut drag = None;
     let mut after: Option<u64> = None;
     let mut splash = Splash::Flow;
@@ -2677,7 +2678,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
             "--pointer" => {
                 pointer = Some(point(args.next().context("--pointer needs X,Y")?.clone())?)
             }
-            "--click" => click = Some(point(args.next().context("--click needs X,Y")?.clone())?),
+            "--click" => click.push(point(args.next().context("--click needs X,Y")?.clone())?),
             "--drag" => {
                 drag = Some(drag_point(
                     args.next().context("--drag needs X1,Y1,X2,Y2")?.clone(),
@@ -2989,7 +2990,7 @@ pub fn run(options: Options) -> Result<()> {
                 .expect("input queue poisoned")
                 .push_back(InputEvent::Moved { x, y });
         }
-        if let Some((x, y)) = click {
+        for (x, y) in click {
             input.lock().expect("input queue poisoned").extend([
                 InputEvent::Moved { x, y },
                 InputEvent::Button {

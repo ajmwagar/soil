@@ -54,6 +54,10 @@ impl AgentBackend for SharedAgents {
         self.with(|backend| backend.devices())
     }
 
+    fn models(&mut self) -> Vec<String> {
+        self.with(|backend| backend.models())
+    }
+
     fn transcript(&mut self, id: &str, before: Option<u64>, limit: u32) -> Result<Page, Error> {
         self.with(|backend| backend.transcript(id, before, limit))
     }
@@ -118,6 +122,10 @@ impl<T: AgentBackend> AgentBackend for Live<T> {
 
     fn devices(&mut self) -> Vec<crate::Device> {
         self.0.lock().expect("agent backend poisoned").devices()
+    }
+
+    fn models(&mut self) -> Vec<String> {
+        self.0.lock().expect("agent backend poisoned").models()
     }
 
     fn transcript(&mut self, id: &str, before: Option<u64>, limit: u32) -> Result<Page, Error> {
