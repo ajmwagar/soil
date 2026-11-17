@@ -24,15 +24,26 @@ use ::soil::vfs_host::VfsHost;
 use anyhow::{Context, Result};
 use wasi_webgpu_wasmtime::reexports::{wgpu_core, wgpu_types};
 use wasi_webgpu_wasmtime::{WasiWebGpuCtx, WasiWebGpuCtxView, WasiWebGpuOptions};
-use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
+use wasmtime::component::{Component, HasSelf, Linker, Resource, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use crate::soil::present::input;
 use soil_agent_host::{AgentBackend, Answer, Binding, Page};
+use soil_appdata_host::{AppDataHost, AppDataStore, appdata as appdata_host};
 use ::soil::dispatch::{Dispatch, DispatchRole};
 
 pub mod fb;
+
+/// The private app store one Spore run may use.
+///
+/// The root is the host's; the app id is the one its manifest claims. Neither
+/// is reachable from the guest, which only ever names `local` or `synced`.
+#[derive(Clone, Debug)]
+pub struct AppDataGrant {
+    pub root: PathBuf,
+    pub app_id: String,
+}
 
 /// The denying agent backend, for presenters that own no agent session.
 pub use soil_agent_host::NoAgents;
@@ -642,6 +653,8 @@ pub struct WebGpuHost {
     /// The Unibus this Spore publishes to and polls. In-process: the notices a
     /// surface emits are for surfaces on this machine, and a popup is one.
     bus: Arc<MemoryBus>,
+    /// The private key/value book behind `soil:appdata`, opened for one app.
+    appdata: Option<AppDataHost>,
     /// Frame accounting for `SOIL_WEBGPU_STATS=1`.
     stats: FrameStats,
     /// When the last frame was presented, so the host can hold the next one to
@@ -856,6 +869,10 @@ pub struct HostSetup {
     pub cursor: Option<Box<dyn CursorHost>>,
     /// `None` on hosts without a pasteboard.
     pub clipboard: Option<Box<dyn ClipboardHost>>,
+    /// The private key/value book behind `soil:appdata`. `None` links the
+    /// interface and denies every call, so a Spore that imports it still
+    /// instantiates and says why it has nowhere to write.
+    pub appdata: Option<AppDataGrant>,
 }
 
 /// The bus a surface publishes its notices to.
@@ -886,6 +903,7 @@ impl HostSetup {
             terminal: Box::new(NoTerminal),
             cursor: None,
             clipboard: None,
+            appdata: None,
         }
     }
 }
@@ -950,6 +968,13 @@ impl WebGpuHost {
             terminal: setup.terminal,
             cursor: setup.cursor,
             clipboard: setup.clipboard,
+            appdata: setup
+                .appdata
+                .map(|grant| {
+                    AppDataHost::new(&grant.root, &grant.app_id, None)
+                        .context("open appdata for the WebGPU guest")
+                })
+                .transpose()?,
             bus: Arc::new(MemoryBus::default()),
             stats: FrameStats::new(),
             last_frame: None,
@@ -1252,6 +1277,122 @@ impl ::soil::principal_host::api::Host for WebGpuHost {
             .as_mut()
             .ok_or(::soil::principal_host::api::Error::Denied)?
             .signing_key()
+    }
+}
+
+impl appdata_host::Host for WebGpuHost {
+    fn open(
+        &mut self,
+        scope: appdata_host::Scope,
+    ) -> std::result::Result<Resource<AppDataStore>, appdata_host::Error> {
+        match self.appdata.as_mut() {
+            Some(host) => appdata_host::Host::open(host, scope),
+            None => Err(appdata_host::Error::Denied),
+        }
+    }
+}
+
+impl appdata_host::HostStore for WebGpuHost {
+    fn get(
+        &mut self,
+        handle: Resource<AppDataStore>,
+        key: String,
+    ) -> std::result::Result<Option<Vec<u8>>, appdata_host::Error> {
+        match self.appdata.as_mut() {
+            Some(host) => appdata_host::HostStore::get(host, handle, key),
+            None => Err(appdata_host::Error::Denied),
+        }
+    }
+
+    fn get_meta(
+        &mut self,
+        handle: Resource<AppDataStore>,
+        key: String,
+    ) -> std::result::Result<Option<appdata_host::Meta>, appdata_host::Error> {
+        match self.appdata.as_mut() {
+            Some(host) => appdata_host::HostStore::get_meta(host, handle, key),
+            None => Err(appdata_host::Error::Denied),
+        }
+    }
+
+    fn set(
+        &mut self,
+        handle: Resource<AppDataStore>,
+        key: String,
+        value: Vec<u8>,
+    ) -> std::result::Result<u64, appdata_host::Error> {
+        match self.appdata.as_mut() {
+            Some(host) => appdata_host::HostStore::set(host, handle, key, value),
+            None => Err(appdata_host::Error::Denied),
+        }
+    }
+
+    fn set_if_generation(
+        &mut self,
+        handle: Resource<AppDataStore>,
+        key: String,
+        value: Vec<u8>,
+        generation: u64,
+    ) -> std::result::Result<u64, appdata_host::Error> {
+        match self.appdata.as_mut() {
+            Some(host) => {
+                appdata_host::HostStore::set_if_generation(host, handle, key, value, generation)
+            }
+            None => Err(appdata_host::Error::Denied),
+        }
+    }
+
+    fn delete(
+        &mut self,
+        handle: Resource<AppDataStore>,
+        key: String,
+    ) -> std::result::Result<(), appdata_host::Error> {
+        match self.appdata.as_mut() {
+            Some(host) => appdata_host::HostStore::delete(host, handle, key),
+            None => Err(appdata_host::Error::Denied),
+        }
+    }
+
+    fn list_keys(
+        &mut self,
+        handle: Resource<AppDataStore>,
+        prefix: String,
+        limit: u32,
+    ) -> std::result::Result<Vec<appdata_host::Meta>, appdata_host::Error> {
+        match self.appdata.as_mut() {
+            Some(host) => appdata_host::HostStore::list_keys(host, handle, prefix, limit),
+            None => Err(appdata_host::Error::Denied),
+        }
+    }
+
+    fn generation(
+        &mut self,
+        handle: Resource<AppDataStore>,
+    ) -> std::result::Result<u64, appdata_host::Error> {
+        match self.appdata.as_mut() {
+            Some(host) => appdata_host::HostStore::generation(host, handle),
+            None => Err(appdata_host::Error::Denied),
+        }
+    }
+
+    fn sync_state(
+        &mut self,
+        handle: Resource<AppDataStore>,
+    ) -> std::result::Result<appdata_host::SyncState, appdata_host::Error> {
+        match self.appdata.as_mut() {
+            Some(host) => appdata_host::HostStore::sync_state(host, handle),
+            None => Err(appdata_host::Error::Denied),
+        }
+    }
+
+    fn drop(
+        &mut self,
+        handle: Resource<AppDataStore>,
+    ) -> std::result::Result<(), wasmtime::Error> {
+        match self.appdata.as_mut() {
+            Some(host) => appdata_host::HostStore::drop(host, handle),
+            None => Ok(()),
+        }
     }
 }
 
@@ -1975,6 +2116,8 @@ impl WebGpuRuntime {
             .map_err(anyhow::Error::from)
             .context("link soil:terminal-screen")?;
         records_host::add_to_linker::<WebGpuHost>(&mut linker).context("link soil:records")?;
+        soil_appdata_host::add_to_linker::<WebGpuHost>(&mut linker)
+            .context("link soil:appdata")?;
         ::soil::vfs_host::vfs::add_to_linker::<WebGpuHost, HasSelf<WebGpuHost>>(
             &mut linker,
             |host| host,
@@ -2171,6 +2314,8 @@ pub struct Grants {
     /// The agents this surface may see. `None` denies `soil:agents`, which is
     /// the honest answer for a Spore that only draws.
     pub agents: Option<Box<dyn AgentBackend>>,
+    /// The private app store this run may use. `None` denies `soil:appdata`.
+    pub appdata: Option<AppDataGrant>,
 }
 
 impl Grants {
@@ -2257,6 +2402,7 @@ pub fn run_component_capture_with_input(
     setup.records = grants.records;
     setup.principal = grants.principal;
     setup.http = grants.http;
+    setup.appdata = grants.appdata;
     setup.catalog = grants.catalog.unwrap_or(setup.catalog);
     // A recorded transcript read back as an agent: the guest holds the
     // contract and never learns which harness wrote the book.

@@ -95,6 +95,24 @@ under `<root>/apps/<app>/users/<user>/synced`. The native records runner calls
 `mark_sync_started` / `mark_sync_complete` / `mark_offline`; the Spore cannot
 advance that state.
 
+## Runners
+
+Both presenters link the interface — [`crates/canvas-winit`](../crates/canvas-winit)
+(the window, `soil spore run`) and [`crates/soil-webgpu`](../crates/soil-webgpu)
+(the portable host) — so a guest that imports `soil:appdata` instantiates on
+either. A host given no root still links it and answers `denied` to every call:
+an import with no implementation does not instantiate at all, and a Spore that
+cannot start is a worse answer than one that cannot write.
+
+`soil spore run` grants the host's own store unless `--appdata-root DIR` says
+otherwise: `<DIR>` defaults to `~/.local/share/fungos/appdata`, and the app
+identity is the Spore manifest's id, never anything the guest sends.
+
+```sh
+soil spore run ./weeper --surface window      # book under ~/.local/share/fungos/appdata
+soil spore run ./weeper --appdata-root /tmp/books
+```
+
 ## Rules
 
 - AppData is per app, per user.

@@ -499,6 +499,8 @@ pub fn show(
             geode_purpose: geode.as_ref().map(|(_, purpose)| purpose.clone()),
             geode_reference,
             credential_env: http.and_then(|run| run.credential_env.clone()),
+            appdata_root: http.and_then(|run| run.appdata_root.clone()),
+            app_id: Some(manifest.spore.id.clone()),
             hue_bridge,
             ..canvas_winit::Options::default()
         };
@@ -578,6 +580,13 @@ fn capture(
             None,
             None,
         )?;
+        grants.appdata = run
+            .appdata_root
+            .clone()
+            .map(|root| soil_webgpu::AppDataGrant {
+                root,
+                app_id: manifest.spore.id.clone(),
+            });
     }
     // A headless run takes keys only when it was given a script to play. With
     // none it reports itself as not interactive, so a guest that polls for

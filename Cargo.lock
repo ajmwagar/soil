@@ -7863,6 +7863,7 @@ dependencies = [
  "sha2 0.10.9",
  "soil",
  "soil-agent-host",
+ "soil-appdata-host",
  "soil-spore",
  "ureq 2.12.1",
  "wasi-webgpu-wasmtime",

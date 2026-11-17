@@ -11,6 +11,7 @@ libc = "0.2"
 soil-spore = { path = "../soil-spore" }
 soil = { path = "../soil", default-features = false, features = ["http", "principal", "records", "vfs", "wasi", "dispatch", "git"] }
 soil-agent-host = { path = "../soil-agent-host" }
+soil-appdata-host = { path = "../soil-appdata-host" }
 ureq = "2"
 anyhow = "1"
 wasi-webgpu-wasmtime = { git = "https://github.com/mycelium-linux/wasi-gfx-runtime", rev = "9624cae" }

@@ -31,7 +31,7 @@ wasmtime::component::bindgen!({
     },
 });
 
-use soil::appdata::appdata;
+pub use soil::appdata::appdata;
 
 const MAX_KEY_BYTES: usize = 256;
 const MAX_LIST_KEYS: u32 = 512;
