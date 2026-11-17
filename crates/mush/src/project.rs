@@ -3,7 +3,7 @@
 //! A project is a repository, not a directory. `git@github.com:Owner/Repo.git`
 //! and `https://github.com/owner/repo` are the same project, and a checkout and
 //! the worktrees made from it share that identity. Mush, Operator and Agentsmith
-//! spell it the same way — `github.com/owner/repo` — so a row one of them writes
+//! spell it the same way — `owner/repo` — so a row one of them writes
 //! is a row the others can look up.
 //!
 //! Attaching records a *reference*: identity and path on the Desktop, and nothing
@@ -12,7 +12,6 @@
 //! git already answers that question.
 
 use std::{
-    io::IsTerminal,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -20,18 +19,22 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use crate::desktop::{self, Desktop};
+use crate::desktop;
 
-/// Exit status for a change that was refused, so a caller can tell "nobody
-/// approved this" from "that path is not a checkout".
+/// Exit status for a change that did nothing, so a caller can tell "nothing
+/// was attached there" from "that path is not a checkout".
 pub const REFUSED: i32 = 4;
 
 /// One checkout, as a Desktop remembers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectRef {
-    /// Identity recorded when the row was written. `None` for a name a Desktop
-    /// only claims: nothing has read a remote for it yet.
+    /// Identity recorded when the row was written: `owner/repo`, the way GitHub
+    /// names a repository. `None` for a name a Desktop only claims: nothing has
+    /// read a remote for it yet.
     pub project: Option<String>,
+    /// The host the remote named, kept for dedupe: two hosts can carry the same
+    /// `owner/repo`, and only the host can tell those rows apart.
+    pub host: Option<String>,
     /// Where the checkout is on this device.
     pub path: PathBuf,
 }
@@ -55,6 +58,7 @@ impl ProjectRef {
     pub fn new(path: PathBuf) -> Self {
         ProjectRef {
             project: None,
+            host: None,
             path,
         }
     }
@@ -75,6 +79,7 @@ impl ProjectRef {
         json!({
             "desktop": desktop,
             "project": self.identity(),
+            "host": self.host,
             "path": self.path.display().to_string(),
             "branch": facts.branch,
             "commit": facts.commit,
@@ -93,11 +98,14 @@ pub fn envelope(row: Value) -> Value {
     envelope
 }
 
-/// One spelling for a project, across mush, Operator and Agentsmith.
+/// One spelling for a project, across mush, Operator and Agentsmith: the
+/// `owner/repo` GitHub gives it.
 ///
-/// A checkout with a remote is named by it, so two clones of one repository are
-/// one project. A checkout with no remote is named by its own path, which is
-/// stable as long as the tree stays put.
+/// A checkout with a remote is named by its slug, so two clones of one
+/// repository — the primary and every agent's worktree — are one project with
+/// nothing to register. The host stays available as a dedupe key
+/// ([`remote_host`]); a checkout with no remote is named by its own path, which
+/// is stable as long as the tree stays put.
 pub fn id(path: &Path) -> Option<String> {
     checkout_root(path).map(|root| identity_of(&root))
 }
@@ -111,13 +119,23 @@ pub(crate) fn identity_of(root: &Path) -> String {
 }
 
 /// `git@github.com:Owner/Repo.git` and `https://github.com/owner/repo` are the
-/// same project: `github.com/owner/repo`.
+/// same project: `owner/repo`.
 ///
 /// This is the spelling Operator's `roots::normalize_remote` produces, so a row
 /// written on one side of the fleet is found on the other. Anything that is not
 /// a host with a repository path — a local remote, a bundle, a typo — is `None`,
 /// and the caller falls back to naming the checkout by its path.
 pub fn normalize_remote(remote: &str) -> Option<String> {
+    parse_remote(remote).map(|(_, project)| project)
+}
+
+/// The host a remote names, kept only to dedupe: `github.com`.
+pub fn remote_host(remote: &str) -> Option<String> {
+    parse_remote(remote).map(|(host, _)| host)
+}
+
+/// `(host, owner/repo)`, lowercased.
+fn parse_remote(remote: &str) -> Option<(String, String)> {
     let remote = remote.trim();
     // A scheme that does not name a host (`file://`, a bundle, a typo) is not an
     // identity; the caller falls back to naming the checkout by its path.
@@ -149,7 +167,12 @@ pub fn normalize_remote(remote: &str) -> Option<String> {
     if host.is_empty() || !path.contains('/') {
         return None;
     }
-    Some(format!("{host}/{path}").to_lowercase())
+    Some((host.to_lowercase(), path.to_lowercase()))
+}
+
+/// The host a checkout's remote names, when it has one.
+pub(crate) fn host_of(root: &Path) -> Option<String> {
+    remote_url(root).as_deref().and_then(remote_host)
 }
 
 /// The root of the checkout `path` is inside, if it is in one.
@@ -234,8 +257,15 @@ pub fn snapshot(path: &Path) -> Result<ProjectRef> {
     let root =
         checkout_root(path).with_context(|| format!("{} is not a git checkout", path.display()))?;
     let root = normalized(&root);
+    let remote = remote_url(&root);
     Ok(ProjectRef {
-        project: Some(identity_of(&root)),
+        project: Some(
+            remote
+                .as_deref()
+                .and_then(normalize_remote)
+                .unwrap_or_else(|| format!("path:{}", root.display())),
+        ),
+        host: remote.as_deref().and_then(remote_host),
         path: root,
     })
 }
@@ -252,21 +282,18 @@ pub(crate) fn detach(desktop_id: &str, path: &Path) -> Result<Option<ProjectRef>
     desktop::detach_project(desktop_id, path)
 }
 
-/// `mush attach <path> [--desktop ID] [--approve] [--json]`
+/// `mush attach <path> [--desktop ID] [--json]`
 pub fn run_attach(config: &crate::config::Config, mut args: Vec<String>) -> Result<()> {
     let as_json = args.iter().any(|arg| arg == "--json");
     args.retain(|arg| arg != "--json");
-    let approved = args.iter().any(|arg| arg == "--approve");
-    args.retain(|arg| arg != "--approve");
     let desktop_id = desktop::selected(config, &mut args).ok_or_else(|| {
         anyhow::anyhow!("no Desktop selected: pass --desktop ID (nothing claims this directory)")
     })?;
     let Some(path) = args.first().cloned() else {
-        bail!("usage: mush attach <path> [--desktop ID] [--approve] [--json]");
+        bail!("usage: mush attach <path> [--desktop ID] [--json]");
     };
     let project = snapshot(&crate::config::expand_home(&path))?;
     let desktop = desktop::load(&desktop_id)?;
-    confirm(&desktop, &project, approved, as_json)?;
     desktop::attach_project(&desktop_id, project.clone())?;
     if as_json {
         println!(
@@ -285,50 +312,6 @@ pub fn run_attach(config: &crate::config::Config, mut args: Vec<String>) -> Resu
         );
     }
     Ok(())
-}
-
-/// Attaching changes someone's Desktop, so a person confirms it. A caller with
-/// no terminal gets a refusal it can pass on — never a silent attach.
-fn confirm(desktop: &Desktop, project: &ProjectRef, approved: bool, as_json: bool) -> Result<()> {
-    if approved {
-        return Ok(());
-    }
-    let what = format!(
-        "attach {} ({}) to Desktop {}",
-        project.identity().as_deref().unwrap_or("this checkout"),
-        project.path.display(),
-        desktop.id
-    );
-    let row = project.to_json(&desktop.id);
-    if !std::io::stdin().is_terminal() {
-        refuse(
-            as_json,
-            "approval-required",
-            &format!("refusing to {what}: there is no terminal to ask, so pass --approve"),
-            row,
-        );
-    }
-    eprintln!("mush: {what}?");
-    eprint!("mush: [y/N] ");
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
-    if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-        refuse(as_json, "not-approved", "nothing was attached", row);
-    }
-    Ok(())
-}
-
-/// Report a refusal in the caller's own format, then exit non-zero.
-fn refuse(as_json: bool, reason: &str, message: &str, row: Value) -> ! {
-    eprintln!("mush: {message}");
-    if as_json {
-        let mut envelope = json!({ "ok": false, "reason": reason });
-        if let (Value::Object(envelope), Value::Object(row)) = (&mut envelope, row) {
-            envelope.extend(row);
-        }
-        println!("{envelope}");
-    }
-    std::process::exit(REFUSED)
 }
 
 /// `mush detach <path> [--desktop ID] [--json]`
@@ -378,7 +361,7 @@ mod tests {
 
     #[test]
     fn two_spellings_of_one_remote_collapse() {
-        let github = Some("github.com/owner/repo".to_string());
+        let github = Some("owner/repo".to_string());
         assert_eq!(normalize_remote("git@github.com:Owner/Repo.git"), github);
         assert_eq!(normalize_remote("https://github.com/owner/repo"), github);
         assert_eq!(
@@ -391,6 +374,25 @@ mod tests {
         );
         assert_eq!(normalize_remote("ssh://git@github.com/owner/repo"), github);
         assert_eq!(normalize_remote(" http://GitHub.com/owner/repo "), github);
+    }
+
+    #[test]
+    fn the_host_is_a_dedupe_key_not_part_of_the_identity() {
+        // Two hosts, one slug: the identity is the same, the host is what tells
+        // the rows apart when it matters.
+        assert_eq!(
+            normalize_remote("git@github.com:Owner/Repo.git"),
+            normalize_remote("git@gitea.example:owner/repo")
+        );
+        assert_eq!(
+            remote_host("git@github.com:Owner/Repo.git").as_deref(),
+            Some("github.com")
+        );
+        assert_eq!(
+            remote_host("https://gitea.example/owner/repo").as_deref(),
+            Some("gitea.example")
+        );
+        assert_eq!(remote_host("file:///src/soil"), None);
     }
 
     #[test]
@@ -449,8 +451,12 @@ mod tests {
                 "feature",
             ],
         );
-        let expected = Some("github.com/owner/repo".to_string());
+        let expected = Some("owner/repo".to_string());
         assert_eq!(id(primary.path()), expected);
+        assert_eq!(
+            snapshot(&worktree).unwrap().host.as_deref(),
+            Some("github.com")
+        );
         assert_eq!(id(&worktree), expected);
         assert_eq!(facts(&worktree).role, "worktree");
         assert_eq!(facts(primary.path()).role, "primary");

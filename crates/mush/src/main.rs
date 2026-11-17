@@ -1078,6 +1078,18 @@ fn run() -> Result<()> {
         take_option(&mut args, "--mcp-token").or_else(|| std::env::var("MUSH_MCP_TOKEN").ok());
     let mcp_token = configured_token.clone().unwrap_or_else(new_mcp_token);
 
+    // A checkout registers itself the first time it is used. The rows are how
+    // the shell and Operator know where a project lives, and asking a person to
+    // run `attach` for their own checkout is a chore with no decision in it: a
+    // row is metadata about a path, not authority over it. Registering is a
+    // no-op when the row already says what the checkout says now.
+    if let Some(desktop) = desktop.as_ref() {
+        let cwd = std::env::current_dir()?;
+        if let Ok(row) = project::snapshot(&cwd) {
+            let _ = desktop::attach_project(&desktop.id, row);
+        }
+    }
+
     if doctor {
         return doctor_report(
             &config_path,
@@ -1290,15 +1302,15 @@ fn usage() -> String {
          \x20 mush --serve --socket PATH --root DIR [--foreground] [OPTIONS]\n\
          \x20 mush mcp [--listen ADDR] [--foreground] [OPTIONS]\n\
          \x20 mush origin [--cwd PATH] [--json]\n\
-         \x20 mush attach <path> [--desktop ID] [--approve] [--json]\n\
+         \x20 mush attach <path> [--desktop ID] [--json]\n\
          \x20 mush detach <path> [--desktop ID] [--json]\n\
          \x20 mush desktop <list|show|create> [--json] [OPTIONS] [ID]\n\
          \x20 mush projects [--desktop ID] [--remote] [--claim NAME...] [--json]\n\
          \x20 mush jobs [--json]\n\
          \x20 mush job ID [--json]\n\n\
          `attach` records a checkout on a Desktop where it already lives and\n\
-         never copies the tree; without --approve it asks, and refuses when\n\
-         there is no terminal to ask. `detach` removes the row and nothing else.\n\n\
+         never copies the tree; a checkout also registers itself on first use.\n\
+         `detach` removes the row and nothing else.\n\n\
          The Mush Spore is embedded; --wasm overrides it for development.\n\n\
          Options:\n\
          \x20 --root DIR                 VFS root (mutually exclusive with --desktop)\n\

@@ -152,7 +152,8 @@ A Desktop remembers the checkouts it works on as `[[project]]` rows:
 
 ```toml
 [[project]]
-project = "github.com/mycelium-linux/soil"
+project = "mycelium-linux/soil"
+host = "github.com"
 path = "/Users/me/src/soil"
 ```
 
@@ -185,7 +186,7 @@ repo: soil
 desktop: personal
 vfs root: /Users/me/.local/share/fungos/desktops/personal
 mount: /Users/me/mnt/personal [mounted]
-project: github.com/mycelium-linux/soil
+project: mycelium-linux/soil
 path: /Users/me/mnt/personal/projects/soil
 status: ready
 ```
@@ -220,7 +221,7 @@ explicitly, which always wins.
 schema instead of three:
 
 ```json
-{"ok": true, "desktop": "acme", "project": "github.com/owner/repo",
+{"ok": true, "desktop": "acme", "project": "owner/repo", "host": "github.com",
  "path": "/abs/path", "branch": "main", "commit": "…", "base": "…", "role": "primary"}
 ```
 
@@ -228,7 +229,8 @@ schema instead of three:
 |---|---|
 | `ok` | the command produced a usable row (`origin`: the resolution is `ready`) |
 | `desktop` | Desktop id, or `null` when nothing owns the path |
-| `project` | identity: `github.com/owner/repo`, or `path:<checkout>` with no remote |
+| `project` | identity: `owner/repo`, or `path:<checkout>` with no remote |
+| `host` | the remote's host, kept as a dedupe key (`github.com`) |
 | `path` | the checkout on this device |
 | `branch` / `commit` | read from the checkout when reported, never stored |
 | `base` | the commit it forked from: merge-base with the upstream default branch |
@@ -241,44 +243,45 @@ has to branch on the shape.
 
 ### Attaching a checkout
 
+A checkout registers itself the first time `mush` runs in it; attaching by hand
+is the explicit form of the same thing:
+
 ```sh
-mush attach PATH [--desktop ID] [--approve] [--json]
+mush attach PATH [--desktop ID] [--json]
 mush detach PATH [--desktop ID] [--json]
 ```
 
-`attach` records a checkout **where it already lives**: identity, path, and the
-git facts it reports. Nothing is copied, moved, or committed, and the checkout is
-not frozen — re-attaching the same path refreshes the row rather than adding a
-second one.
+`attach` records a checkout **where it already lives**: identity, host, path.
+Nothing is copied, moved, or committed, and the checkout is not frozen —
+attaching the same path again refreshes the row rather than adding a second.
+
+There is nothing to approve. A row is metadata about where a checkout is, not
+authority over it: mush could already read that path, and the row grants nothing
+a caller did not already have. Registration is silent and idempotent, and only
+happens when a Desktop was resolved (its mount, a claimed name, or your
+configured `desktop`); a bare `--root` has no rows.
 
 Identity follows the checkout's `origin` (then its first remote), which is what
-Operator's `roots::normalize_remote` produces:
+Operator's `roots::normalize_remote` produces — the `owner/repo` GitHub gives the
+repository:
 
-| spelling | identity |
-|---|---|
-| `git@github.com:Owner/Repo.git` | `github.com/owner/repo` |
-| `https://github.com/owner/repo` | `github.com/owner/repo` |
-| `ssh://git@github.com:22/owner/repo` | `github.com/owner/repo` |
-| a checkout with no remote | `path:<real checkout path>` |
+| spelling | identity | host (dedupe key) |
+|---|---|---|
+| `git@github.com:Owner/Repo.git` | `owner/repo` | `github.com` |
+| `https://github.com/owner/repo` | `owner/repo` | `github.com` |
+| `ssh://gitea.example/owner/repo` | `owner/repo` | `gitea.example` |
+| a checkout with no remote | `path:<real checkout path>` | — |
 
-So a repository and the worktrees cut from it share one identity, and two
-spellings of one remote collapse. A path that is not a git checkout is refused:
-there would be nothing to record.
-
-**Attaching is a human decision.** Without `--approve`, `attach` asks on the
-terminal and refuses when there is no terminal to ask:
-
-```text
-$ mush attach . --desktop acme < /dev/null
-mush: refusing to attach github.com/owner/repo (/src/repo) to Desktop acme:
-  there is no terminal to ask, so pass --approve
-```
+So a repository's primary checkout and every worktree cut from it share one
+identity with nothing to register per agent, and two spellings of one remote
+collapse. The host rides along because two hosts can carry the same `owner/repo`;
+it is a dedupe key, not part of the name.
 
 | exit | meaning |
 |---|---|
-| `0` | attached |
+| `0` | attached / detached |
 | `1` | `PATH` is not a checkout, or the Desktop does not exist |
-| `4` | refused: `approval-required`, `not-approved`, or `not-attached` (detach) |
+| `4` | `not-attached` (detach found no row) |
 
 `detach` removes the row and nothing else: no VFS deletion, no git mutation. A
 path inside a checkout names the checkout, so `mush detach .` works from a
@@ -980,7 +983,7 @@ repo-a                           declared  master         dirty   [marbles]
 ```
 
 The first column is the project **identity** when something has read a remote
-for it (`github.com/owner/repo`), and the directory name only for a claim that
+for it (`owner/repo`), and the directory name only for a claim that
 has not been materialized yet. Two checkouts of one project therefore read as
 one name, which is the point of the identity.
 
@@ -1080,7 +1083,7 @@ marble project: agent
 repo: addict
 desktop: personal
 mount: /Users/me/mnt/personal [mounted]
-project: github.com/acme/addict
+project: acme/addict
 path: /Users/me/mnt/personal/projects/addict
 ```
 

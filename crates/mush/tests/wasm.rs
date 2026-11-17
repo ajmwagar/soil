@@ -1127,7 +1127,7 @@ fn the_spore_reads_the_checkouts_its_desktop_knows() {
     std::fs::write(
         registry.join("acme.toml"),
         format!(
-            "id = \"acme\"\nname = \"Acme\"\nroot = \"{}\"\nmount = \"{}\"\ntheme = \"deep\"\n\n[[project]]\nproject = \"github.com/owner/repo\"\npath = \"{}\"\n",
+            "id = \"acme\"\nname = \"Acme\"\nroot = \"{}\"\nmount = \"{}\"\ntheme = \"deep\"\n\n[[project]]\nproject = \"owner/repo\"\npath = \"{}\"\n",
             root.display(),
             home.path().join("mnt/acme").display(),
             checkout.display()
@@ -1151,7 +1151,7 @@ fn the_spore_reads_the_checkouts_its_desktop_knows() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("github.com/owner/repo"), "{stdout}");
+    assert!(stdout.contains("owner/repo"), "{stdout}");
     assert!(stdout.contains("primary"), "{stdout}");
     assert!(stdout.contains("soil"), "{stdout}");
 }
