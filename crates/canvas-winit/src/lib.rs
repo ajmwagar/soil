@@ -87,6 +87,9 @@ struct LaunchConfig {
     /// A session daemon to attach to instead of spawning the agent here: the
     /// window becomes a view of a session it does not own.
     acp_socket: Option<PathBuf>,
+    /// An ACP harness that is a service (operator serves HTTP): the window is
+    /// a client of it, and nothing here owns its lifetime.
+    acp_url: Option<String>,
     /// Where the session id this window attached to is remembered, so the next
     /// window attaches to the same conversation instead of starting another.
     acp_state: Option<PathBuf>,
@@ -1277,6 +1280,7 @@ fn agent_roles(
     records_root: Option<&std::path::Path>,
     agents: Agents,
     acp_cmd: Option<&str>,
+    acp_url: Option<&str>,
     workspace: Option<&std::path::Path>,
     broker: Option<&Broker>,
 ) -> Result<(Box<dyn soil_agent_host::AgentBackend>, DispatchRole)> {
@@ -1293,12 +1297,16 @@ fn agent_roles(
         ),
         Agents::Acp => {
             let command = acp_cmd.unwrap_or("delta-acp");
-            let backend = match broker {
+            let backend = match (acp_url, broker) {
+                // A harness that is a service: nothing here owns its lifetime,
+                // and a restart costs a `session/list`.
+                (Some(url), _) => ::soil::acp::AcpBackend::attach_http(url)
+                    .map_err(|error| anyhow::anyhow!("acp: {error}"))?,
                 // A daemon owns the agent: this window is a view of a session
                 // that outlives it, which is what makes rebuilding the UI
                 // something a person can do while their agents keep working.
-                Some(broker) => broker.connect(command, workspace)?,
-                None => ::soil::acp::AcpBackend::spawn(command)
+                (None, Some(broker)) => broker.connect(command, workspace)?,
+                (None, None) => ::soil::acp::AcpBackend::spawn(command)
                     .map_err(|error| anyhow::anyhow!("acp: {error}"))?,
             };
             // The window's `soil:vfs` grant is the workspace a session can be
@@ -1338,6 +1346,7 @@ fn agent_roles(
         let records_root = self.records_root.clone();
         let agents = self.launch.agents;
         let acp_cmd = self.launch.acp_cmd.clone();
+        let acp_url = self.launch.acp_url.clone();
         let broker = self.launch.broker();
         let launch = self.launch.clone();
         let failed = self.failed.clone();
@@ -1356,6 +1365,7 @@ fn agent_roles(
                     records_root.as_deref(),
                     agents,
                     acp_cmd.as_deref(),
+                    acp_url.as_deref(),
                     vfs_root.as_deref(),
                     broker.as_ref(),
                 )?;
@@ -2337,6 +2347,8 @@ pub struct Options {
     /// A session daemon to attach to, instead of spawning the agent in this
     /// process. `auto` means the daemon's default socket.
     pub acp_socket: Option<std::path::PathBuf>,
+    /// An ACP endpoint that is a service, e.g. `http://127.0.0.1:8787`.
+    pub acp_url: Option<String>,
     /// Where to remember the session id this window attached to.
     pub acp_state: Option<std::path::PathBuf>,
     /// Bridge `hue.local` maps to.
@@ -2382,6 +2394,7 @@ impl Default for Options {
             agents: Agents::None,
             acp_cmd: None,
             acp_socket: None,
+            acp_url: None,
             acp_state: None,
             hue_bridge: None,
             records_root: None,
@@ -2422,6 +2435,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
     let mut agents = Agents::None;
     let mut acp_cmd: Option<String> = None;
     let mut acp_socket: Option<std::path::PathBuf> = None;
+    let mut acp_url: Option<String> = None;
     let mut acp_state: Option<std::path::PathBuf> = None;
     let mut hue_bridge = None;
     let mut records_root = None;
@@ -2534,6 +2548,9 @@ pub fn parse(args: &[String]) -> Result<Options> {
                     std::path::PathBuf::from(value)
                 });
             }
+            "--acp-url" => {
+                acp_url = Some(args.next().context("--acp-url needs an http(s) URL")?.clone());
+            }
             "--acp-state" => {
                 acp_state = Some(std::path::PathBuf::from(
                     args.next().context("--acp-state needs a path")?,
@@ -2598,6 +2615,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
         agents,
         acp_cmd,
         acp_socket,
+        acp_url,
         acp_state,
         hue_bridge,
         records_root,
@@ -2635,6 +2653,7 @@ pub fn run(options: Options) -> Result<()> {
         agents,
         acp_cmd,
         acp_socket,
+        acp_url,
         acp_state,
         hue_bridge,
         records_root,
@@ -2784,6 +2803,7 @@ pub fn run(options: Options) -> Result<()> {
         agents,
         acp_cmd,
         acp_socket,
+        acp_url,
         acp_state,
         hue_bridge,
         records_root,

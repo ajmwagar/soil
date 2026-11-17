@@ -69,12 +69,163 @@ enum Origin {
     /// The pipe can close without stopping the agent, which is the whole point.
     #[cfg(unix)]
     Stream,
+    /// An agent that is a service: one POST per frame, one SSE stream back.
+    /// A deployed harness supervises it; this is only a client.
+    Http,
+}
+
+/// ACP over HTTP: `POST /` carries one frame and answers with one, and
+/// `GET /sse?sessionId=…` carries the agent's updates.
+///
+/// The stream is per session, which is why a subscription is opened when
+/// `session/new` or `session/load` names one rather than when the connection
+/// opens.
+struct HttpLink {
+    base: String,
+    to_reader: Sender<Vec<u8>>,
+    subscribed: Mutex<HashSet<String>>,
+}
+
+impl HttpLink {
+    fn new(base: &str, to_reader: Sender<Vec<u8>>) -> Self {
+        Self {
+            base: base.trim_end_matches('/').to_string(),
+            to_reader,
+            subscribed: Mutex::new(HashSet::new()),
+        }
+    }
+
+    fn post(&self, line: &str) -> Result<(), String> {
+        let agent = ureq::AgentBuilder::new()
+            // A prompt is a turn, and a turn is minutes.
+            .timeout(std::time::Duration::from_secs(3600))
+            .build();
+        let response = agent
+            .post(&self.base)
+            .set("content-type", "application/json")
+            .send_string(line)
+            .map_err(|error| format!("{error}"))?;
+        let body = response.into_string().map_err(|error| error.to_string())?;
+        for line in body.lines().filter(|line| !line.trim().is_empty()) {
+            let _ = self.to_reader.send(format!("{line}\n").into_bytes());
+        }
+        Ok(())
+    }
+
+    /// Follow one session's updates, once.
+    fn subscribe(&self, session: &str) {
+        let mut subscribed = self.subscribed.lock().expect("subscribed lock");
+        if !subscribed.insert(session.to_string()) {
+            return;
+        }
+        drop(subscribed);
+        let url = format!("{}/sse?sessionId={session}", self.base);
+        let label = session.to_string();
+        let session = label.clone();
+        let to_reader = self.to_reader.clone();
+        let spawned = thread::Builder::new()
+            .name(format!("acp-sse-{label}"))
+            .spawn(move || {
+                let agent = ureq::AgentBuilder::new()
+                    .timeout(std::time::Duration::from_secs(86_400))
+                    .build();
+                let Ok(response) = agent.get(&url).call() else {
+                    return;
+                };
+                let reader = BufReader::new(response.into_reader());
+                for line in reader.lines() {
+                    let Ok(line) = line else { break };
+                    let Some(data) = line.strip_prefix("data:") else {
+                        continue;
+                    };
+                    let data = data.trim();
+                    if data.is_empty() {
+                        continue;
+                    }
+                    // The service sends the update alone; ACP carries the
+                    // session beside it, and that is what routes it.
+                    let frame = format!(
+                        "{{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{{\"sessionId\":{}, \"update\":{data}}}}}\n",
+                        serde_json::to_string(&session).unwrap_or_else(|_| "\"\"".into())
+                    );
+                    if to_reader.send(frame.into_bytes()).is_err() {
+                        break;
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            eprintln!("acp: cannot follow session {label}: {error}");
+        }
+    }
+
+    /// A session id in a reply is the moment to start listening to it.
+    fn note(&self, method: &str, reply: &Value) {
+        if method != "session/new" && method != "session/load" {
+            return;
+        }
+        if let Some(session) = reply.get("sessionId").and_then(Value::as_str) {
+            self.subscribe(session);
+        }
+    }
+}
+
+
+/// The writing end: `Write` is what the ACP client knows how to talk to, and
+/// the link underneath posts each frame.
+struct HttpWriter {
+    link: Arc<HttpLink>,
+    /// One frame arrives in many `write` calls — a JSON serializer streams its
+    /// tokens — so the frame is what one flush carries, not what one write did.
+    buffer: Vec<u8>,
+}
+
+impl Write for HttpWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.buffer.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let text = String::from_utf8_lossy(&self.buffer).into_owned();
+        self.buffer.clear();
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            self.link.post(line).map_err(std::io::Error::other)?;
+        }
+        Ok(())
+    }
+}
+
+/// The reading end of the HTTP link: frames arrive from the POST replies and
+/// from the SSE stream, in one queue.
+struct ChannelReader {
+    from_reader: Receiver<Vec<u8>>,
+    pending: Vec<u8>,
+}
+
+impl std::io::Read for ChannelReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        while self.pending.is_empty() {
+            match self.from_reader.recv() {
+                Ok(bytes) => self.pending = bytes,
+                Err(_) => return Ok(0),
+            }
+        }
+        let take = self.pending.len().min(out.len());
+        out[..take].copy_from_slice(&self.pending[..take]);
+        self.pending.drain(..take);
+        Ok(take)
+    }
 }
 
 /// The connection to one ACP agent process.
 struct Acp {
     out: Mutex<Option<Box<dyn Write + Send>>>,
     origin: Mutex<Origin>,
+    /// Present when the agent is a service rather than a pipe.
+    http: Option<Arc<HttpLink>>,
     next_id: AtomicU64,
     pending: Mutex<HashMap<u64, Sender<Result<Value, String>>>>,
     /// Prompt id → the JSON-RPC request that asked for it.
@@ -102,6 +253,7 @@ impl Acp {
         let acp = Arc::new(Self {
             out: Mutex::new(Some(Box::new(stdin))),
             origin: Mutex::new(Origin::Child(child)),
+            http: None,
             next_id: AtomicU64::new(1),
             pending: Mutex::new(HashMap::new()),
             permissions: Mutex::new(HashMap::new()),
@@ -130,6 +282,7 @@ impl Acp {
         let acp = Arc::new(Self {
             out: Mutex::new(Some(Box::new(stream))),
             origin: Mutex::new(Origin::Stream),
+            http: None,
             next_id: AtomicU64::new(1),
             pending: Mutex::new(HashMap::new()),
             permissions: Mutex::new(HashMap::new()),
@@ -139,6 +292,36 @@ impl Acp {
         thread::Builder::new()
             .name("acp-reader".into())
             .spawn(move || reader_thread.read(reader))
+            .map_err(|error| format!("cannot start the ACP reader: {error}"))?;
+        Ok((acp, inbox))
+    }
+
+    /// An agent that is a service: frames out by POST, updates in by SSE.
+    fn from_http(base: &str) -> Result<(Arc<Self>, Receiver<Event>), String> {
+        let (to_reader, from_reader) = mpsc::channel();
+        let link = Arc::new(HttpLink::new(base, to_reader));
+        let (events, inbox) = mpsc::channel();
+        let acp = Arc::new(Self {
+            out: Mutex::new(Some(Box::new(HttpWriter {
+                link: Arc::clone(&link),
+                buffer: Vec::new(),
+            }))),
+            origin: Mutex::new(Origin::Http),
+            http: Some(link),
+            next_id: AtomicU64::new(1),
+            pending: Mutex::new(HashMap::new()),
+            permissions: Mutex::new(HashMap::new()),
+            events,
+        });
+        let reader_thread = Arc::clone(&acp);
+        thread::Builder::new()
+            .name("acp-http-reader".into())
+            .spawn(move || {
+                reader_thread.read(ChannelReader {
+                    from_reader,
+                    pending: Vec::new(),
+                })
+            })
             .map_err(|error| format!("cannot start the ACP reader: {error}"))?;
         Ok((acp, inbox))
     }
@@ -211,7 +394,12 @@ impl Acp {
         self.pending.lock().expect("pending lock").insert(id, reply);
         self.write(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
         match answer.recv_timeout(timeout) {
-            Ok(settled) => settled,
+            Ok(settled) => {
+                if let (Some(http), Ok(reply)) = (&self.http, &settled) {
+                    http.note(method, reply);
+                }
+                settled
+            }
             Err(_) => {
                 self.pending.lock().expect("pending lock").remove(&id);
                 Err(format!("{method} timed out"))
@@ -297,6 +485,16 @@ impl AcpBackend {
     pub fn adopt(stream: std::os::unix::net::UnixStream, name: &str) -> Result<Self, String> {
         let (acp, events) = Acp::from_stream(stream)?;
         Self::handshake(acp, events, name)
+    }
+
+    /// Take over a harness that is a service: operator serves ACP over HTTP.
+    ///
+    /// Nothing here owns the agent's lifetime — a deployed harness supervises
+    /// it — so this is attach-only, and a restart of the window costs a
+    /// `session/list`, not a session.
+    pub fn attach_http(base: &str) -> Result<Self, String> {
+        let (acp, events) = Acp::from_http(base)?;
+        Self::handshake(acp, events, base)
     }
 
     fn handshake(acp: Arc<Acp>, events: Receiver<Event>, name: &str) -> Result<Self, String> {
@@ -1253,6 +1451,125 @@ done
     /// Pure mapping is tested above; this is the part that only a process can
     /// show, and it is the one code path in this module that starts sessions.
     #[cfg(unix)]
+    /// A stand-in for `operator serve`: one POST per frame, one SSE stream.
+    fn fake_http_agent() -> String {
+        use std::io::{Read, Write as _};
+        use std::net::{TcpListener, TcpStream};
+
+        fn serve(mut stream: TcpStream) {
+            let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+            let mut request = String::new();
+            reader.read_line(&mut request).expect("request line");
+            let mut length = 0usize;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).expect("header");
+                if header.trim().is_empty() {
+                    break;
+                }
+                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            if request.starts_with("GET") {
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n")
+                    .expect("sse head");
+                stream
+                    .write_all(
+                        b"data: {\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"from operator\"}}\n\n",
+                    )
+                    .expect("sse frame");
+                stream.flush().expect("flush");
+                thread::sleep(Duration::from_millis(300));
+                return;
+            }
+            let mut body = vec![0u8; length];
+            reader.read_exact(&mut body).expect("body");
+            let frame: Value = serde_json::from_slice(&body).expect("frame");
+            let id = frame.get("id").cloned().unwrap_or(Value::Null);
+            let method = frame.get("method").and_then(Value::as_str).unwrap_or("");
+            let result = match method {
+                "initialize" => json!({
+                    "protocolVersion": 1,
+                    "agentInfo": {"name": "fake-operator"},
+                }),
+                "session/new" => json!({"sessionId": "s1"}),
+                "session/prompt" => json!({"stopReason": "end_turn"}),
+                _ => json!({}),
+            };
+            let body = json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("reply");
+            stream.flush().expect("flush");
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { break };
+                thread::spawn(move || serve(stream));
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// Against a live harness, not a stand-in:
+    /// `ACP_HTTP_URL=http://127.0.0.1:8787 cargo test -p soil --features acp --lib acp::tests::a_live_http -- --ignored`.
+    ///
+    /// Ignored by default because it needs a running agent; the fake above is
+    /// what CI runs.
+    #[test]
+    #[ignore]
+    fn a_live_http_harness_answers_and_starts_a_session() {
+        let Ok(url) = std::env::var("ACP_HTTP_URL") else {
+            return;
+        };
+        let mut backend = AcpBackend::attach_http(&url).expect("attach to the harness");
+        let before = backend.list().len();
+        let created = backend
+            .create(&task(Some("lane"), ""))
+            .expect("create a session");
+        assert!(!created.id.is_empty());
+        assert!(!created.harness.is_empty());
+        let after = backend.list().len();
+        assert!(after > before, "the new session is listed: {after} > {before}");
+    }
+
+    /// A harness that is a service: a POST per frame, and the session's updates
+    /// arriving on the stream that `session/new` triggers.
+    #[test]
+    fn an_http_harness_is_a_post_per_frame_and_one_stream_back() {
+        let url = fake_http_agent();
+        let mut backend = AcpBackend::attach_http(&url).expect("attach");
+        let created = backend
+            .create(&task(Some("lane"), "hello"))
+            .expect("create a session");
+        assert_eq!(created.id, "s1");
+        assert_eq!(created.harness, "fake-operator");
+
+        // The stream is per session, so it starts when session/new names one.
+        let mut seen = String::new();
+        for _ in 0..40 {
+            // Updates arrive on the stream and are folded by `next`, which is
+            // what a surface calls each tick.
+            let _ = backend.next(100);
+            if let Ok(page) = backend.transcript("s1", None, 10)
+                && let Some(turn) = page.turns.last()
+            {
+                seen = turn.text.clone();
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(seen, "from operator");
+    }
+
     #[test]
     fn a_task_becomes_a_session_on_a_live_agent() {
         use std::os::unix::fs::PermissionsExt;
