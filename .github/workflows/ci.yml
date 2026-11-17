@@ -51,7 +51,7 @@ jobs:
       # carries lints of its own. A gate that cannot run is worse than no gate,
       # so a crate joins this list in the change that makes it green here.
       - name: Clippy
-        run: cargo clippy -p soil -p soil-agent-host -p soil-vt -p soil-webgpu --all-targets --locked -- -D warnings
+        run: cargo clippy -p soil -p soil-agent-host -p soil-agentsd -p soil-vt -p soil-webgpu --all-targets --locked -- -D warnings
 
       # A capability a host opts into is still code. `dispatch` and `acp` are
       # not in `soil`'s default features, so a pass over defaults never compiles
@@ -65,4 +65,4 @@ jobs:
       # fail in every checkout today. That is a bug to fix, not a hole to widen
       # the gate around.
       - name: Test
-        run: cargo test -p soil-agent-host --locked
+        run: cargo test -p soil-agent-host -p soil-agentsd --locked
