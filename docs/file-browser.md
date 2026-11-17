@@ -129,3 +129,24 @@ visually. No synthetic key events, no focus theft, no screen-coordinate scripts.
   explicit `not-ready`, not an empty answer
 - OCR/extracted text and embeddings are derived and rebuildable
 - one authoritative state per finder; concurrent editors use revision checks
+
+## Git status in the preview
+
+xplorer shows the repository a directory belongs to through
+[`soil:git`](../wit/soil-git.wit): branch, short commit, changed count, and
+ahead/behind when there is an upstream. The host resolves it, because a guest
+cannot run git and must not learn host paths.
+
+One caveat is structural, not a bug. **`soil:git` answers about a tree on this
+machine, and a Desktop's namespace is not that tree.** A Desktop's
+`projects/<name>` is content in the store — the paths and bytes a Spore reads —
+and it has no on-disk counterpart unless the worktree is also materialized here
+as a checkout. So the status line appears when the workspace really contains a
+repository (a checkout, a mounted worktree), and stays silent on a desktop root
+whose projects exist only as content. Silence is the honest answer there: there
+is no working tree to have a status.
+
+What would light it up on a Desktop root is the mount table from
+[desktop.md](desktop.md#mush): `projects/<name>` resolving to this machine's
+checkout of that project, which the host can then ask Git about, using the same
+grant.
