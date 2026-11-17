@@ -199,6 +199,14 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
                 run.present.collection = Some(value(index + 1)?);
                 index += 2;
             }
+            "--namespace" => {
+                run.present.namespace = Some(value(index + 1)?);
+                index += 2;
+            }
+            "--whole-book" => {
+                run.present.whole_book = true;
+                index += 1;
+            }
             "--actor" => {
                 run.present.actor = Some(value(index + 1)?);
                 index += 2;

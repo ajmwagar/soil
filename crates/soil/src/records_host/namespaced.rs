@@ -88,11 +88,8 @@ impl NamespacedRecordsHost {
         let store = Store::open(root, &root.join("device_id")).context("open fungos-records")?;
         let mut map = BTreeMap::new();
         for namespace in namespaces {
-            if namespace.name.is_empty()
-                || namespace.book.is_empty()
-                || namespace.collection.is_empty()
-            {
-                anyhow::bail!("namespace name, book and collection are required");
+            if namespace.name.is_empty() || namespace.book.is_empty() {
+                anyhow::bail!("a namespace needs a name and a book");
             }
             if map.insert(namespace.name.clone(), namespace).is_some() {
                 anyhow::bail!("duplicate namespace");
@@ -121,11 +118,21 @@ impl NamespacedRecordsHost {
     /// overwrite the raw message `m1`, and a brief keyed by wearer would
     /// overwrite that wearer's vitals view.
     fn scoped(namespace: &Namespace, id: &str) -> String {
+        // A whole-book namespace keeps the store's own ids: the book is the
+        // collection, so there is nothing to disambiguate. That is the case for
+        // a book written by the records CLI, whose ids are `contact-<hash>`
+        // rather than `<collection>:<id>`.
+        if namespace.collection.is_empty() {
+            return id.to_string();
+        }
         format!("{}:{id}", namespace.collection)
     }
 
     /// The guest-visible id, without the collection scope.
     fn unscoped(namespace: &Namespace, entity_id: &str) -> String {
+        if namespace.collection.is_empty() {
+            return entity_id.to_string();
+        }
         entity_id
             .strip_prefix(&format!("{}:", namespace.collection))
             .unwrap_or(entity_id)
@@ -173,7 +180,12 @@ impl records::Host for NamespacedRecordsHost {
         if limit == 0 || limit > MAX_PAGE {
             return Err(records::Error::OverBudget);
         }
-        let prefix = format!("{}:", namespace.collection);
+        // Empty means the book is the collection: everything in it is visible.
+        let prefix = if namespace.collection.is_empty() {
+            String::new()
+        } else {
+            format!("{}:", namespace.collection)
+        };
         let store = self.store.lock().expect("records store poisoned");
         let mut entries = Vec::new();
         let mut cursor = cursor;

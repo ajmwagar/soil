@@ -77,6 +77,12 @@ pub struct Request {
     pub records_root: Option<PathBuf>,
     pub book: Option<String>,
     pub collection: Option<String>,
+    /// The name the guest asks for, when it differs from the collection the
+    /// book stores. ohmOS names `personal`; the book holds `contacts`.
+    pub namespace: Option<String>,
+    /// The book is the collection: its ids are the store's own, not
+    /// `<collection>:<id>`. A book written by the records CLI needs this.
+    pub whole_book: bool,
     pub actor: Option<String>,
     pub spores: Option<PathBuf>,
     /// One recorded transcript to present as the agent set: a session id whose
@@ -107,6 +113,8 @@ impl Default for Request {
             records_root: None,
             book: None,
             collection: None,
+            namespace: None,
+            whole_book: false,
             actor: None,
             spores: None,
             agent_session: None,
@@ -284,11 +292,23 @@ pub fn grants(request: &Request, manifest: &Manifest) -> Result<soil_webgpu::Gra
         match request.collection.clone() {
             Some(collection) => {
                 let book = request.book.clone().unwrap_or_else(|| collection.clone());
+                // The name a guest asks for and the collection a book stores are
+                // two different things: ohmOS says `personal`, the book stores
+                // `contacts` records. They coincide only when nobody says
+                // otherwise.
+                let namespace = request
+                    .namespace
+                    .clone()
+                    .unwrap_or_else(|| collection.clone());
+                // `--whole-book` says the book is the collection: its ids are
+                // the store's own (`contact-<hash>`), not `<collection>:<id>`.
+                let collection = if request.whole_book {
+                    String::new()
+                } else {
+                    collection
+                };
                 grants.records = Some(soil_webgpu::RecordsAccess::book(
-                    root,
-                    &collection,
-                    &book,
-                    &collection,
+                    root, &namespace, &book, &collection,
                 ));
             }
             None if granted => {
