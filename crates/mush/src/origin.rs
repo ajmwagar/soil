@@ -12,13 +12,17 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use serde_json::json;
+use serde_json::{Value, json};
 
-use crate::desktop;
+use crate::{
+    desktop::{self, Desktop},
+    project,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Readiness {
-    /// The Desktop is registered and its projection is a live mount.
+    /// The Desktop is registered and its projection is a live mount, or the
+    /// checkout it attached is on this device.
     Ready,
     /// A Desktop matched, but nothing is mounted at its projection path.
     NotMounted,
@@ -52,13 +56,22 @@ pub struct Origin {
     pub desktop: Option<String>,
     pub desktop_root: Option<PathBuf>,
     pub mount: Option<PathBuf>,
-    pub project: Option<PathBuf>,
+    /// The checkout this origin resolves to: an attached one, or the place the
+    /// Desktop would project it.
+    pub path: Option<PathBuf>,
+    /// One spelling for the project: `github.com/owner/repo`, or `path:<checkout>`
+    /// when the checkout has no remote.
+    pub project: Option<String>,
     pub readiness: Readiness,
 }
 
 impl Origin {
-    pub fn to_json(&self) -> serde_json::Value {
-        json!({
+    /// The same envelope every `--json` here prints: `ok`, this origin's own
+    /// context, then the project row. The row keys are always present, `null`
+    /// where nothing is known, so a consumer never has to guess the shape.
+    pub fn to_json(&self) -> Value {
+        let mut fields = json!({
+            "ok": self.readiness == Readiness::Ready,
             "cwd": self.cwd.display().to_string(),
             "thread": self.thread,
             "delta_worktree": self.delta_worktree,
@@ -68,20 +81,61 @@ impl Origin {
             "desktop": self.desktop,
             "desktop_root": self.desktop_root.as_ref().map(|path| path.display().to_string()),
             "mount": self.mount.as_ref().map(|path| path.display().to_string()),
-            "project": self.project.as_ref().map(|path| path.display().to_string()),
             "readiness": self.readiness.as_str(),
-        })
+        });
+        let row = match (&self.desktop, &self.path) {
+            (Some(desktop), Some(path)) => Some(
+                project::ProjectRef {
+                    project: self.project.clone(),
+                    path: path.clone(),
+                }
+                .to_json(desktop),
+            ),
+            _ => None,
+        };
+        if let Value::Object(fields) = &mut fields {
+            match row {
+                Some(Value::Object(row)) => fields.extend(row),
+                _ => {
+                    for key in ["project", "path", "branch", "commit", "base", "role"] {
+                        fields.insert(key.to_string(), Value::Null);
+                    }
+                    fields.insert("project".into(), json!(self.project));
+                    fields.insert(
+                        "path".into(),
+                        json!(self.path.as_ref().map(|path| path.display().to_string())),
+                    );
+                }
+            }
+        }
+        fields
     }
 }
 
 /// Resolve `cwd` against the Desktop registry and the live mount table.
 pub fn resolve(cwd: &Path) -> Origin {
+    resolve_in(cwd, &desktop::list().unwrap_or_default())
+}
+
+/// Resolve against a given registry, so the matching rules can be tested
+/// without reading the caller's own.
+fn resolve_in(cwd: &Path, desktops: &[Desktop]) -> Origin {
     let thread = std::env::var("DELTA_CURRENT_THREAD_ID")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     let delta_worktree = delta_worktree_id(cwd);
-    let desktops = desktop::list().unwrap_or_default();
+
+    // Strongest first: a checkout the Desktop attached, then the projection it
+    // mounted, then a repository some Desktop claims by name.
+    let attached = desktops.iter().find_map(|desktop| {
+        desktop
+            .projects
+            .iter()
+            .filter(|row| path_is_under(cwd, &row.path))
+            .max_by_key(|row| row.path.components().count())
+            .map(|row| (desktop, row))
+    });
     let mount_match = desktops
         .iter()
         .find(|desktop| path_is_under(cwd, &desktop.mount));
@@ -108,15 +162,38 @@ pub fn resolve(cwd: &Path) -> Origin {
     // agent is inside answers this.
     let marble_project = marble_project_from(cwd);
 
-    let matched = mount_match.or_else(|| {
-        repo.as_deref().and_then(|repo| {
-            desktops
-                .iter()
-                .find(|desktop| desktop.projects.iter().any(|project| project == repo))
-        })
-    });
+    // Read the caller's own checkout once: it names the project even when no
+    // Desktop has a row for it yet, and it lets a Desktop match a tree it does
+    // not contain (a worktree of an attached checkout keeps the identity).
+    let checkout = project::checkout_root(cwd);
+    let checkout_identity = checkout.as_deref().map(project::identity_of);
 
-    let Some(desktop) = matched else {
+    let matched = attached
+        .map(|(desktop, row)| (desktop, Some(row)))
+        .or_else(|| mount_match.map(|desktop| (desktop, None)))
+        .or_else(|| {
+            repo.as_deref().and_then(|repo| {
+                desktops.iter().find_map(|desktop| {
+                    desktop
+                        .projects
+                        .iter()
+                        .find(|row| row.name() == Some(repo))
+                        .map(|row| (desktop, Some(row)))
+                })
+            })
+        })
+        .or_else(|| {
+            let identity = checkout_identity.as_deref()?;
+            desktops.iter().find_map(|desktop| {
+                desktop
+                    .projects
+                    .iter()
+                    .find(|row| row.identity().as_deref() == Some(identity))
+                    .map(|row| (desktop, Some(row)))
+            })
+        });
+
+    let Some((desktop, row)) = matched else {
         return Origin {
             cwd: cwd.to_path_buf(),
             thread,
@@ -127,21 +204,33 @@ pub fn resolve(cwd: &Path) -> Origin {
             desktop: None,
             desktop_root: None,
             mount: None,
-            project: None,
+            project: checkout_identity,
+            path: checkout,
             readiness: Readiness::Unregistered,
         };
     };
 
     let mount = desktop.mount.clone();
-    let project = repo
-        .as_deref()
-        .map(|repo| mount.join("projects").join(repo));
-    let readiness = if !is_mount_point(&mount) {
-        Readiness::NotMounted
-    } else if !project.as_deref().is_some_and(Path::exists) {
-        Readiness::NoProject
-    } else {
+    let path = row.map(|row| row.path.clone()).or_else(|| {
+        repo.as_deref()
+            .map(|repo| mount.join("projects").join(repo))
+    });
+    // A row may carry the identity it was attached with; a claim may not, and a
+    // projection is only a name until something reads the checkout.
+    let identity = row
+        .and_then(|row| row.identity())
+        .or_else(|| path.as_deref().and_then(project::id))
+        .or(checkout_identity);
+    // An attached checkout is a real path on this device. A projection is only
+    // usable when something is actually mounted there.
+    let attached_row = row.is_some_and(|row| !path_is_under(&row.path, &mount));
+    let present = path.as_deref().is_some_and(Path::exists);
+    let readiness = if present && (attached_row || is_mount_point(&mount)) {
         Readiness::Ready
+    } else if !attached_row && !is_mount_point(&mount) {
+        Readiness::NotMounted
+    } else {
+        Readiness::NoProject
     };
 
     Origin {
@@ -154,7 +243,8 @@ pub fn resolve(cwd: &Path) -> Origin {
         desktop: Some(desktop.id.clone()),
         desktop_root: Some(desktop.root.clone()),
         mount: Some(mount),
-        project,
+        path,
+        project: identity,
         readiness,
     }
 }
@@ -307,7 +397,10 @@ pub fn run(mut args: Vec<String>) -> Result<()> {
             );
         }
         if let Some(project) = &origin.project {
-            println!("project: {}", project.display());
+            println!("project: {project}");
+        }
+        if let Some(path) = &origin.path {
+            println!("path: {}", path.display());
         }
         println!("status: {}", origin.readiness.as_str());
     }
@@ -346,8 +439,110 @@ mod tests {
 
     #[test]
     fn a_path_outside_any_registered_mount_is_unregistered() {
-        let origin = resolve(Path::new("/tmp/not-a-desktop-anywhere"));
+        let origin = resolve_in(Path::new("/tmp/not-a-desktop-anywhere"), &[]);
         assert_eq!(origin.readiness, Readiness::Unregistered);
         assert_eq!(origin.desktop, None);
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "mush")
+            .env("GIT_AUTHOR_EMAIL", "mush@example.com")
+            .env("GIT_COMMITTER_NAME", "mush")
+            .env("GIT_COMMITTER_EMAIL", "mush@example.com")
+            .output()
+            .expect("run git");
+        assert!(output.status.success(), "git {args:?} failed");
+    }
+
+    /// A Desktop with one row, rooted somewhere the test owns.
+    fn desktop_with_row(base: &Path, path: PathBuf) -> Desktop {
+        Desktop {
+            id: "acme".into(),
+            name: "Acme".into(),
+            root: base.join("vfs"),
+            mount: base.join("mount"),
+            theme: "deep".into(),
+            projects: vec![project::ProjectRef {
+                project: Some("github.com/owner/repo".into()),
+                path,
+            }],
+        }
+    }
+
+    #[test]
+    fn a_worktree_resolves_to_the_desktop_that_attached_its_repository() {
+        let temp = tempfile::tempdir().unwrap();
+        let primary = temp.path().join("checkout");
+        std::fs::create_dir_all(&primary).unwrap();
+        git_in(&primary, &["init", "-q"]);
+        git_in(
+            &primary,
+            &["remote", "add", "origin", "git@github.com:Owner/Repo.git"],
+        );
+        git_in(&primary, &["commit", "-q", "--allow-empty", "-m", "first"]);
+        // A tree of the same repository, somewhere else and under another name.
+        let worktree = temp.path().join("wt-repo");
+        git_in(
+            &primary,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                worktree.to_str().unwrap(),
+                "-b",
+                "feature",
+            ],
+        );
+
+        let desktops = [desktop_with_row(temp.path(), primary.clone())];
+        let origin = resolve_in(&worktree, &desktops);
+        assert_eq!(origin.desktop.as_deref(), Some("acme"));
+        assert_eq!(origin.project.as_deref(), Some("github.com/owner/repo"));
+        assert_eq!(origin.readiness, Readiness::Ready);
+        assert_eq!(origin.path.as_deref(), Some(primary.as_path()));
+    }
+
+    #[test]
+    fn an_unattached_checkout_reports_its_identity_and_ownerless_state() {
+        let temp = tempfile::tempdir().unwrap();
+        git_in(temp.path(), &["init", "-q"]);
+        git_in(
+            temp.path(),
+            &["remote", "add", "origin", "https://github.com/owner/repo"],
+        );
+        git_in(
+            temp.path(),
+            &["commit", "-q", "--allow-empty", "-m", "first"],
+        );
+
+        let origin = resolve_in(temp.path(), &[]);
+        assert_eq!(origin.readiness, Readiness::Unregistered);
+        assert_eq!(origin.project.as_deref(), Some("github.com/owner/repo"));
+        assert_eq!(origin.desktop, None);
+    }
+
+    #[test]
+    fn a_claim_inside_an_unmounted_projection_is_not_mistaken_for_ready() {
+        let temp = tempfile::tempdir().unwrap();
+        let desktop = Desktop {
+            id: "acme".into(),
+            name: "Acme".into(),
+            root: temp.path().join("vfs"),
+            mount: temp.path().join("mount"),
+            theme: "deep".into(),
+            projects: vec![project::ProjectRef::new(
+                temp.path().join("mount/projects/soil"),
+            )],
+        };
+        std::fs::create_dir_all(temp.path().join("mount/projects/soil")).unwrap();
+        let origin = resolve_in(&temp.path().join("mount/projects/soil"), &[desktop]);
+        assert_eq!(origin.desktop.as_deref(), Some("acme"));
+        // A directory is not a mount: the projection is not ready to use.
+        assert_eq!(origin.readiness, Readiness::NotMounted);
+        assert_eq!(origin.project, None);
     }
 }

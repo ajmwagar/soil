@@ -199,8 +199,19 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
                 run.present.spores = Some(PathBuf::from(value(index + 1)?));
                 index += 2;
             }
+            // Present one recorded transcript as the agent set: the book a
+            // harness wrote (`fungos/agents/<session>`), read back through
+            // `soil:agents`. Needs `--records ROOT` beside it.
+            "--agent-session" => {
+                run.present.agent_session = Some(value(index + 1)?);
+                index += 2;
+            }
             "--bind" => {
                 run.present.bind = Some(value(index + 1)?);
+                index += 2;
+            }
+            "--hue-bridge" => {
+                run.present.hue_bridge = Some(value(index + 1)?);
                 index += 2;
             }
             "--token" => {
@@ -223,6 +234,14 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
 
 /// Run a Spore until the listener closes.
 pub fn run(args: &[String]) -> Result<()> {
+    // `soil spore warm <path>`: compile it into the window host's AOT cache and
+    // stop. This is the wait an install pays so the first click does not.
+    if args.first().map(String::as_str) == Some("warm") {
+        let path = args
+            .get(1)
+            .context("usage: soil spore warm <spore-dir|package.spore>")?;
+        return warm(Path::new(path));
+    }
     // A host that cannot say what it is doing is a host nobody can operate. The
     // default is `info` for the host crates, so a plain launch is not silent; an
     // operator can widen or narrow it with `RUST_LOG`, exactly as they can for
@@ -253,9 +272,32 @@ pub fn run(args: &[String]) -> Result<()> {
     crate::present::show(&spore.root, &spore.manifest, &run.present, &surfaces, Some(&run))
 }
 
-/// Serve the hosts a Spore claims in its `[http]` table, until the listener
-/// closes.
+/// Compile a package for the window that will open it.
 ///
+/// The cache is the window host's, keyed by the module's digest, and
+/// [`canvas_winit::prewarm`] is the only thing that writes it — the same call
+/// the launcher makes for the Spores it has not warmed yet. A composition has no
+/// module, which is a fact about the package rather than a failure.
+fn warm(path: &Path) -> Result<()> {
+    let spore = Spore::resolve(path)?;
+    if spore.manifest.module.is_none() {
+        println!(
+            "soil: {} ships no module; nothing to compile",
+            spore.manifest.spore.id
+        );
+        return Ok(());
+    }
+    let file = canvas_winit::prewarm(&spore.root)?;
+    println!(
+        "soil: warmed {} ({})",
+        spore.manifest.spore.id,
+        file.display()
+    );
+    Ok(())
+}
+
+/// Serve the hosts a Spore claims in its `[http]` table, until the listener
+/// closes.///
 /// It takes the package directory rather than a resolved `Spore` because a
 /// composite run serves these hosts on their own thread while a window is open
 /// on this one.
@@ -646,6 +688,23 @@ mod tests {
         format!(
             "schema = 1\n[spore]\nid = \"dev.fungos.test\"\nname = \"test\"\nversion = \"0.1.0\"\nlicense = \"MIT\"\nsummary = \"s\"\n[engine]\nsoil = \">=0.1\"\ntarget = \"wasm32-wasip2\"\n[module]\npath = \"module.wasm\"\n[ui]\nentry = \"ui/main.lua\"\n[launch]\ndefault = \"canvas\"\nsurfaces = [\"canvas\"]\n{http}"
         )
+    }
+
+    #[test]
+    fn a_bridge_travels_with_the_run() {
+        let (package, run) = parse(&[
+            "run".into(),
+            "/tmp/example".into(),
+            "--hue-bridge".into(),
+            "http://192.168.1.9".into(),
+        ])
+        .expect("parse");
+        assert_eq!(package, PathBuf::from("/tmp/example"));
+        assert_eq!(
+            run.present.hue_bridge.as_deref(),
+            Some("http://192.168.1.9"),
+            "the window a Spore opens inherits the bridge the run was given"
+        );
     }
 
     #[test]

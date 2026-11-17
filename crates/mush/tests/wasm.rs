@@ -8,9 +8,28 @@ use fungos_vfs::Vfs;
 /// Every test runs the binary without a daemon: one started here would outlive
 /// the test, keep the shared records store open, and block the next test (or
 /// the next `cargo test` run) behind it.
+///
+/// It also runs with an empty home. The per-user home is projected into every
+/// root, so a developer's `~/.local/share/fungos/home/.mushrc` — a prompt
+/// theme, an alias — would rewrite the output each test asserts on. A test that
+/// wants a home writes one into its root and starts from a shell with no dotfiles.
+///
+/// The content store stays this machine's. Fixtures are written by the test
+/// process, which keeps content in `$XDG_DATA_HOME/fungos-vfs` (or
+/// `$HOME/.local/share/fungos-vfs`); a child with an empty home would otherwise
+/// look in a different store and read every fixture as an unhydrated
+/// placeholder. Naming the data home keeps the store while the dotfiles go.
 fn mush_command() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_mush"));
     command.env("MUSH_NO_DAEMON", "1");
+    let home = std::env::temp_dir().join("mush-test-home");
+    std::fs::create_dir_all(&home).expect("create the test home");
+    command.env("HOME", home);
+    if let Some(data) = std::env::var_os("XDG_DATA_HOME") {
+        command.env("XDG_DATA_HOME", data);
+    } else if let Some(home) = std::env::var_os("HOME") {
+        command.env("XDG_DATA_HOME", PathBuf::from(home).join(".local/share"));
+    }
     command
 }
 
@@ -367,7 +386,16 @@ fn wasm_spore_sees_the_agent_environment_and_keeps_vfs_paths() {
     assert_eq!(lines[0], "sk-test");
     // ... while the names with VFS meaning keep it, so `cd $HOME` and command
     // lookup still resolve inside the shell.
-    assert_eq!(lines[1], "/");
+    assert!(
+        lines[1].starts_with("/home/"),
+        "the shell's HOME is a VFS path: {}",
+        lines[1]
+    );
+    assert!(
+        !lines[1].starts_with(std::env::var("HOME").unwrap_or_default().as_str()),
+        "the shell's HOME is not the host's: {}",
+        lines[1]
+    );
     assert!(lines[2].starts_with("/commands"), "{}", lines[2]);
 }
 

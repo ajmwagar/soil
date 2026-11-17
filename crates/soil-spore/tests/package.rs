@@ -737,3 +737,33 @@ fn placement_names_the_devices_a_package_is_for() {
         "a package that says nothing is installable anywhere"
     );
 }
+
+#[test]
+fn handles_must_be_a_media_type_or_an_extension_glob() {
+    let root = lua_only_fixture();
+    let mut manifest = Manifest::load(&root).unwrap();
+
+    manifest.handles = vec!["*.docx".into(), "text/markdown".into()];
+    assert!(
+        manifest.validate().is_ok(),
+        "a glob and a media type are both declarations"
+    );
+
+    // A word that matches nothing reads as a capability in review and answers
+    // nothing at an open, which is worse than declaring nothing at all.
+    manifest.handles = vec!["docx".into()];
+    let error = manifest.validate().unwrap_err().to_string();
+    assert!(error.contains("neither a media type"), "{error}");
+
+    manifest.handles = vec!["*.md".into(), "*.MD".into()];
+    assert!(
+        manifest.validate().is_err(),
+        "the same kind twice is one declaration and a mistake"
+    );
+
+    manifest.handles = Vec::new();
+    assert!(
+        manifest.validate().is_ok(),
+        "a Spore that opens nothing is honest, not invalid"
+    );
+}

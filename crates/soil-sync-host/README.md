@@ -21,6 +21,43 @@ session locally. A copied session JSON cannot widen the grant. The permit is
 issued with the same Mycelium access authority the fleet already uses for other
 signed grants; the host does not mint a new root.
 
+## Peer meshes
+
+One trust document authorizes one pair of endpoints, so a host that syncs with
+several peers loads one document per peer:
+
+```json
+{
+  "trust_file": "~/.config/fungos/soil-sync/records-trust.json",
+  "trust_files": ["~/.config/fungos/soil-sync/records-trust-records.cat-s22.json"]
+}
+```
+
+`trust_file` is the original single-peer setting and stays valid on its own;
+`trust_files` adds the rest. `VerifierSet` requires every document to name this
+host's endpoint key on one side, indexes it by the other side, and rejects two
+documents for the same peer. Outbound it builds the session assertion from the
+document of the peer being dialed. Inbound it tries each document in turn, and
+each one still checks signature, signed scope digest, validity window and key
+binding, so the first that verifies is the only one that can.
+
+`peers[].books` limits a peer to those books. Leaving it empty keeps the older
+meaning, every book this host lists, which is what a two-host config relies on.
+
+Pairing a peer against the local config is one command:
+
+```sh
+soil-sync permit --config ~/.config/fungos/soil-sync/records-macbook.json \
+  --key ~/.mycelium/access.key \
+  --peer records.cat-s22 --responder-endpoint <cat-s22-endpoint-id> \
+  --peer-addr 192.168.10.101:18795
+```
+
+It takes this host's identity (audience, installation, producer, endpoint key)
+from the config, writes `records-trust-records.cat-s22.json` beside it, and
+prints the `peers[]` and `trust_files[]` entries. The same document goes on the
+peer, mirrored.
+
 ## Commands
 
 ```sh
@@ -90,4 +127,5 @@ cargo test -p soil-sync-host
 
 The tests run real encrypted Iroh loopback sessions. One uses a Mycelium-signed
 access grant and local permit, then syncs a contact record through the shared
-host.
+host. Another runs three hosts -- one `VerifierSet` with two documents -- and
+syncs the middle host with each peer in both directions.

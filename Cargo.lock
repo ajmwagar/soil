@@ -691,6 +691,9 @@ dependencies = [
  "portable-pty",
  "softbuffer",
  "soil",
+ "soil-agent-host",
+ "soil-agent-records",
+ "soil-agentsd",
  "soil-spore",
  "soil-vt",
  "soil-webgpu",
@@ -2416,6 +2419,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fungos-agents-event"
+version = "0.1.0"
+source = "git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd#1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "fungos-content"
 version = "0.1.0"
 dependencies = [
@@ -2438,7 +2449,7 @@ dependencies = [
 [[package]]
 name = "fungos-records"
 version = "0.1.0"
-source = "git+https://github.com/mycelium-linux/records.git?rev=388d6dffbf8c68b48a581abe5bc618f35278241a#388d6dffbf8c68b48a581abe5bc618f35278241a"
+source = "git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd#1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd"
 dependencies = [
  "anyhow",
  "blake3",
@@ -7067,7 +7078,7 @@ dependencies = [
  "bytes",
  "clap",
  "ed25519-dalek 2.2.0",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=388d6dffbf8c68b48a581abe5bc618f35278241a)",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
  "fungos-vfs",
  "hmac",
  "http",
@@ -7084,6 +7095,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "soil-agent-host",
+ "soil-marbles",
  "tempfile",
  "tiny_http",
  "tokio",
@@ -7118,6 +7131,25 @@ dependencies = [
 [[package]]
 name = "soil-agent-host"
 version = "0.1.0"
+
+[[package]]
+name = "soil-agent-records"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fungos-agents-event",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
+ "serde_json",
+ "soil-agent-host",
+ "tempfile",
+]
+
+[[package]]
+name = "soil-agentsd"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "soil-android"
@@ -7261,7 +7293,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "fungos-content",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=388d6dffbf8c68b48a581abe5bc618f35278241a)",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
  "serde",
  "serde_json",
  "tempfile",
@@ -7274,7 +7306,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "clap",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=388d6dffbf8c68b48a581abe5bc618f35278241a)",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
  "serde",
  "serde_json",
  "tempfile",
@@ -7288,7 +7320,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=388d6dffbf8c68b48a581abe5bc618f35278241a)",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
  "serde_json",
  "tempfile",
  "tiny_http",
@@ -7303,6 +7335,7 @@ name = "soil-dev-host"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde_json",
  "soil",
  "soil-ble-host",
  "soil-notify-host",
@@ -7444,7 +7477,7 @@ name = "soil-marbles-import"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=388d6dffbf8c68b48a581abe5bc618f35278241a)",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
  "rusqlite",
  "serde_json",
 ]
@@ -7465,7 +7498,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=388d6dffbf8c68b48a581abe5bc618f35278241a)",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
  "serde_json",
  "tempfile",
 ]
@@ -7484,6 +7517,10 @@ dependencies = [
  "wasmtime",
  "wasmtime-wasi",
 ]
+
+[[package]]
+name = "soil-open"
+version = "0.1.0"
 
 [[package]]
 name = "soil-openapi"
@@ -7642,7 +7679,7 @@ name = "soil-search-host"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=388d6dffbf8c68b48a581abe5bc618f35278241a)",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
  "fungos-vfs",
  "plist",
  "serde",
@@ -7667,6 +7704,7 @@ dependencies = [
  "serde",
  "serde_json",
  "soil",
+ "soil-agent-records",
  "soil-spore",
  "soil-web-bridge",
  "soil-webgpu",
@@ -7676,6 +7714,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unibus",
+ "url",
 ]
 
 [[package]]
@@ -7720,9 +7759,10 @@ dependencies = [
  "anyhow",
  "clap",
  "ed25519-dalek 2.2.0",
- "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=388d6dffbf8c68b48a581abe5bc618f35278241a)",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
  "iroh",
  "mycelium-peer-protocol",
+ "rusqlite",
  "serde",
  "serde_json",
  "soil-notify-host",
@@ -8084,6 +8124,14 @@ dependencies = [
  "once_cell",
  "rustix 1.1.6",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tend-core"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "soil-spore",
 ]
 
 [[package]]

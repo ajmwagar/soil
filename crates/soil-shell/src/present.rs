@@ -39,9 +39,7 @@ impl Surface {
             "web" | "bridge" => Self::Web,
             "frame" | "headless" => Self::Headless,
             "framebuffer" | "fb" => Self::Framebuffer,
-            other => bail!(
-                "unknown surface {other:?} (http, window, web, frame, framebuffer)"
-            ),
+            other => bail!("unknown surface {other:?} (http, window, web, frame, framebuffer)"),
         })
     }
 
@@ -76,9 +74,14 @@ pub struct Request {
     pub collection: Option<String>,
     pub actor: Option<String>,
     pub spores: Option<PathBuf>,
+    /// One recorded transcript to present as the agent set: a session id whose
+    /// book lives under `records_root` (`fungos/agents/<session>`).
+    pub agent_session: Option<String>,
     /// Where the web surface listens; loopback by default.
     pub bind: Option<String>,
     pub token: Option<String>,
+    /// The bridge `hue.local` maps to, for a Spore that was granted it.
+    pub hue_bridge: Option<String>,
     /// The environment variable Palisade signs actors with.
     pub actor_secret_env: Option<String>,
     /// Keep one book per principal instead of one book for the process.
@@ -99,8 +102,10 @@ impl Default for Request {
             collection: None,
             actor: None,
             spores: None,
+            agent_session: None,
             bind: None,
             token: None,
+            hue_bridge: None,
             actor_secret_env: None,
             per_principal: false,
         }
@@ -302,8 +307,31 @@ pub fn grants(request: &Request, manifest: &Manifest) -> Result<soil_webgpu::Gra
             ),
         }
     }
-    if let Some(root) = &request.spores {
-        grants = grants.with_catalog_roots(vec![root.clone()]);
+    if let Some(spores_root) = &request.spores {
+        grants = grants.with_catalog_roots(vec![spores_root.clone()]);
+    }
+    // A recorded transcript is a different authority from a `soil:records`
+    // grant: the guest asks `soil:agents` for an agent and never sees a book.
+    // Binding one is how a capture shows what a harness actually recorded.
+    if let Some(session) = &request.agent_session {
+        let root = request
+            .records_root
+            .clone()
+            .or_else(default_records_root)
+            .context("--agent-session needs --records ROOT: the book has to live somewhere")?;
+        // `all` is the wall: every session this store holds. One id is one
+        // agent, which is what a window opened for a conversation wants.
+        grants.agents = Some(if session == "all" {
+            Box::new(
+                soil_agent_records::RecordedSessions::open(&root)
+                    .with_context(|| format!("open the recorded sessions in {}", root.display()))?,
+            )
+        } else {
+            Box::new(
+                soil_agent_records::RecordsAgents::open(&root, session)
+                    .with_context(|| format!("open the transcript of {session}"))?,
+            )
+        });
     }
     grants.principal = match &request.actor {
         Some(actor) => soil_webgpu::Grants::new().actor(actor.clone()).principal,
@@ -370,10 +398,25 @@ pub fn show(
     }
 
     if surfaces.contains(&Surface::Window) {
+        // A geode purpose without a socket is not a grant, and the window
+        // refuses a half pair: hand it both or neither.
+        let geode = http.and_then(|run| {
+            run.geode_socket
+                .clone()
+                .map(|socket| (socket, run.geode_purpose.clone()))
+        });
+        let hue_bridge = match request.hue_bridge.as_deref() {
+            Some(bridge) => Some(hue_url(bridge)?),
+            None => None,
+        };
         let options = canvas_winit::Options {
             module: Some(module.clone()),
             capture: request.frame.clone(),
-            frames: if request.frame.is_some() { Some(1) } else { None },
+            frames: if request.frame.is_some() {
+                Some(1)
+            } else {
+                None
+            },
             keys: request.keys.clone(),
             logical_size: (request.size.0 as f64, request.size.1 as f64),
             spores: request.spores.clone(),
@@ -382,6 +425,16 @@ pub fn show(
             records_book: request.book.clone(),
             records_collection: request.collection.clone(),
             actor: request.actor.clone(),
+            agent_session: request.agent_session.clone(),
+            // The grants are the run's, not the surface's: a window that
+            // refused `soil:http` while the bridge allowed it would make the
+            // same Spore behave differently depending on where it was watched.
+            origins: http
+                .map(|run| run.allow_origins.clone())
+                .unwrap_or_default(),
+            geode_socket: geode.as_ref().map(|(socket, _)| socket.clone()),
+            geode_purpose: geode.as_ref().map(|(_, purpose)| purpose.clone()),
+            hue_bridge,
             ..canvas_winit::Options::default()
         };
         canvas_winit::run(options)?;
@@ -424,6 +477,20 @@ pub fn resolve_module(root: &Path, manifest: &Manifest) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// A bridge URL this host is willing to bind `hue.local` to.
+///
+/// The guest never sees a bridge address or its key: it asks for `hue.local` and
+/// the transport rewrites it. So the address arrives once, here, and a value
+/// that is not an absolute http(s) URL is refused before a window opens rather
+/// than becoming a Spore that cannot reach its lights.
+fn hue_url(value: &str) -> Result<url::Url> {
+    let url = url::Url::parse(value).with_context(|| format!("--hue-bridge {value}"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        bail!("--hue-bridge needs an absolute http(s) URL, not {value}");
+    }
+    Ok(url)
+}
+
 fn capture(module: &Path, manifest: &Manifest, request: &Request) -> Result<()> {
     let frame = request
         .frame
@@ -431,8 +498,12 @@ fn capture(module: &Path, manifest: &Manifest, request: &Request) -> Result<()> 
         .context("--surface frame needs --frame FILE")?;
     let bytes = std::fs::read(module).with_context(|| format!("read {}", module.display()))?;
     let grants = grants(request, manifest)?;
-    let (status, captured) =
-        soil_webgpu::run_component_capture_with_grants(&bytes, request.size.0, request.size.1, grants)?;
+    let (status, captured) = soil_webgpu::run_component_capture_with_grants(
+        &bytes,
+        request.size.0,
+        request.size.1,
+        grants,
+    )?;
     anyhow::ensure!(status == 0, "guest returned status {status}");
     let captured = captured.context("the guest did not present a Canvas frame")?;
     write_frame(&frame, &captured)?;
@@ -452,11 +523,8 @@ fn present_framebuffer(
     device: &str,
 ) -> Result<()> {
     let bytes = std::fs::read(module).with_context(|| format!("read {}", module.display()))?;
-    let presenter = soil_webgpu::fb::FramebufferPresenter::open(
-        device,
-        request.size.0,
-        request.size.1,
-    )?;
+    let presenter =
+        soil_webgpu::fb::FramebufferPresenter::open(device, request.size.0, request.size.1)?;
     let runtime = soil_webgpu::WebGpuRuntime::new()?;
     let mut setup = soil_webgpu::HostSetup::capture(Box::new(presenter));
     let grants = grants(request, manifest)?;
@@ -533,5 +601,16 @@ mod tests {
             vec![0, 0, 255, 255, 0, 0],
             "a framebuffer takes blue first"
         );
+    }
+
+    #[test]
+    fn a_bridge_must_be_an_origin_a_transport_can_use() {
+        assert!(hue_url("http://192.168.1.9").is_ok());
+        assert!(hue_url("https://bridge.local:443").is_ok());
+        assert!(
+            hue_url("192.168.1.9").is_err(),
+            "a bare host is not an origin"
+        );
+        assert!(hue_url("ftp://bridge.local").is_err());
     }
 }

@@ -207,6 +207,16 @@ pub struct Manifest {
     /// Declared absences. Reviewed like grants: intent is written down.
     #[serde(default)]
     pub denied: BTreeMap<String, Vec<String>>,
+    /// The kinds this Spore can open: media types (`application/pdf`) and/or
+    /// extension globs (`*.docx`).
+    ///
+    /// Declared by the Spore, because what a program can open is a property of
+    /// the program — not of the desktop, and not something a second list should
+    /// have to keep in step. The filetype *default* is the preference that
+    /// picks among the declarations; an empty list is the honest answer from a
+    /// Spore that opens nothing.
+    #[serde(default)]
+    pub handles: Vec<String>,
     /// Declares a host-system surface. The host must still allowlist the exact
     /// Spore id and signed digest; this flag is not a grant.
     #[serde(default)]
@@ -1165,6 +1175,25 @@ impl Manifest {
             safe_relative(&ui.entry)?;
             if !ui.entry.ends_with(".lua") {
                 return Err(Error::Invalid("ui.entry must end in .lua".into()));
+            }
+        }
+
+        // A declaration nothing can match is worse than no declaration: it
+        // reads as a capability in a review and answers nothing at an open.
+        let mut seen = std::collections::BTreeSet::new();
+        for handle in &self.handles {
+            let kind = handle.trim();
+            let media_type = kind.contains('/') && !kind.contains(' ') && !kind.contains('*');
+            let glob = kind
+                .strip_prefix("*.")
+                .is_some_and(|extension| !extension.is_empty() && !extension.contains('*'));
+            if !(media_type || glob) {
+                return Err(Error::Invalid(format!(
+                    "handles entry {handle:?} is neither a media type (application/pdf) nor an extension glob (*.pdf)"
+                )));
+            }
+            if !seen.insert(kind.to_ascii_lowercase()) {
+                return Err(Error::Invalid(format!("handles lists {handle:?} twice")));
             }
         }
 
