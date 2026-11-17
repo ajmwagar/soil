@@ -47,8 +47,8 @@ pub const CONTRACTS: &[Contract] = &[
     Contract {
         file: "wit/soil-time.wit",
         source: include_str!("../../../wit/soil-time.wit"),
-        package: "soil:time@1.0.0",
-        interfaces: &[("time", &["monotonic-ms", "tick"])],
+        package: "soil:time@1.1.0",
+        interfaces: &[("time", &["monotonic-ms", "wall-clock", "tick"])],
     },
     Contract {
         file: "wit/soil-storage.wit",
@@ -108,8 +108,8 @@ pub const CONTRACTS: &[Contract] = &[
     Contract {
         file: "wit/soil-spore.wit",
         source: include_str!("../../../wit/soil-spore.wit"),
-        package: "soil:spore@0.1.0",
-        interfaces: &[("catalog", &["entries", "launch"])],
+        package: "soil:spore@0.2.0",
+        interfaces: &[("catalog", &["entries", "launch", "running", "stop"])],
     },
     Contract {
         file: "wit/soil-search.wit",

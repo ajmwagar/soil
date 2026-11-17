@@ -15,7 +15,7 @@ credential resolution stay in host adapters.
 |---|---|---|
 | `soil:principal@0.1.0` | wired | host-attested Mycelium/OIDC principal; no token exposure |
 | `soil:input@1.0.0` | wired | shared normalized input types; no grant |
-| `soil:time@1.0.0` | wired | monotonic clock and host ticks |
+| `soil:time@1.1.0` | wired | monotonic clock, wall clock and host ticks |
 | `soil:vfs@1.0.0` | wired | read-only workspace namespace |
 | `soil:vfs-mut@0.1.0` | wired | separate mutation grant |
 | `soil:index@1.1.0` | wired | derived VFS browse/search/KNN |
