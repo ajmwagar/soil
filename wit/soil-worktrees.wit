@@ -1,10 +1,11 @@
 // The checkouts a Desktop knows, read as the rows `mush attach` records.
 //
-// A project is a repository, not a directory: `project` is
-// `github.com/owner/repo` (the spelling Operator records), and a checkout and
-// the worktrees cut from it share it. The Desktop owns the rows; this interface
-// only reads them. Attaching, detaching and the approval gate stay host
-// commands, so a Spore cannot widen what a Desktop knows.
+// A project is a repository, not a directory: `project` is `owner/repo` (the
+// spelling GitHub and Operator use), and a checkout and the worktrees cut from
+// it share it. The host keeps the remote's host beside that identity as a dedupe
+// key; it is not part of the name, so a Spore never has to know it. The Desktop
+// owns the rows; this interface only reads them. Attaching and detaching stay
+// host commands, so a Spore cannot widen what a Desktop knows.
 package soil:worktrees@0.1.0;
 
 interface worktrees {

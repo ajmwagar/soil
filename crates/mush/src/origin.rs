@@ -59,9 +59,11 @@ pub struct Origin {
     /// The checkout this origin resolves to: an attached one, or the place the
     /// Desktop would project it.
     pub path: Option<PathBuf>,
-    /// One spelling for the project: `github.com/owner/repo`, or `path:<checkout>`
+    /// One spelling for the project: `owner/repo`, or `path:<checkout>`
     /// when the checkout has no remote.
     pub project: Option<String>,
+    /// The host the remote named: the dedupe key when two hosts carry one slug.
+    pub host: Option<String>,
     pub readiness: Readiness,
 }
 
@@ -87,6 +89,7 @@ impl Origin {
             (Some(desktop), Some(path)) => Some(
                 project::ProjectRef {
                     project: self.project.clone(),
+                    host: self.host.clone(),
                     path: path.clone(),
                 }
                 .to_json(desktop),
@@ -97,10 +100,13 @@ impl Origin {
             match row {
                 Some(Value::Object(row)) => fields.extend(row),
                 _ => {
-                    for key in ["project", "path", "branch", "commit", "base", "role"] {
+                    for key in [
+                        "project", "host", "path", "branch", "commit", "base", "role",
+                    ] {
                         fields.insert(key.to_string(), Value::Null);
                     }
                     fields.insert("project".into(), json!(self.project));
+                    fields.insert("host".into(), json!(self.host));
                     fields.insert(
                         "path".into(),
                         json!(self.path.as_ref().map(|path| path.display().to_string())),
@@ -167,6 +173,9 @@ fn resolve_in(cwd: &Path, desktops: &[Desktop]) -> Origin {
     // not contain (a worktree of an attached checkout keeps the identity).
     let checkout = project::checkout_root(cwd);
     let checkout_identity = checkout.as_deref().map(project::identity_of);
+    // The host is the dedupe key: two hosts can carry the same `owner/repo`,
+    // and only the host tells those rows apart.
+    let checkout_host = checkout.as_deref().and_then(project::host_of);
 
     let matched = attached
         .map(|(desktop, row)| (desktop, Some(row)))
@@ -184,11 +193,18 @@ fn resolve_in(cwd: &Path, desktops: &[Desktop]) -> Origin {
         })
         .or_else(|| {
             let identity = checkout_identity.as_deref()?;
+            let host = checkout_host.as_deref();
             desktops.iter().find_map(|desktop| {
                 desktop
                     .projects
                     .iter()
-                    .find(|row| row.identity().as_deref() == Some(identity))
+                    .find(|row| {
+                        row.identity().as_deref() == Some(identity)
+                            && match (row.host.as_deref(), host) {
+                                (Some(row_host), Some(host)) => row_host == host,
+                                _ => true,
+                            }
+                    })
                     .map(|row| (desktop, Some(row)))
             })
         });
@@ -205,6 +221,7 @@ fn resolve_in(cwd: &Path, desktops: &[Desktop]) -> Origin {
             desktop_root: None,
             mount: None,
             project: checkout_identity,
+            host: checkout_host,
             path: checkout,
             readiness: Readiness::Unregistered,
         };
@@ -244,6 +261,7 @@ fn resolve_in(cwd: &Path, desktops: &[Desktop]) -> Origin {
         desktop_root: Some(desktop.root.clone()),
         mount: Some(mount),
         path,
+        host: row.and_then(|row| row.host.clone()).or(checkout_host),
         project: identity,
         readiness,
     }
@@ -467,7 +485,8 @@ mod tests {
             mount: base.join("mount"),
             theme: "deep".into(),
             projects: vec![project::ProjectRef {
-                project: Some("github.com/owner/repo".into()),
+                project: Some("owner/repo".into()),
+                host: Some("github.com".into()),
                 path,
             }],
         }
@@ -501,7 +520,7 @@ mod tests {
         let desktops = [desktop_with_row(temp.path(), primary.clone())];
         let origin = resolve_in(&worktree, &desktops);
         assert_eq!(origin.desktop.as_deref(), Some("acme"));
-        assert_eq!(origin.project.as_deref(), Some("github.com/owner/repo"));
+        assert_eq!(origin.project.as_deref(), Some("owner/repo"));
         assert_eq!(origin.readiness, Readiness::Ready);
         assert_eq!(origin.path.as_deref(), Some(primary.as_path()));
     }
@@ -521,7 +540,7 @@ mod tests {
 
         let origin = resolve_in(temp.path(), &[]);
         assert_eq!(origin.readiness, Readiness::Unregistered);
-        assert_eq!(origin.project.as_deref(), Some("github.com/owner/repo"));
+        assert_eq!(origin.project.as_deref(), Some("owner/repo"));
         assert_eq!(origin.desktop, None);
     }
 
