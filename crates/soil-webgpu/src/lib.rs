@@ -546,6 +546,12 @@ pub enum InputEvent {
 /// call.
 const FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
 
+/// The queue a presenter fills and the host drains: `soil:present/input`.
+///
+/// One queue per host, shared with whatever produces events — a window, an
+/// evdev reader, or a script's `--keys`.
+pub type InputQueue = Arc<Mutex<VecDeque<InputEvent>>>;
+
 pub struct WebGpuHost {
     instance: Arc<wgpu_core::global::Global>,
     table: ResourceTable,
@@ -2117,9 +2123,30 @@ pub fn run_component_capture_with_grants(
     height: u32,
     grants: Grants,
 ) -> Result<(u32, Option<CanvasFrame>)> {
+    run_component_capture_with_input(bytes, width, height, grants, None)
+}
+
+/// A capture run that can be driven by keys.
+///
+/// The headless surface is the one a script can check, so it has to take keys
+/// too: a run with no window is otherwise a single frame of whatever the guest
+/// drew first, and a screen behind a menu is unreachable. `input` is the queue
+/// the caller fills (from `--keys`, or an evdev reader); a non-empty queue also
+/// makes the host interactive, which is what tells the guest to keep going.
+pub fn run_component_capture_with_input(
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+    grants: Grants,
+    input: Option<InputQueue>,
+) -> Result<(u32, Option<CanvasFrame>)> {
     let runtime = WebGpuRuntime::new()?;
     let capture = FrameCapture::new(width, height);
     let mut setup = HostSetup::capture(Box::new(capture.clone()));
+    if let Some(input) = input {
+        setup.input = input;
+        setup.interactive = true;
+    }
     setup.vfs = grants.vfs;
     setup.records = grants.records;
     setup.principal = grants.principal;

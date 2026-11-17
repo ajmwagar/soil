@@ -525,11 +525,18 @@ fn capture(module: &Path, manifest: &Manifest, request: &Request) -> Result<()> 
         .context("--surface frame needs --frame FILE")?;
     let bytes = std::fs::read(module).with_context(|| format!("read {}", module.display()))?;
     let grants = grants(request, manifest)?;
-    let (status, captured) = soil_webgpu::run_component_capture_with_grants(
+    // A headless run still takes keys: it is the surface a script can check, so
+    // a screen behind a menu would otherwise be unreachable.
+    let input = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    if let Some(script) = &request.keys {
+        play_keys(script, input.clone());
+    }
+    let (status, captured) = soil_webgpu::run_component_capture_with_input(
         &bytes,
         request.size.0,
         request.size.1,
         grants,
+        Some(input),
     )?;
     anyhow::ensure!(status == 0, "guest returned status {status}");
     let captured = captured.context("the guest did not present a Canvas frame")?;
