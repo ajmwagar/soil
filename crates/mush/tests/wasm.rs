@@ -1103,3 +1103,55 @@ fn origin_reports_an_unregistered_path() {
     );
     assert!(stdout.contains("\"desktop\":null"), "{stdout}");
 }
+
+/// The Spore reads the checkouts its Desktop knows through `soil:worktrees`:
+/// the row `mush attach` wrote, plus what git says about the checkout now.
+#[test]
+fn the_spore_reads_the_checkouts_its_desktop_knows() {
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join("vfs");
+    std::fs::create_dir_all(&root).unwrap();
+    let checkout = home.path().join("src/soil");
+    std::fs::create_dir_all(&checkout).unwrap();
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&checkout)
+        .args(["init", "-q"])
+        .status()
+        .expect("run git");
+    assert!(status.success());
+
+    // The registry row, written the way `mush attach` writes it.
+    let registry = home.path().join(".config/fungos/desktops");
+    std::fs::create_dir_all(&registry).unwrap();
+    std::fs::write(
+        registry.join("acme.toml"),
+        format!(
+            "id = \"acme\"\nname = \"Acme\"\nroot = \"{}\"\nmount = \"{}\"\ntheme = \"deep\"\n\n[[project]]\nproject = \"github.com/owner/repo\"\npath = \"{}\"\n",
+            root.display(),
+            home.path().join("mnt/acme").display(),
+            checkout.display()
+        ),
+    )
+    .unwrap();
+
+    let output = mush_command()
+        .env("HOME", home.path())
+        .arg("--desktop")
+        .arg("acme")
+        .arg("--wasm")
+        .arg(module())
+        .arg("--command")
+        .arg("worktrees")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("github.com/owner/repo"), "{stdout}");
+    assert!(stdout.contains("primary"), "{stdout}");
+    assert!(stdout.contains("soil"), "{stdout}");
+}

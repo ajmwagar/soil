@@ -39,6 +39,7 @@ use rand::Rng;
 use rustyline::{Editor, error::ReadlineError, history::FileHistory};
 use serde::{Deserialize, Serialize};
 use crate::soil::command::command as command_abi;
+use crate::soil::worktrees::worktrees as worktrees_abi;
 use soil_command::{CommandRegistry, CommandRunner, RecordsBinding, RunRequest};
 use soil_inference::{GeodeResolver, SoilConfig};
 use soil_spore::manual::{Manual, read_prose};
@@ -60,6 +61,9 @@ struct Host {
     commands: CommandHost,
     spores: SporeCatalog,
     http: ::soil::http_host::HttpHost,
+    /// The Desktop whose checkouts this shell may ask about, when it was
+    /// started for one. `None` is a root with no rows: the shell still runs.
+    desktop: Option<String>,
 }
 
 /// Installed Spore packages, as much of them as a manual needs.
@@ -242,6 +246,7 @@ impl Host {
         records: Option<RecordsBinding>,
         principal: Option<&str>,
         store: Option<&std::path::Path>,
+        desktop: Option<&str>,
     ) -> Result<Self> {
         // Commands and Spores are siblings under the fungOS data directory;
         // `--command-root` and `FUNGOS_COMMAND_ROOT` therefore move both, and
@@ -254,6 +259,7 @@ impl Host {
             commands: CommandHost::new(soil_command::roots(&command_root), records, principal)?,
             spores: SporeCatalog::new(spore_root),
             http: http::host(&access::from_env()),
+            desktop: desktop.map(str::to_string),
         })
     }
 
@@ -297,6 +303,45 @@ impl Host {
             }
         }
         Ok(None)
+    }
+}
+
+/// The checkouts this Desktop knows, as the row `mush attach` wrote plus what
+/// git says about it now.
+///
+/// The registry is read at call time: a daemon outlives the `attach` or
+/// `detach` that changed the rows, and a cached answer would name a checkout
+/// the person no longer has.
+impl worktrees_abi::Host for Host {
+    fn checkouts(&mut self) -> Vec<worktrees_abi::Worktree> {
+        let Some(id) = self.desktop.as_deref() else {
+            return Vec::new();
+        };
+        let Ok(desktop) = crate::desktop::load(id) else {
+            return Vec::new();
+        };
+        let mut rows: Vec<_> = desktop.projects.iter().map(worktree_row).collect();
+        rows.sort_by(|a, b| a.path.cmp(&b.path));
+        rows
+    }
+}
+
+/// One Desktop row as the interface's record, with git read now.
+fn worktree_row(row: &crate::project::ProjectRef) -> worktrees_abi::Worktree {
+    let facts = crate::project::facts(&row.path);
+    worktrees_abi::Worktree {
+        project: row
+            .identity()
+            .unwrap_or_else(|| format!("path:{}", row.path.display())),
+        path: row.path.display().to_string(),
+        branch: facts.branch,
+        commit: facts.commit,
+        base: facts.base,
+        role: match facts.role {
+            "primary" => worktrees_abi::Role::Primary,
+            "worktree" => worktrees_abi::Role::Worktree,
+            _ => worktrees_abi::Role::None,
+        },
     }
 }
 
@@ -470,8 +515,16 @@ impl Runtime {
         command_abi::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host)?;
         crate::soil::net::net::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host)?;
         crate::soil::http::http::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host)?;
+        worktrees_abi::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host)?;
         let component = Component::new(&engine, wasm)?;
-        let host = Host::new(root, command_root, records, principal, store)?;
+        let host = Host::new(
+            root,
+            command_root,
+            records,
+            principal,
+            store,
+            desktop.map(|desktop| desktop.id.as_str()),
+        )?;
         let mut store = Store::new(&engine, host);
         // An epoch-interrupted engine starts at deadline 0, which traps on the
         // first tick. Disarm start-up; each command arms its own timer.
