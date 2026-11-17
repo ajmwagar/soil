@@ -446,6 +446,16 @@ impl State {
             Some(path) => normalize_path(path)?,
             None => state.path.clone(),
         };
+        // Read the directory, not only the index: an agent writes files with
+        // `open(2)` and never calls `vfs.put`, so a snapshot that trusts the
+        // index records the tree the agent *started* with. Ingest is
+        // content-addressed, so a file the store already has costs a hash and
+        // nothing else. A root with no directory at that path is an index-only
+        // tree (a test, or a sync node that never materializes): there is
+        // nothing to read, and the index is the whole truth there.
+        if self.root.join(&path).is_dir() {
+            self.ingest(&self.root.join(&path), &path)?;
+        }
         let tree = snapshot_tree(&self.vfs, &path)?;
         self.put(tree_record(&tree.id), TREE_SCHEMA, &tree)?;
         state.path = path;
@@ -1270,6 +1280,41 @@ mod tests {
             std::fs::read(again.join("src/main.rs")).unwrap(),
             b"fn main() { changed }"
         );
+    }
+
+    #[test]
+    fn a_snapshot_captures_a_file_the_agent_wrote_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vfs");
+        let store = dir.path().join("store");
+        std::fs::create_dir_all(root.join("projects/demo")).unwrap();
+        std::fs::write(root.join("projects/demo/README.md"), b"hello").unwrap();
+        let mut state = State::open(
+            &root,
+            &dir.path().join("records"),
+            "mush-test",
+            "worktree",
+            Some(&store),
+        )
+        .unwrap();
+        let from = root.join("projects/demo").to_string_lossy().to_string();
+        let tree = state
+            .ensure_worktree("lane", "thread-1", Some(&from))
+            .unwrap();
+        let before = state.load_worktree_state("lane").unwrap().head_tree;
+
+        // What an agent does: write with open(2). No `vfs.put`, no index entry.
+        std::fs::write(tree.join("notes.md"), b"reviewed by agent").unwrap();
+        state.snapshot_worktree("lane", None).unwrap();
+
+        let after = state.load_worktree_state("lane").unwrap().head_tree;
+        assert_ne!(before, after, "the snapshot saw the agent's file");
+        let recorded = state
+            .vfs
+            .file("worktrees/lane/notes.md")
+            .unwrap()
+            .expect("the file is in the tree");
+        assert_eq!(recorded.size, b"reviewed by agent".len() as u64);
     }
 
     #[test]

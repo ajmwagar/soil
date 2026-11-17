@@ -468,6 +468,9 @@ pub struct AcpBackend {
     /// The device this endpoint is, as the host labels it. Every session this
     /// backend lists runs there, which is why one endpoint is one device.
     device: Option<String>,
+    /// A loopback forward to a service on another machine. Held for the life of
+    /// the backend: dropping it closes the port the reader is streaming from.
+    tunnel: Option<Tunnel>,
     /// Whether this endpoint is this machine by construction: a spawned or
     /// adopted process is, an attached HTTP service may be anywhere. Only a
     /// local endpoint borrows the kernel's name for itself.
@@ -504,6 +507,30 @@ impl AcpBackend {
         Self::handshake(acp, events, base)
     }
 
+    /// Take over a harness on another machine, over a loopback forward.
+    ///
+    /// `ssh://studio` means "the ACP service on studio's loopback"; soil opens
+    /// the forward, waits for it, and hands the reader a local URL. The tunnel
+    /// is owned here and dies with the backend, so a window that closes leaves
+    /// no ssh behind, and nothing above this module needs to know a process
+    /// exists.
+    pub fn attach_ssh(host: &str, remote_port: u16) -> Result<Self, String> {
+        let tunnel = Tunnel::open(host, remote_port)?;
+        let base = tunnel.base();
+        let mut backend = Self::attach_http(&base)?;
+        backend.tunnel = Some(tunnel);
+        Ok(backend)
+    }
+
+    /// Attach to an endpoint written as a URL: `http(s)://` for a service this
+    /// host can already reach, `ssh://host[:port]` for one behind ssh.
+    pub fn attach_url(url: &str) -> Result<Self, String> {
+        match ssh_target(url) {
+            Some((host, port)) => Self::attach_ssh(&host, port),
+            None => Self::attach_http(url),
+        }
+    }
+
     fn handshake(acp: Arc<Acp>, events: Receiver<Event>, name: &str) -> Result<Self, String> {
         let hello = acp
             .request(
@@ -529,6 +556,7 @@ impl AcpBackend {
             binding: Binding::default(),
             workspace: None,
             device: None,
+            tunnel: None,
             local_endpoint: false,
             started_at_ms: now_ms(),
         })
@@ -1200,9 +1228,150 @@ fn prompt_from_permission(request: u64, params: &Value) -> Option<Prompt> {
     })
 }
 
+/// The remote ACP port an `ssh://host` target means when it names none.
+const ACP_SSH_PORT: u16 = 8787;
+
+/// `ssh://host[:port]` → the host and port to forward to.
+///
+/// A URL rather than a flag per field: one string is what a person writes in a
+/// device list, and an unrecognised scheme is a mistake worth reporting rather
+/// than a host called `http`.
+fn ssh_target(url: &str) -> Option<(String, u16)> {
+    let rest = url.strip_prefix("ssh://")?;
+    let authority = rest.trim_end_matches('/');
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port))
+            if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            (host, port.parse().ok()?)
+        }
+        _ => (authority, ACP_SSH_PORT),
+    };
+    if host.trim().is_empty() {
+        return None;
+    }
+    Some((host.to_string(), port))
+}
+
+/// A loopback forward to an ACP service on another machine.
+///
+/// The window asks for a device; this is the process that makes one reachable
+/// without a person holding a terminal open. It is closed when the backend is
+/// dropped, so quitting the surface leaves no ssh behind.
+struct Tunnel {
+    child: Child,
+    local_port: u16,
+}
+
+impl Tunnel {
+    fn open(host: &str, remote_port: u16) -> Result<Self, String> {
+        if host.chars().any(char::is_whitespace) {
+            return Err(format!("ssh target {host:?} is not a host name"));
+        }
+        let local_port = free_loopback_port()?;
+        let forward = format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}");
+        let mut child = Command::new("ssh")
+            .args([
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-o",
+                "ConnectTimeout=8",
+                "-o",
+                "LogLevel=ERROR",
+                "-N",
+                "-L",
+                &forward,
+                host,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("ssh {host}: {error}"))?;
+        // A forward is usable when the local port answers. Waiting for ssh to
+        // exit instead would turn every typo into a ten-second stall, and
+        // assuming it worked would fail later with a connection refused from a
+        // layer that cannot say why.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let address = std::net::SocketAddr::from(([127, 0, 0, 1], local_port));
+            if std::net::TcpStream::connect_timeout(&address, Duration::from_millis(250))
+                .is_ok()
+            {
+                return Ok(Self { child, local_port });
+            }
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|error| format!("ssh {host}: {error}"))?
+            {
+                let mut stderr = String::new();
+                if let Some(mut pipe) = child.stderr.take() {
+                    let _ = std::io::Read::read_to_string(&mut pipe, &mut stderr);
+                }
+                return Err(format!(
+                    "ssh {host}: forward to 127.0.0.1:{remote_port} failed ({status}): {}",
+                    stderr.trim()
+                ));
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "ssh {host}: no listener on 127.0.0.1:{remote_port} after 10s"
+                ));
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn base(&self) -> String {
+        format!("http://127.0.0.1:{}", self.local_port)
+    }
+}
+
+impl Drop for Tunnel {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// A port nothing is listening on, chosen by the kernel.
+///
+/// Binding `:0` and releasing it is the only way to ask the kernel for a free
+/// port; the window between release and ssh binding it is small, and
+/// `ExitOnForwardFailure` turns losing that race into an error instead of a
+/// silently dead forward.
+fn free_loopback_port() -> Result<u16, String> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|error| format!("pick a local port: {error}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("pick a local port: {error}"))?
+        .port();
+    Ok(port)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_ssh_url_names_a_host_and_a_port() {
+        assert_eq!(
+            ssh_target("ssh://agora-one"),
+            Some(("agora-one".to_string(), 8787))
+        );
+        assert_eq!(
+            ssh_target("ssh://averys-mac-studio:59072/"),
+            Some(("averys-mac-studio".to_string(), 59072))
+        );
+        // An http endpoint is not an ssh one, and an empty target is a typo.
+        assert_eq!(ssh_target("http://127.0.0.1:8787"), None);
+        assert_eq!(ssh_target("ssh://"), None);
+    }
 
     /// A session as `session/list` reports it.
     fn listed(id: &str, title: &str) -> Value {

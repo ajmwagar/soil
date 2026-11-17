@@ -1326,6 +1326,17 @@ fn agent_backend(
     })
 }
 
+/// The device behind an endpoint URL.
+///
+/// `127.0.0.1`/`localhost`/`::1` name the socket this host is already inside,
+/// so the device is the one the kernel says. Any other authority — including an
+/// `ssh://` target — is named by its host, which is the name the person wrote
+/// to reach it.
+fn endpoint_device(url: &str) -> Option<String> {
+    Self::loopback_device(url)
+        .or_else(|| Url::parse(url).ok()?.host_str().map(str::to_string))
+}
+
 /// The device behind an ACP URL, when that URL is this machine.
 ///
 /// `127.0.0.1`/`localhost`/`::1` name the socket this host is already inside,
@@ -1384,11 +1395,7 @@ fn agent_roles(
                 // machine a person is sitting in front of.
                 let mut endpoints: Vec<DeviceEndpoint> = Vec::new();
                 if let Some(url) = acp_url {
-                    let label = Self::loopback_device(url).or_else(|| {
-                        Url::parse(url)
-                            .ok()
-                            .and_then(|parsed| parsed.host_str().map(str::to_string))
-                    });
+                    let label = Self::endpoint_device(url);
                     if let Some(label) = label {
                         endpoints.push(DeviceEndpoint {
                             label,
@@ -1405,7 +1412,7 @@ fn agent_roles(
                         soil_agent_host::device_key(device)
                             == soil_agent_host::device_key(&endpoint.label)
                     });
-                    match ::soil::acp::AcpBackend::attach_http(&endpoint.url) {
+                    match ::soil::acp::AcpBackend::attach_url(&endpoint.url) {
                         Ok(backend) => {
                             let backend = backend.with_device(endpoint.label.clone());
                             let backend = match workspace {
@@ -1452,7 +1459,7 @@ fn agent_roles(
             // to a person, so they are composed, and new work is created through
             // the service — a transcript source is read, not started.
             if let (Some(url), Some(threads_cmd)) = (acp_url, acp_cmd) {
-                let harness = ::soil::acp::AcpBackend::attach_http(url)
+                let harness = ::soil::acp::AcpBackend::attach_url(url)
                     .map_err(|error| anyhow::anyhow!("acp: {error}"))?;
                 let threads = ::soil::acp::AcpBackend::spawn(threads_cmd)
                     .map_err(|error| anyhow::anyhow!("acp: {error}"))?;
@@ -1471,14 +1478,11 @@ fn agent_roles(
                 // A harness that is a service: nothing here owns its lifetime,
                 // and a restart costs a `session/list`.
                 (Some(url), _) => {
-                    let backend = ::soil::acp::AcpBackend::attach_http(url)
+                    let backend = ::soil::acp::AcpBackend::attach_url(url)
                         .map_err(|error| anyhow::anyhow!("acp: {error}"))?;
                     // A loopback endpoint is this machine by definition of the
-                    // socket, so the window can name its own device without
-                    // being told. Anything else stays unnamed: a remote service
-                    // wearing this host's hostname is the one lie a picker must
-                    // not tell.
-                    match Self::loopback_device(url) {
+                    // socket; an ssh target is the machine the person named.
+                    match Self::endpoint_device(url) {
                         Some(device) => backend.with_device(device),
                         None => backend,
                     }
