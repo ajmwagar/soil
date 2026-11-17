@@ -912,14 +912,18 @@ fn spore_bundle(app: &std::path::Path, package: &std::path::Path) -> Option<std:
     std::fs::create_dir_all(&resources).ok()?;
 
     let runner = runner_binary()?;
-    refresh_copy(&runner, &macos.join("soil"))?;
+    // A copy of a binary that was signed as part of the *launcher's* bundle
+    // carries a signature that names the wrong bundle, and launchd refuses to
+    // exec it — `open` reports "Launch failed" (POSIX 162) and the tile simply
+    // does nothing. The bundle is signed as a bundle once it is complete, which
+    // is the only way the executable and its resources agree.
+    let copied = refresh_copy(&runner, &macos.join("soil"))?;
     for path in manifest.package_paths() {
         let target = resources.join(&path);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).ok()?;
         }
-        refresh_copy(&package.join(&path), &target)?;
-    }
+        refresh_copy(&package.join(&path), &target)?;    }
     // The icon comes from the launcher's own bundle, so every Spore is a fungOS
     // app rather than a generic executable.
     let icon = app.join("Contents/Resources/fungos.icns");
@@ -945,12 +949,20 @@ fn spore_bundle(app: &std::path::Path, package: &std::path::Path) -> Option<std:
         version = manifest.spore.version,
     );
     std::fs::write(contents.join("Info.plist"), plist).ok()?;
+    // Signing is per bundle, not per file: a signature made for a bare binary
+    // that is then dropped inside an `.app` says "no resources" while launchd
+    // expects them. Re-seal only when something inside changed.
+    let sealed = contents.join("_CodeSignature/CodeResources").is_file();
+    if copied || !sealed {
+        sign_bundle(&bundle);
+    }
     Some(bundle)
 }
 
 /// Copy `source` over `destination` when the destination is missing, older, or a
-/// different size. A stale copy would run yesterday's binary.
-fn refresh_copy(source: &std::path::Path, destination: &std::path::Path) -> Option<()> {
+/// different size. A stale copy would run yesterday's binary. Answers whether it
+/// copied, because a copied binary needs signing and an unchanged one does not.
+fn refresh_copy(source: &std::path::Path, destination: &std::path::Path) -> Option<bool> {
     let fresh = match (
         std::fs::metadata(source).ok(),
         std::fs::metadata(destination).ok(),
@@ -962,9 +974,36 @@ fn refresh_copy(source: &std::path::Path, destination: &std::path::Path) -> Opti
         _ => false,
     };
     if fresh {
-        return Some(());
+        return Some(false);
     }
-    std::fs::copy(source, destination).ok().map(|_| ())
+    std::fs::copy(source, destination).ok().map(|_| true)
+}
+
+/// Seal a Spore's `.app` with an ad-hoc signature.
+///
+/// macOS will not run an executable whose embedded signature belongs to a
+/// different bundle, and a Spore's `.app` is built at runtime from the launcher's
+/// own copy of the runner. Signing the finished bundle is what makes `open`
+/// start it instead of failing with a number nobody can act on (POSIX 162).
+/// Failure is not fatal: the bundle is still there, and the launch reports what
+/// happened.
+fn sign_bundle(bundle: &std::path::Path) {
+    match std::process::Command::new("/usr/bin/codesign")
+        .args(["--force", "--deep", "--sign", "-"])
+        .arg(bundle)
+        .output()
+    {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => eprintln!(
+            "canvas-winit: codesign {}: {}",
+            bundle.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+        Err(error) => eprintln!(
+            "canvas-winit: codesign {}: {error}",
+            bundle.display()
+        ),
+    }
 }
 
 /// The `.app` an executable lives in, if it lives in one.
@@ -1064,6 +1103,10 @@ struct App {
     /// thread is the only place that knows, and the window is the only place a
     /// person looks, so it is a slot both can see.
     failed: Arc<Mutex<Option<String>>>,
+    /// Set when the Spore's own `run` returned. A window whose Spore has stopped
+    /// is a window with nothing behind it: the launcher acknowledged its modal,
+    /// and leaving the frame on screen would be a dialog that cannot be closed.
+    finished: Arc<Mutex<bool>>,
     /// Set once the failure has been shown and the window is on its way out.
     failure: Option<String>,
 }
@@ -1298,6 +1341,7 @@ fn agent_roles(
         let broker = self.launch.broker();
         let launch = self.launch.clone();
         let failed = self.failed.clone();
+        let finished = self.finished.clone();
         thread::spawn(move || {
             let result = (|| -> Result<()> {
                 let bytes =
@@ -1352,6 +1396,12 @@ fn agent_roles(
                 ))?;
                 eprintln!("canvas-winit: guest returned {status}");
                 anyhow::ensure!(status == 0, "guest returned status {status}");
+                // The Spore is done with this window — it closed itself by
+                // returning. Say so, and let the loop take the frame down.
+                if let Ok(mut done) = finished.lock() {
+                    *done = true;
+                }
+                window.request_redraw();
                 Ok(())
             })();
             if let Err(error) = result {
@@ -1763,6 +1813,12 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.settle_resize();
+        // A Spore that returned has closed its own window. A capture that has
+        // its frame is the same thing: there is nothing left to wait for.
+        if self.finished.lock().map(|done| *done).unwrap_or(false) {
+            event_loop.exit();
+            return;
+        }
         // A start that died, or one that is still going after the deadline, is
         // the one thing the splash must not keep pretending to be doing.
         if self.note_failure(event_loop).is_some() {
@@ -2786,6 +2842,7 @@ pub fn run(options: Options) -> Result<()> {
         agent_session,
         launch,
         failed: Arc::new(Mutex::new(None)),
+        finished: Arc::new(Mutex::new(false)),
         failure: None,
         spores: spores.map(|path| vec![path]).unwrap_or_else(|| {
             let home = std::env::var_os("HOME")
@@ -3011,6 +3068,40 @@ mod catalog_tests {
         .expect("catalogue");
         catalog.runner = Some(runner);
         catalog
+    }
+
+    /// A Spore opens as its own `.app`, and macOS will not exec a binary whose
+    /// embedded signature belongs to another bundle: `open` reports POSIX 162
+    /// and the tile does nothing. The copy is signed when it is made.
+    #[test]
+    fn a_spore_bundle_carries_its_own_signed_binary() {
+        let root = scratch("bundle");
+        let package = package(&root);
+        let launcher = root.join("Launcher.app");
+        std::fs::create_dir_all(launcher.join("Contents/Resources")).expect("launcher");
+        std::fs::write(launcher.join("Contents/Resources/fungos.icns"), b"").expect("icon");
+
+        let bundle = spore_bundle(&launcher, &package).expect("bundle");
+        let binary = bundle.join("Contents/MacOS/soil");
+        assert!(binary.is_file(), "the bundle carries the runner");
+        assert!(
+            bundle.join("Contents/Resources/spore.toml").is_file(),
+            "the bundle carries the package"
+        );
+        for (what, target) in [("the bundle", &bundle), ("its runner", &binary)] {
+            let verified = std::process::Command::new("/usr/bin/codesign")
+                .args(["--verify", "--strict"])
+                .arg(target)
+                .output()
+                .expect("codesign");
+            assert!(
+                verified.status.success(),
+                "{what} must verify for itself: {}",
+                String::from_utf8_lossy(&verified.stderr).trim()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&bundle);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
