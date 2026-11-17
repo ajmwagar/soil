@@ -103,6 +103,11 @@ impl CanvasGpuPresenter for DiscardPresenter {
 pub struct FrameCapture {
     frame: Arc<Mutex<Option<CanvasFrame>>>,
     size: (u32, u32),
+    /// How many frames this run may present. A still capture takes one and
+    /// fails if the guest offers more, which is how a guest that ignores the
+    /// one-frame contract gets caught. A capture driven by keys wants the frame
+    /// the run *ends* on, so it keeps the last one it is given.
+    budget: usize,
 }
 
 impl FrameCapture {
@@ -110,6 +115,16 @@ impl FrameCapture {
         Self {
             frame: Arc::new(Mutex::new(None)),
             size: (width, height),
+            budget: 1,
+        }
+    }
+
+    /// A capture that keeps the last frame instead of the only frame.
+    pub fn streaming(width: u32, height: u32) -> Self {
+        Self {
+            frame: Arc::new(Mutex::new(None)),
+            size: (width, height),
+            budget: usize::MAX,
         }
     }
 
@@ -124,8 +139,9 @@ impl CanvasGpuPresenter for FrameCapture {
     }
 
     fn present(&mut self, frame: CanvasFrame) -> Result<()> {
+        anyhow::ensure!(self.budget > 0, "present budget");
+        self.budget = self.budget.saturating_sub(1);
         let mut slot = self.frame.lock().expect("frame capture poisoned");
-        anyhow::ensure!(slot.is_none(), "present budget");
         *slot = Some(frame);
         Ok(())
     }
@@ -2141,7 +2157,10 @@ pub fn run_component_capture_with_input(
     input: Option<InputQueue>,
 ) -> Result<(u32, Option<CanvasFrame>)> {
     let runtime = WebGpuRuntime::new()?;
-    let capture = FrameCapture::new(width, height);
+    let capture = match &input {
+        Some(_) => FrameCapture::streaming(width, height),
+        None => FrameCapture::new(width, height),
+    };
     let mut setup = HostSetup::capture(Box::new(capture.clone()));
     if let Some(input) = input {
         setup.input = input;
