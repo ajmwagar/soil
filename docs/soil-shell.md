@@ -26,6 +26,13 @@ A Spore granted `soil:records` needs `--collection NAME` — the collection its
 guest addresses — and, unless `--records DIR` says otherwise, the host's own
 store at `~/.local/share/fungos/records` is opened read-write for it.
 
+A Spore that reaches the network through `soil:http` names an origin with
+`--allow-origin` and a credential handle. The handle resolves one of two ways:
+`--geode-socket`/`--geode-purpose` leases it from `geoded`, or
+`--credential-env NAME` reads a bearer token for `default` from the environment.
+The variable is read once by the host and never passed to the Spore; naming both
+sources is refused rather than silently preferring one.
+
 ```sh
 soil spore run ./doc-shell --surface frame --frame doc.png \
   --vfs-root ~/vault --records ~/.local/share/fungos/records \
