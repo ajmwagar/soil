@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -61,10 +61,20 @@ enum Event {
     },
 }
 
+/// Where the agent on the other end of this pipe came from.
+enum Origin {
+    /// This process's child: it dies when the pipe does.
+    Child(Child),
+    /// Somebody else's child — the session daemon's — reached over a socket.
+    /// The pipe can close without stopping the agent, which is the whole point.
+    #[cfg(unix)]
+    Stream,
+}
+
 /// The connection to one ACP agent process.
 struct Acp {
-    stdin: Mutex<Option<ChildStdin>>,
-    child: Mutex<Child>,
+    out: Mutex<Option<Box<dyn Write + Send>>>,
+    origin: Mutex<Origin>,
     next_id: AtomicU64,
     pending: Mutex<HashMap<u64, Sender<Result<Value, String>>>>,
     /// Prompt id → the JSON-RPC request that asked for it.
@@ -90,8 +100,8 @@ impl Acp {
             .ok_or("the ACP agent opened no output")?;
         let (events, inbox) = mpsc::channel();
         let acp = Arc::new(Self {
-            stdin: Mutex::new(Some(stdin)),
-            child: Mutex::new(child),
+            out: Mutex::new(Some(Box::new(stdin))),
+            origin: Mutex::new(Origin::Child(child)),
             next_id: AtomicU64::new(1),
             pending: Mutex::new(HashMap::new()),
             permissions: Mutex::new(HashMap::new()),
@@ -101,6 +111,34 @@ impl Acp {
         thread::Builder::new()
             .name("acp-reader".into())
             .spawn(move || reader.read(stdout))
+            .map_err(|error| format!("cannot start the ACP reader: {error}"))?;
+        Ok((acp, inbox))
+    }
+
+    /// One end of a pipe somebody else owns: the session daemon's socket.
+    ///
+    /// The handshake is the same as a child's, because from here it *is* a
+    /// child — one that outlives this process.
+    #[cfg(unix)]
+    fn from_stream(
+        stream: std::os::unix::net::UnixStream,
+    ) -> Result<(Arc<Self>, Receiver<Event>), String> {
+        let reader = stream
+            .try_clone()
+            .map_err(|error| format!("attach: {error}"))?;
+        let (events, inbox) = mpsc::channel();
+        let acp = Arc::new(Self {
+            out: Mutex::new(Some(Box::new(stream))),
+            origin: Mutex::new(Origin::Stream),
+            next_id: AtomicU64::new(1),
+            pending: Mutex::new(HashMap::new()),
+            permissions: Mutex::new(HashMap::new()),
+            events,
+        });
+        let reader_thread = Arc::clone(&acp);
+        thread::Builder::new()
+            .name("acp-reader".into())
+            .spawn(move || reader_thread.read(reader))
             .map_err(|error| format!("cannot start the ACP reader: {error}"))?;
         Ok((acp, inbox))
     }
@@ -160,11 +198,11 @@ impl Acp {
     }
 
     fn write(&self, frame: &Value) -> Result<(), String> {
-        let mut stdin = self.stdin.lock().expect("stdin lock");
-        let stdin = stdin.as_mut().ok_or("the ACP agent is gone")?;
-        serde_json::to_writer(&mut *stdin, frame).map_err(|error| error.to_string())?;
-        stdin.write_all(b"\n").map_err(|error| error.to_string())?;
-        stdin.flush().map_err(|error| error.to_string())
+        let mut out = self.out.lock().expect("out lock");
+        let out = out.as_mut().ok_or("the ACP agent is gone")?;
+        serde_json::to_writer(&mut **out, frame).map_err(|error| error.to_string())?;
+        out.write_all(b"\n").map_err(|error| error.to_string())?;
+        out.flush().map_err(|error| error.to_string())
     }
 
     fn request(&self, method: &str, params: Value, timeout: Duration) -> Result<Value, String> {
@@ -209,7 +247,12 @@ impl Acp {
 
 impl Drop for Acp {
     fn drop(&mut self) {
-        if let Ok(mut child) = self.child.lock() {
+        // Only a child of ours is ours to stop. An attached session belongs to
+        // the daemon: closing this pipe is how a surface leaves, not how it
+        // ends someone's work.
+        if let Ok(mut origin) = self.origin.lock()
+            && let Origin::Child(child) = &mut *origin
+        {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -242,13 +285,28 @@ impl AcpBackend {
     /// refuses `initialize`, is an error rather than an empty wall of agents.
     pub fn spawn(command: &str) -> Result<Self, String> {
         let (acp, events) = Acp::spawn(command)?;
+        Self::handshake(acp, events, command)
+    }
+
+    /// Take over a session that is already running.
+    ///
+    /// `stream` is a pipe to an agent this process did not start — the session
+    /// daemon's — so the conversation survives this process ending. The name is
+    /// only for errors; `initialize` is what says who the agent is.
+    #[cfg(unix)]
+    pub fn adopt(stream: std::os::unix::net::UnixStream, name: &str) -> Result<Self, String> {
+        let (acp, events) = Acp::from_stream(stream)?;
+        Self::handshake(acp, events, name)
+    }
+
+    fn handshake(acp: Arc<Acp>, events: Receiver<Event>, name: &str) -> Result<Self, String> {
         let hello = acp
             .request(
                 "initialize",
                 json!({"protocolVersion": 1, "clientCapabilities": {}}),
                 REQUEST_TIMEOUT,
             )
-            .map_err(|error| format!("{command}: {error}"))?;
+            .map_err(|error| format!("{name}: {error}"))?;
         let harness = hello
             .get("agentInfo")
             .and_then(|info| info.get("name"))

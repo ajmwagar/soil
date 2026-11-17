@@ -23,6 +23,7 @@ softbuffer = "0.4"
 url = "2"
 soil = { path = "../soil", default-features = false, features = ["http", "principal", "vfs", "wasi", "acp"] }
 soil-agent-host = { path = "../soil-agent-host" }
+soil-agentsd = { path = "../soil-agentsd" }
 soil-spore = { path = "../soil-spore" }
 soil-vt = { path = "../soil-vt" }
 soil-webgpu = { path = "../soil-webgpu" }
