@@ -238,11 +238,27 @@ impl From<CatalogError> for CatalogFailure {
     }
 }
 
+/// What installing a listing produced.
+#[derive(Clone, Debug)]
+pub struct CatalogInstalled {
+    pub id: String,
+    pub version: String,
+    pub digest: String,
+}
+
 /// The host's installed-Spore catalogue. `launch` is host-owned: the guest
-/// asks, the host starts the process or opens the window.
+/// asks, the host starts the process or opens the window. `install` is the same
+/// division of labour: the window names a listing, the host fetches and writes.
 pub trait CatalogHost: Send {
     fn entries(&mut self) -> Result<Vec<CatalogEntry>, CatalogError>;
     fn launch(&mut self, id: &str, surface: &str) -> Result<CatalogLaunched, CatalogFailure>;
+    /// Install a listing this host can reach. A host with no store says so.
+    fn install(&mut self, id: &str) -> Result<CatalogInstalled, CatalogFailure> {
+        Err(CatalogFailure::new(
+            CatalogError::Denied,
+            format!("{id} cannot be installed here: this host has no store"),
+        ))
+    }
     /// The ids this host started and has not seen exit.
     ///
     /// The host is what starts and reaps a Spore, so it is the only thing that
@@ -1412,6 +1428,18 @@ impl soil::spore::catalog::Host for WebGpuHost {
 
     fn stop(&mut self, id: String) -> std::result::Result<(), soil::spore::catalog::Failure> {
         self.catalog.stop(&id).map_err(catalog_failure)
+    }
+
+    fn install(
+        &mut self,
+        id: String,
+    ) -> std::result::Result<soil::spore::catalog::Installed, soil::spore::catalog::Failure> {
+        let installed = self.catalog.install(&id).map_err(catalog_failure)?;
+        Ok(soil::spore::catalog::Installed {
+            id: installed.id,
+            version: installed.version,
+            digest: installed.digest,
+        })
     }
 }
 

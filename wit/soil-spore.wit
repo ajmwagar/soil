@@ -9,7 +9,7 @@
 // `running` and `stop`. A package built against 0.1.0 must fail as *too old* —
 // the host says which interface it speaks — rather than instantiate into an
 // arity mismatch that reads like a compiler bug in the window.
-package soil:spore@0.2.0;
+package soil:spore@0.3.0;
 
 interface catalog {
   enum error {
@@ -90,6 +90,13 @@ interface catalog {
     detail: string,
   }
 
+  /// What installing produced, so a window can say what changed.
+  record installed {
+    id: string,
+    version: string,
+    digest: string,
+  }
+
   entries: func() -> result<list<entry>, error>;
   /// Launch `surface` of `id`.
   ///
@@ -109,6 +116,14 @@ interface catalog {
   /// `not-found` when nothing by that id is running. Stopping is the host's
   /// act — the guest names the tile, the host ends the process.
   stop: func(id: string) -> result<_, failure>;
+  /// Install `id` from the store this host is pointed at.
+  ///
+  /// Installing is the host's act, not the window's: the guest names a listing,
+  /// and the host fetches, verifies, writes and compiles it. A host with no
+  /// store — a machine that is not pointed at one — answers `denied` rather than
+  /// pretending, and a package that arrives already installed is `installed`
+  /// again rather than a second copy.
+  install: func(id: string) -> result<installed, failure>;
 }
 
 /// Opening a document: which Spore can, and which one was asked for.

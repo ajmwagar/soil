@@ -18,6 +18,9 @@ serde = { version = "1", features = ["derive"] }
 # Hosting any `.spore`: the launcher is the generic one, so it links the host
 # instead of re-implementing it per product.
 soil-spore = { path = "../soil-spore" }
+# Installing is the host's act: the window names a listing and this fetches,
+# verifies and writes it.
+soil-install = { path = "../soil-install" }
 soil-web-bridge = { path = "../soil-web-bridge" }
 # The one runner owns every presentation: the window, the frame, the
 # framebuffer. Each is a library the runner composes, never a binary of its own.

@@ -34,6 +34,7 @@ fn usage() -> &'static str {
                                     [--bridge ADDR] [--bridge-wait SECS] [--allow-origin URL]...\n\
                                     [--hue-bridge URL] [--surface window|web|frame|fb]...\n\
        spore warm <dir|package.spore>   compile it into the window host's cache\n\
+       install --id SPORE [--json] [--root DIR] [--index FILE] [--packages DIR] [--origin URL]\n\
        shell [--mount DIR] [--fuse-binary PATH] [--shell PATH] [--no-mount] [-- command...]\n\
        ls [PREFIX]\n\
        stat PATH\n\
@@ -77,6 +78,7 @@ fn run() -> Result<()> {
         // Any `.spore` on the names it claims: the same launcher for every
         // Spore, so a product never ships its own host again.
         "spore" => spore::run(&args),
+        "install" => spore::install(&args),
         "shell" => shell(&root, args),
         "rm" => remove(&root, args),
         // The bytes a record points at, put into the workspace by identity.

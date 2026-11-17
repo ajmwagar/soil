@@ -1342,6 +1342,29 @@ fn operator_key_path(seed: &Path) -> PathBuf {
 /// to, so a CID installs the same way a tar does once it is found: the cache
 /// first, then the store origin. A peer fetch is the same lookup with a
 /// different transport.
+/// Install the listing `id` from the store `index` describes.
+///
+/// A window knows the id it drew and nothing else: the index is the store's, the
+/// package cache is where a fetched tar lands, and both belong to the host. A
+/// listing that is not in the index is `not-found` — the window names what it
+/// can see, the host refuses what it cannot fetch.
+pub fn install_id(
+    id: &str,
+    index: &Path,
+    packages: &Path,
+    origin: Option<&str>,
+    root: &Path,
+) -> Result<InstalledState, Error> {
+    let store = soil_store::Index::read(index)?;
+    let entry = store
+        .entries
+        .iter()
+        .find(|entry| entry.spore_id == id)
+        .ok_or_else(|| Error::NotFound(format!("no listing for {id} in {}", index.display())))?;
+    let cid = entry.package.clone();
+    install_cid(&cid, index, packages, origin, root)
+}
+
 pub fn install_cid(
     cid: &str,
     index: &Path,
@@ -1372,6 +1395,14 @@ pub fn install_cid(
             .into_reader()
             .read_to_end(&mut bytes)
             .map_err(|error| Error::Io(format!("{url}: {error}")))?;
+        // The cache is a directory this code owns the first time it runs: a
+        // fresh machine that has never installed anything has no `packages/`,
+        // and a fetch that downloads a package and then cannot write it is a
+        // download for nothing.
+        if let Some(parent) = package.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| Error::Io(format!("{}: {error}", parent.display())))?;
+        }
         fs::write(&package, &bytes)
             .map_err(|error| Error::Io(format!("{}: {error}", package.display())))?;
     }

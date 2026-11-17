@@ -412,6 +412,53 @@ impl CatalogHost for SporeCatalog {
         self.running.keys().cloned().collect()
     }
 
+    fn install(
+        &mut self,
+        id: &str,
+    ) -> Result<soil_webgpu::CatalogInstalled, CatalogFailure> {
+        // The catalogue knows what is installed; the store knows what exists. A
+        // listing this host has never seen is the ordinary case for installing,
+        // so nothing is refused for being absent from here.
+        let runner = self.runner.clone().ok_or_else(|| {
+            CatalogFailure::new(
+                CatalogError::Unsupported,
+                format!("{id} cannot be installed: this machine has no soil runner"),
+            )
+        })?;
+        let output = std::process::Command::new(&runner)
+            .args(["install", "--id", id, "--json"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|error| {
+                CatalogFailure::new(CatalogError::Io, format!("install {id}: {error}"))
+            })?;
+        if !output.status.success() {
+            let said = failure_sentence(&String::from_utf8_lossy(&output.stderr))
+                .unwrap_or_else(|| format!("{id} did not install ({})", output.status));
+            return Err(CatalogFailure::new(CatalogError::Unsupported, said));
+        }
+        let printed = String::from_utf8_lossy(&output.stdout);
+        let line = printed
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with('{'))
+            .next_back()
+            .ok_or_else(|| {
+                CatalogFailure::new(
+                    CatalogError::Io,
+                    format!("install {id}: the runner printed no result"),
+                )
+            })?;
+        let value: serde_json::Value = serde_json::from_str(line).map_err(|error| {
+            CatalogFailure::new(CatalogError::Io, format!("install {id}: {error}"))
+        })?;
+        Ok(soil_webgpu::CatalogInstalled {
+            id: value["id"].as_str().unwrap_or(id).to_owned(),
+            version: value["version"].as_str().unwrap_or_default().to_owned(),
+            digest: value["digest"].as_str().unwrap_or_default().to_owned(),
+        })
+    }
+
     fn stop(&mut self, id: &str) -> Result<(), CatalogFailure> {
         let Some(mut running) = self.running.remove(id) else {
             return Err(CatalogFailure::new(
@@ -732,6 +779,11 @@ fn log_launch_output(
 /// linker, not the app, and the guest that asked has no way to know either.
 fn failure_detail(log: &std::path::Path) -> Option<String> {
     let text = std::fs::read_to_string(log).ok()?;
+    failure_sentence(&text)
+}
+
+/// The same sentence, from text a caller already has.
+fn failure_sentence(text: &str) -> Option<String> {
     let line = text
         .lines()
         .map(str::trim)

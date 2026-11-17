@@ -292,6 +292,56 @@ pub fn run(args: &[String]) -> Result<()> {
     crate::present::show(&spore.root, &spore.manifest, &run.present, &surfaces, Some(&run))
 }
 
+/// `soil install --id <id>`: fetch, verify, write and compile a listing.
+///
+/// The window that asked names an id and nothing else: which store, which cache,
+/// and which root are the machine's, so they default here and each can be
+/// pointed somewhere else when it is not.
+pub fn install(args: &[String]) -> Result<()> {
+    let value = |name: &str| {
+        args.iter()
+            .position(|argument| argument == name)
+            .and_then(|index| args.get(index + 1))
+            .cloned()
+    };
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .context("HOME is not set, so the store paths cannot be found")?;
+    let id = value("--id").context("usage: soil install --id SPORE [--json]")?;
+    let root = value("--root")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share/fungos/spores"));
+    let index = value("--index")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share/fungos/store/index.json"));
+    let packages = value("--packages")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share/fungos/store/packages"));
+    let origin = value("--origin").unwrap_or_else(|| "http://127.0.0.1:8800".into());
+
+    let state = soil_install::install_id(&id, &index, &packages, Some(&origin), &root)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    // Installing and starting are the same promise: a package that was just
+    // written is compiled now, so the click that follows does not pay for it.
+    let package = root.join(state.tree_name());
+    if let Err(error) = canvas_winit::prewarm(&package) {
+        eprintln!("soil: installed {} but could not compile it: {error:#}", state.id);
+    }
+    if args.iter().any(|argument| argument == "--json") {
+        println!(
+            "{}",
+            serde_json::json!({
+                "id": state.id,
+                "version": state.version,
+                "digest": state.digest,
+            })
+        );
+    } else {
+        println!("installed {} {} ({})", state.id, state.version, state.digest);
+    }
+    Ok(())
+}
+
 /// Compile a package for the window that will open it.
 ///
 /// The cache is the window host's, keyed by the module's digest, and
