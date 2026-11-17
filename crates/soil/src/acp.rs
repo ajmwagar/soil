@@ -788,38 +788,37 @@ impl AgentBackend for AcpBackend {
         // half. A thread nobody has prompted has no stream, and reading its
         // bundle costs one file — far less than loading a session to show text
         // that was already written.
-        if !self.turns.contains_key(id) && self.history_fetched.insert(id.to_string()) {
-            if let Ok(reply) = self.acp.request(
-                "session/history",
-                json!({"sessionId": id}),
-                REQUEST_TIMEOUT,
-            ) {
-                let mut turns = Vec::new();
-                for turn in reply
-                    .get("messages")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                {
-                    let (Some(role), Some(text)) = (
-                        turn.get("role").and_then(Value::as_str),
-                        turn.get("text").and_then(Value::as_str),
-                    ) else {
-                        continue;
-                    };
-                    turns.push(Turn {
-                        role: match role {
-                            "user" => Role::User,
-                            "tool" => Role::Tool,
-                            _ => Role::Assistant,
-                        },
-                        text: text.to_string(),
-                        at_ms: 0,
-                    });
-                }
-                if !turns.is_empty() {
-                    self.turns.insert(id.to_string(), turns);
-                }
+        if !self.turns.contains_key(id)
+            && self.history_fetched.insert(id.to_string())
+            && let Ok(reply) =
+                self.acp
+                    .request("session/history", json!({"sessionId": id}), REQUEST_TIMEOUT)
+        {
+            let mut turns = Vec::new();
+            for turn in reply
+                .get("messages")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let (Some(role), Some(text)) = (
+                    turn.get("role").and_then(Value::as_str),
+                    turn.get("text").and_then(Value::as_str),
+                ) else {
+                    continue;
+                };
+                turns.push(Turn {
+                    role: match role {
+                        "user" => Role::User,
+                        "tool" => Role::Tool,
+                        _ => Role::Assistant,
+                    },
+                    text: text.to_string(),
+                    at_ms: 0,
+                });
+            }
+            if !turns.is_empty() {
+                self.turns.insert(id.to_string(), turns);
             }
         }
         let turns = self.turns.get(id).map(Vec::as_slice).unwrap_or_default();
