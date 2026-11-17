@@ -796,7 +796,7 @@ impl AgentBackend for AcpBackend {
             ) {
                 let mut turns = Vec::new();
                 for turn in reply
-                    .get("turns")
+                    .get("messages")
                     .and_then(Value::as_array)
                     .into_iter()
                     .flatten()
@@ -814,7 +814,7 @@ impl AgentBackend for AcpBackend {
                             _ => Role::Assistant,
                         },
                         text: text.to_string(),
-                        at_ms: turn.get("atMs").and_then(Value::as_u64).unwrap_or(0),
+                        at_ms: 0,
                     });
                 }
                 if !turns.is_empty() {
