@@ -693,6 +693,7 @@ dependencies = [
  "soil",
  "soil-agent-host",
  "soil-agent-records",
+ "soil-agentsd",
  "soil-spore",
  "soil-vt",
  "soil-webgpu",
@@ -7141,6 +7142,13 @@ dependencies = [
  "serde_json",
  "soil-agent-host",
  "tempfile",
+]
+
+[[package]]
+name = "soil-agentsd"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

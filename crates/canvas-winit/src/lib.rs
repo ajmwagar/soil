@@ -84,6 +84,12 @@ struct LaunchConfig {
     agents: Agents,
     /// The ACP agent command, when the cast is a real harness.
     acp_cmd: Option<String>,
+    /// A session daemon to attach to instead of spawning the agent here: the
+    /// window becomes a view of a session it does not own.
+    acp_socket: Option<PathBuf>,
+    /// Where the session id this window attached to is remembered, so the next
+    /// window attaches to the same conversation instead of starting another.
+    acp_state: Option<PathBuf>,
     hue_bridge: Option<Url>,
     records_root: Option<PathBuf>,
     /// One workspace the Spore may list and read through `soil:vfs`.
@@ -1062,6 +1068,62 @@ struct App {
     failure: Option<String>,
 }
 
+/// The session daemon this window attaches to, when it was given one.
+///
+/// A window that is only a view of a session must not own the agent: the
+/// daemon holds it, and the id in `state` is how the next window finds the
+/// same conversation instead of starting another.
+#[derive(Clone, Debug)]
+struct Broker {
+    socket: std::path::PathBuf,
+    state: Option<std::path::PathBuf>,
+}
+
+impl Broker {
+    fn connect(
+        &self,
+        command: &str,
+        workspace: Option<&std::path::Path>,
+    ) -> Result<::soil::acp::AcpBackend> {
+        if let Some(state) = &self.state
+            && let Ok(id) = std::fs::read_to_string(state)
+        {
+            let id = id.trim();
+            if !id.is_empty() {
+                match soil_agentsd::attach_at(&self.socket, id) {
+                    Ok(stream) => {
+                        return ::soil::acp::AcpBackend::adopt(stream, id)
+                            .map_err(|error| anyhow::anyhow!("acp: {error}"));
+                    }
+                    // A session that died with its daemon is not a window's
+                    // error: the window starts the next one.
+                    Err(error) => eprintln!("canvas-winit: {error}; starting a session"),
+                }
+            }
+        }
+        let (id, stream) = soil_agentsd::open_at(&self.socket, command, workspace)
+            .map_err(|error| anyhow::anyhow!("acp: {error}"))?;
+        if let Some(state) = &self.state {
+            if let Some(parent) = state.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(error) = std::fs::write(state, &id) {
+                eprintln!("canvas-winit: cannot remember session {id}: {error}");
+            }
+        }
+        ::soil::acp::AcpBackend::adopt(stream, &id).map_err(|error| anyhow::anyhow!("acp: {error}"))
+    }
+}
+
+impl LaunchConfig {
+    fn broker(&self) -> Option<Broker> {
+        self.acp_socket.clone().map(|socket| Broker {
+            socket,
+            state: self.acp_state.clone(),
+        })
+    }
+}
+
 impl App {
     fn push(&self, event: InputEvent) {
         self.input
@@ -1173,6 +1235,7 @@ fn agent_roles(
     agents: Agents,
     acp_cmd: Option<&str>,
     workspace: Option<&std::path::Path>,
+    broker: Option<&Broker>,
 ) -> Result<(Box<dyn soil_agent_host::AgentBackend>, DispatchRole)> {
     // A book is read, never written, so a window over one cannot pretend to
     // drive its harness and must not create sessions.
@@ -1186,8 +1249,15 @@ fn agent_roles(
             DispatchRole::default(),
         ),
         Agents::Acp => {
-            let backend = ::soil::acp::AcpBackend::spawn(acp_cmd.unwrap_or("delta-acp"))
-                .map_err(|error| anyhow::anyhow!("acp: {error}"))?;
+            let command = acp_cmd.unwrap_or("delta-acp");
+            let backend = match broker {
+                // A daemon owns the agent: this window is a view of a session
+                // that outlives it, which is what makes rebuilding the UI
+                // something a person can do while their agents keep working.
+                Some(broker) => broker.connect(command, workspace)?,
+                None => ::soil::acp::AcpBackend::spawn(command)
+                    .map_err(|error| anyhow::anyhow!("acp: {error}"))?,
+            };
             // The window's `soil:vfs` grant is the workspace a session can be
             // created in; a window given none hands the agent `/`, which is
             // what `session/load` already uses.
@@ -1225,6 +1295,7 @@ fn agent_roles(
         let records_root = self.records_root.clone();
         let agents = self.launch.agents;
         let acp_cmd = self.launch.acp_cmd.clone();
+        let broker = self.launch.broker();
         let launch = self.launch.clone();
         let failed = self.failed.clone();
         thread::spawn(move || {
@@ -1242,6 +1313,7 @@ fn agent_roles(
                     agents,
                     acp_cmd.as_deref(),
                     vfs_root.as_deref(),
+                    broker.as_ref(),
                 )?;
                 let status = pollster::block_on(runtime.run_component_with(
                     &bytes,
@@ -2206,6 +2278,11 @@ pub struct Options {
     pub agents: Agents,
     /// The ACP agent command to spawn when the cast is `acp`.
     pub acp_cmd: Option<String>,
+    /// A session daemon to attach to, instead of spawning the agent in this
+    /// process. `auto` means the daemon's default socket.
+    pub acp_socket: Option<std::path::PathBuf>,
+    /// Where to remember the session id this window attached to.
+    pub acp_state: Option<std::path::PathBuf>,
     /// Bridge `hue.local` maps to.
     pub hue_bridge: Option<Url>,
     /// Records store the Spore may read or write.
@@ -2248,6 +2325,8 @@ impl Default for Options {
             geode_reference: None,
             agents: Agents::None,
             acp_cmd: None,
+            acp_socket: None,
+            acp_state: None,
             hue_bridge: None,
             records_root: None,
             vfs_root: None,
@@ -2286,6 +2365,8 @@ pub fn parse(args: &[String]) -> Result<Options> {
     let mut geode_reference = None;
     let mut agents = Agents::None;
     let mut acp_cmd: Option<String> = None;
+    let mut acp_socket: Option<std::path::PathBuf> = None;
+    let mut acp_state: Option<std::path::PathBuf> = None;
     let mut hue_bridge = None;
     let mut records_root = None;
     let mut vfs_root: Option<PathBuf> = None;
@@ -2389,6 +2470,19 @@ pub fn parse(args: &[String]) -> Result<Options> {
             "--acp-cmd" => {
                 acp_cmd = Some(args.next().context("--acp-cmd needs a command")?.clone());
             }
+            "--acp-socket" => {
+                let value = args.next().context("--acp-socket needs a path or `auto`")?;
+                acp_socket = Some(if value == "auto" {
+                    soil_agentsd::default_socket()
+                } else {
+                    std::path::PathBuf::from(value)
+                });
+            }
+            "--acp-state" => {
+                acp_state = Some(std::path::PathBuf::from(
+                    args.next().context("--acp-state needs a path")?,
+                ));
+            }
             "--hue-bridge" => {
                 let value = args.next().context("--hue-bridge needs a URL")?;
                 let url = Url::parse(&value).context("--hue-bridge needs an absolute URL")?;
@@ -2447,6 +2541,8 @@ pub fn parse(args: &[String]) -> Result<Options> {
         geode_reference,
         agents,
         acp_cmd,
+        acp_socket,
+        acp_state,
         hue_bridge,
         records_root,
         vfs_root,
@@ -2482,6 +2578,8 @@ pub fn run(options: Options) -> Result<()> {
         geode_reference,
         agents,
         acp_cmd,
+        acp_socket,
+        acp_state,
         hue_bridge,
         records_root,
         vfs_root,
@@ -2629,6 +2727,8 @@ pub fn run(options: Options) -> Result<()> {
         geode_reference,
         agents,
         acp_cmd,
+        acp_socket,
+        acp_state,
         hue_bridge,
         records_root,
         vfs_root: vfs_root.clone(),
