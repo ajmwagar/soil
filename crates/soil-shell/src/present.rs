@@ -462,6 +462,12 @@ pub fn show(
                 .clone()
                 .map(|socket| (socket, run.geode_purpose.clone()))
         });
+        // The window grants one handle, `default`; its absolute reference is the
+        // run's prefix plus that name. Passing only the socket and purpose would
+        // be the half pair the window refuses.
+        let geode_reference = geode
+            .as_ref()
+            .and_then(|_| http.map(|run| format!("{}default", run.geode_prefix)));
         let hue_bridge = match request.hue_bridge.as_deref() {
             Some(bridge) => Some(hue_url(bridge)?),
             None => None,
@@ -491,6 +497,8 @@ pub fn show(
                 .unwrap_or_default(),
             geode_socket: geode.as_ref().map(|(socket, _)| socket.clone()),
             geode_purpose: geode.as_ref().map(|(_, purpose)| purpose.clone()),
+            geode_reference,
+            credential_env: http.and_then(|run| run.credential_env.clone()),
             hue_bridge,
             ..canvas_winit::Options::default()
         };
@@ -502,7 +510,7 @@ pub fn show(
             .context("--surface framebuffer needs --fb DEVICE")?;
         present_framebuffer(&module, manifest, request, &device)?;
     } else if surfaces.contains(&Surface::Headless) {
-        capture(&module, manifest, request)?;
+        capture(&module, manifest, request, http)?;
     }
 
     // The servers stay alive exactly as long as they are wanted: dropping them
@@ -548,25 +556,46 @@ fn hue_url(value: &str) -> Result<url::Url> {
     Ok(url)
 }
 
-fn capture(module: &Path, manifest: &Manifest, request: &Request) -> Result<()> {
+fn capture(
+    module: &Path,
+    manifest: &Manifest,
+    request: &Request,
+    run: Option<&crate::spore::Run>,
+) -> Result<()> {
     let frame = request
         .frame
         .clone()
         .context("--surface frame needs --frame FILE")?;
     let bytes = std::fs::read(module).with_context(|| format!("read {}", module.display()))?;
-    let grants = grants(request, manifest)?;
-    // A headless run still takes keys: it is the surface a script can check, so
-    // a screen behind a menu would otherwise be unreachable.
-    let input = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
-    if let Some(script) = &request.keys {
-        play_keys(script, input.clone());
+    let mut grants = grants(request, manifest)?;
+    // A still is the same grant as a window: the origins the run allows and the
+    // one credential the operator named. Without a provider the call is still
+    // linked, and comes back denied rather than unsupported.
+    if let Some(run) = run {
+        grants.http = canvas_winit::http_access(
+            &run.allow_origins,
+            run.credential_env.as_deref(),
+            None,
+            None,
+        )?;
     }
+    // A headless run takes keys only when it was given a script to play. With
+    // none it reports itself as not interactive, so a guest that polls for
+    // input still exits after its first frame instead of waiting for a hand
+    // that is not there.
+    let input = request.keys.as_ref().map(|script| {
+        let queue = std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::VecDeque::new(),
+        ));
+        play_keys(script, queue.clone());
+        queue
+    });
     let (status, captured) = soil_webgpu::run_component_capture_with_input(
         &bytes,
         request.size.0,
         request.size.1,
         grants,
-        Some(input),
+        input,
     )?;
     anyhow::ensure!(status == 0, "guest returned status {status}");
     let captured = captured.context("the guest did not present a Canvas frame")?;

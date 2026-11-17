@@ -23,7 +23,8 @@ mod terminal;
 use ::soil::creds::{GeodeCredentials, HostHandle};
 use ::soil::dispatch::DispatchRole;
 use ::soil::http_host::{
-    DirectTransport, HttpPolicy, HttpTransport, TransportError, TransportRequest, TransportResponse,
+    BearerCredential, DirectTransport, HttpPolicy, HttpTransport, TransportError, TransportRequest,
+    TransportResponse,
 };
 use soil_webgpu::{
     CanvasFrame, CanvasGpuPresenter, CatalogEntry, CatalogError, CatalogFailure, CatalogHost,
@@ -80,6 +81,8 @@ struct LaunchConfig {
     geode_purpose: Option<String>,
     /// Absolute `geode://` reference the granted handle leases.
     geode_reference: Option<String>,
+    /// Environment variable the `default` handle resolves to, read once here.
+    credential_env: Option<String>,
     /// Which agent cast follows the Spore into the window.
     agents: Agents,
     /// The ACP agent command, when the cast is a real harness.
@@ -132,6 +135,11 @@ impl LaunchConfig {
             args.push(purpose.into());
             args.push("--geode-reference".into());
             args.push(reference.into());
+        }
+        if let Some(name) = &self.credential_env {
+            // The name travels; the token stays in this process's environment.
+            args.push("--credential-env".into());
+            args.push(name.into());
         }
         if self.agents == Agents::Demo {
             args.push("--agents".into());
@@ -2315,23 +2323,54 @@ fn key_name(key: &WinitKey) -> String {
 }
 
 fn build_http(launch: &LaunchConfig) -> Result<Option<HttpAccess>> {
-    let geode = (
+    match (
         launch.geode_socket.as_ref(),
         launch.geode_purpose.as_ref(),
         launch.geode_reference.as_ref(),
-    );
-    match geode {
+    ) {
         (None, None, None) => {}
         (Some(_), Some(_), Some(_)) => {}
         _ => anyhow::bail!(
             "--geode-socket, --geode-reference and --geode-purpose are used together"
         ),
     }
+    let geode = match (
+        launch.geode_socket.as_deref(),
+        launch.geode_purpose.as_deref(),
+        launch.geode_reference.as_deref(),
+    ) {
+        (Some(socket), Some(purpose), Some(reference)) => Some((socket, purpose, reference)),
+        _ => None,
+    };
+    http_access(
+        &launch.origins,
+        launch.credential_env.as_deref(),
+        geode,
+        launch.hue_bridge.as_ref(),
+    )
+}
+
+/// The `soil:http` grant one run's surfaces share: the origins a Spore may
+/// reach and the one credential source the operator named.
+///
+/// `credential_env` names an environment variable holding a bearer token for
+/// the `default` handle; it is read once here and never passed to a Spore.
+/// `--credential-env` and Geode are alternatives: a run that names both is
+/// refused rather than silently preferring one.
+pub fn http_access(
+    origins: &[String],
+    credential_env: Option<&str>,
+    geode: Option<(&std::path::Path, &str, &str)>,
+    hue_bridge: Option<&Url>,
+) -> Result<Option<HttpAccess>> {
+    if credential_env.is_some() && geode.is_some() {
+        anyhow::bail!("--credential-env and --geode-socket are alternatives; pass one");
+    }
     // The storefront is the one origin every presenter grants. A Spore that
     // needs another origin says so at launch; the launcher does not guess.
-    let mut origins = launch.origins.clone();
+    let mut origins = origins.to_vec();
     origins.push(soil_webgpu::LOCAL_STORE_ORIGIN.to_string());
-    if launch.hue_bridge.is_some() {
+    if hue_bridge.is_some() {
         origins.push("http://hue.local".to_string());
     }
     let policy = HttpPolicy::new(
@@ -2341,30 +2380,41 @@ fn build_http(launch: &LaunchConfig) -> Result<Option<HttpAccess>> {
     )
     .context("http policy")?;
     let mut access = HttpAccess::new(policy).with_transport(Arc::new(HueTransport {
-        bridge: launch.hue_bridge.clone(),
+        bridge: hue_bridge.cloned(),
         inner: DirectTransport,
     }));
-    if let (Some(socket), Some(reference), Some(purpose)) = geode {
+    if let Some(name) = credential_env {
+        let token = std::env::var(name)
+            .ok()
+            .filter(|token| !token.trim().is_empty())
+            .with_context(|| format!("--credential-env {name}: the variable is unset or empty"))?;
+        access = access.with_credentials(Arc::new(BearerCredential::new(token)));
+    }
+    if let Some((socket, purpose, reference)) = geode {
         #[cfg(unix)]
         {
             // The guest names a handle. The reference, the purpose and whether
             // the bytes become a header stay host configuration, so a Spore
             // cannot address a slot by spelling it.
-            let credentials =
-                GeodeCredentials::new(socket.clone(), "", purpose.clone(), std::time::Duration::from_secs(60))
-                    .with_host_handle(
-                        "default",
-                        HostHandle {
-                            reference: reference.clone(),
-                            purpose: purpose.clone(),
-                            header: Some("authorization".into()),
-                        },
-                    );
+            let credentials = GeodeCredentials::new(
+                socket.to_path_buf(),
+                "",
+                purpose.to_owned(),
+                std::time::Duration::from_secs(60),
+            )
+            .with_host_handle(
+                "default",
+                HostHandle {
+                    reference: reference.to_owned(),
+                    purpose: purpose.to_owned(),
+                    header: Some("authorization".into()),
+                },
+            );
             access = access.with_credentials(Arc::new(credentials));
         }
         #[cfg(not(unix))]
         {
-            let _ = (socket, reference, purpose);
+            let _ = (socket, purpose, reference);
             anyhow::bail!("--geode-socket is only available on Unix hosts");
         }
     }
@@ -2411,6 +2461,10 @@ pub struct Options {
     pub geode_purpose: Option<String>,
     /// Absolute `geode://` reference the granted handle leases.
     pub geode_reference: Option<String>,
+    /// Environment variable holding the bearer token `soil:http`'s `default`
+    /// handle resolves to. Read once at startup and kept in this process; the
+    /// variable is never passed to the Spore.
+    pub credential_env: Option<String>,
     /// Which agent cast to grant the Spore: `none` (the default), `demo`, or
     /// `acp` for a real harness.
     pub agents: Agents,
@@ -2463,6 +2517,7 @@ impl Default for Options {
             geode_socket: None,
             geode_purpose: None,
             geode_reference: None,
+            credential_env: None,
             agents: Agents::None,
             acp_cmd: None,
             acp_socket: None,
@@ -2504,6 +2559,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
     let mut geode_socket = None;
     let mut geode_purpose = None;
     let mut geode_reference = None;
+    let mut credential_env = None;
     let mut agents = Agents::None;
     let mut acp_cmd: Option<String> = None;
     let mut acp_socket: Option<std::path::PathBuf> = None;
@@ -2601,6 +2657,13 @@ pub fn parse(args: &[String]) -> Result<Options> {
                         .clone(),
                 );
             }
+            "--credential-env" => {
+                credential_env = Some(
+                    args.next()
+                        .context("--credential-env needs a variable name")?
+                        .clone(),
+                );
+            }
             "--agents" => {
                 agents = match args.next().context("--agents needs demo or none")?.as_str() {
                     "demo" => Agents::Demo,
@@ -2661,7 +2724,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
             }
             value if module.is_none() => module = Some(PathBuf::from(value)),
             _ => anyhow::bail!(
-                "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] [--agents demo] [--hue-bridge URL] [--records-root DIR]"
+                "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] [--credential-env NAME] [--agents demo] [--hue-bridge URL] [--records-root DIR]"
             ),
         }
     }
@@ -2695,6 +2758,7 @@ pub fn parse(args: &[String]) -> Result<Options> {
         records_book,
         records_collection,
         actor,
+        credential_env,
         // A window started from this binary has no recorded session to show; a
         // host that has one (`soil spore run --agent-session`) passes it in.
         agent_session: None,
@@ -2733,6 +2797,7 @@ pub fn run(options: Options) -> Result<()> {
         records_book,
         records_collection,
         actor,
+        credential_env,
         agent_session,
     } = options;
     let module = match module {
@@ -2758,7 +2823,7 @@ pub fn run(options: Options) -> Result<()> {
             };
             if !candidate.is_file() {
                 anyhow::bail!(
-                    "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] [--agents demo] [--hue-bridge URL] [--vfs-root DIR] [--records-root DIR] [--records-book NAME --records-collection NAME] [--actor WHO]"
+                    "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] [--credential-env NAME] [--agents demo] [--hue-bridge URL] [--vfs-root DIR] [--records-root DIR] [--records-book NAME --records-collection NAME] [--actor WHO]"
                 );
             }
             candidate
@@ -2872,6 +2937,7 @@ pub fn run(options: Options) -> Result<()> {
         geode_socket,
         geode_purpose,
         geode_reference,
+        credential_env,
         agents,
         acp_cmd,
         acp_socket,

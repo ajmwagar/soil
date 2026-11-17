@@ -38,6 +38,10 @@ pub struct Run {
     pub geode_prefix: String,
     pub geode_purpose: String,
     pub geode_ttl_secs: u64,
+    /// Environment variable holding the bearer token `soil:http`'s `default`
+    /// handle resolves to. Read by the presenter, never passed to the Spore;
+    /// it is the alternative to a Geode lease.
+    pub credential_env: Option<String>,
     /// Serve a web bridge here, so a browser can offer `soil:http`.
     pub bridge: Option<SocketAddr>,
     /// How long to wait for a page to offer `soil:http` before starting anyway.
@@ -72,6 +76,7 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
         // separate capability and must be asked for explicitly.
         geode_purpose: "verify".into(),
         geode_ttl_secs: 600,
+        credential_env: None,
         bridge: None,
         bridge_wait: Duration::ZERO,
         allow_origins: Vec::new(),
@@ -129,6 +134,10 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
                 run.geode_ttl_secs = value(index + 1)?
                     .parse()
                     .context("--geode-ttl-secs is seconds")?;
+                index += 2;
+            }
+            "--credential-env" => {
+                run.credential_env = Some(value(index + 1)?);
                 index += 2;
             }
             "--bridge" => {
