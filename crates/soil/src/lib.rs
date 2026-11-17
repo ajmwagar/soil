@@ -51,10 +51,10 @@ mod gateway;
 mod host;
 #[cfg(any(feature = "http", feature = "wasi"))]
 pub mod http_host;
-#[cfg(any(feature = "http", feature = "wasi"))]
-mod policy;
 #[cfg(feature = "principal")]
 pub mod local_identity;
+#[cfg(any(feature = "http", feature = "wasi"))]
+mod policy;
 #[cfg(feature = "principal")]
 pub mod principal_host;
 #[cfg(feature = "records")]
@@ -67,12 +67,14 @@ pub mod time;
 // announced on the bus. Host-side only — a Spore never starts a process.
 #[cfg(feature = "dispatch")]
 pub mod dispatch;
+#[cfg(feature = "git")]
+pub mod git_host;
 #[cfg(feature = "wasi")]
 pub mod unibus;
-#[cfg(feature = "work")]
-pub mod work;
 #[cfg(feature = "vfs")]
 pub mod vfs_host;
+#[cfg(feature = "work")]
+pub mod work;
 
 #[cfg(feature = "wasi")]
 pub use context::HttpContext;

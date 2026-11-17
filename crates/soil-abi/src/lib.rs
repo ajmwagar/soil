@@ -39,6 +39,12 @@ pub const CONTRACTS: &[Contract] = &[
         interfaces: &[("viewer", &["open"])],
     },
     Contract {
+        file: "wit/soil-git.wit",
+        source: include_str!("../../../wit/soil-git.wit"),
+        package: "soil:git@0.1.0",
+        interfaces: &[("git", &["status"])],
+    },
+    Contract {
         file: "wit/soil-desktops.wit",
         source: include_str!("../../../wit/soil-desktops.wit"),
         package: "soil:desktops@0.1.0",
@@ -261,7 +267,14 @@ pub const CONTRACTS: &[Contract] = &[
         interfaces: &[
             (
                 "observe",
-                &["agents", "get", "intent", "current-scope", "transcript", "subscribe"],
+                &[
+                    "agents",
+                    "get",
+                    "intent",
+                    "current-scope",
+                    "transcript",
+                    "subscribe",
+                ],
             ),
             ("control", &["respond", "send", "interrupt"]),
         ],

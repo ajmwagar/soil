@@ -16,6 +16,7 @@ use ::soil::http_host::{
     self, CredentialProvider, DirectTransport, HttpPolicy, HttpTransport, NoCredentials,
     Request as HttpRequest,
 };
+use ::soil::git_host::GitHost;
 use ::soil::principal_host::PrincipalHost;
 use ::soil::records_host::{self, Namespace, NamespacedRecordsHost};
 use ::soil::unibus::{Bus, MemoryBus};
@@ -49,6 +50,7 @@ wasmtime::component::bindgen!({
         // second generated copy that would need converting field by field.
         "soil:vfs/vfs@1.0.0": ::soil::vfs_host::vfs,
         "soil:principal/principal@0.1.0": ::soil::principal_host::api,
+        "soil:git/git@0.1.0": ::soil::git_host::git,
         // A subscription is host state, not a generated shadow type: the
         // backend keeps the position, so two subscriptions cannot disagree.
         "soil:agents/observe.subscription": AgentSubscription,
@@ -553,6 +555,12 @@ pub struct WebGpuHost {
     records: Option<NamespacedRecordsHost>,
     /// One workspace the guest may list and read. `None` denies `soil:vfs`.
     vfs: Option<VfsHost>,
+    /// Repository status for that same workspace. `None` denies `soil:git`.
+    ///
+    /// Deliberately not a second root: a host that may read a workspace may ask
+    /// Git about the workspace it is reading, and one that may not cannot. Two
+    /// roots would be two answers to "which tree is this".
+    git: Option<GitHost>,
     /// Who the guest is acting as. `None` denies `soil:principal`.
     principal: Option<PrincipalHost>,
     /// The cast of agents this run can see. `NoAgents` refuses every read, so a
@@ -801,6 +809,9 @@ impl WebGpuHost {
             (None, Some(origin)) => Some(HttpAccess::store(origin)?),
             (None, None) => None,
         };
+        // Read before the workspace is moved into its host: one workspace, two
+        // questions (what is in it, which repository is it in).
+        let git = setup.vfs.as_ref().map(GitHost::open);
         Ok(Self {
             instance: Arc::new(instance),
             table: ResourceTable::new(),
@@ -825,6 +836,7 @@ impl WebGpuHost {
                 .vfs
                 .map(|root| VfsHost::open(&root).context("open the workspace for soil:vfs"))
                 .transpose()?,
+            git,
             principal: setup.principal,
             agents: setup.agents,
             dispatch: match setup.dispatch {
@@ -1058,6 +1070,19 @@ impl ::soil::vfs_host::vfs::Host for WebGpuHost {
             .as_mut()
             .ok_or(::soil::vfs_host::vfs::Error::Denied)?
             .read(path, offset, length)
+    }
+}
+
+impl ::soil::git_host::git::Host for WebGpuHost {
+    fn status(
+        &mut self,
+        path: String,
+    ) -> std::result::Result<::soil::git_host::git::Repository, ::soil::git_host::git::Error> {
+        let git = self
+            .git
+            .as_mut()
+            .ok_or(::soil::git_host::git::Error::Denied)?;
+        ::soil::git_host::git::Host::status(git, path)
     }
 }
 
@@ -1784,6 +1809,12 @@ impl WebGpuRuntime {
         )
         .map_err(anyhow::Error::from)
         .context("link soil:vfs")?;
+        ::soil::git_host::git::add_to_linker::<WebGpuHost, HasSelf<WebGpuHost>>(
+            &mut linker,
+            |host| host,
+        )
+        .map_err(anyhow::Error::from)
+        .context("link soil:git")?;
         ::soil::principal_host::add_to_linker::<WebGpuHost>(&mut linker)
             .context("link soil:principal")?;
         ::soil::unibus::add_to_linker::<WebGpuHost>(&mut linker).context("link soil:unibus")?;
