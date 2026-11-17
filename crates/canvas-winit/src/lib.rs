@@ -60,6 +60,14 @@ pub enum Agents {
     Acp,
 }
 
+/// How long a Spore may take to show a frame before the window admits it is
+/// stuck.
+///
+/// A warm package presents in about a second, and a cold one is twenty seconds
+/// of compile: both fit. Past this, the wait is not progress, and a splash that
+/// keeps breathing is a lie.
+const STARTUP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(90);
+
 /// Host grants that follow a Spore when the launcher opens it.
 ///
 /// The launcher is the thing the user configured, so passing its grants to a
@@ -513,8 +521,7 @@ impl SporeCatalog {
                     return Err(CatalogFailure::new(
                         CatalogError::Unsupported,
                         format!(
-                            "{title} imports soil:vfs and this machine names no 
-\
+                            "{title} imports soil:vfs and this machine names no \
                              workspace: pass --vfs-root, or declare a desktop in \
                              ~/.config/fungos/desktops"
                         ),
@@ -1047,6 +1054,12 @@ struct App {
     command: Option<String>,
     modifiers: ModifiersState,
     started: bool,
+    /// Why the Spore never came up, shared with the thread that runs it. That
+    /// thread is the only place that knows, and the window is the only place a
+    /// person looks, so it is a slot both can see.
+    failed: Arc<Mutex<Option<String>>>,
+    /// Set once the failure has been shown and the window is on its way out.
+    failure: Option<String>,
 }
 
 impl App {
@@ -1213,6 +1226,7 @@ fn agent_roles(
         let agents = self.launch.agents;
         let acp_cmd = self.launch.acp_cmd.clone();
         let launch = self.launch.clone();
+        let failed = self.failed.clone();
         thread::spawn(move || {
             let result = (|| -> Result<()> {
                 let bytes =
@@ -1260,7 +1274,7 @@ fn agent_roles(
                         bus: ::soil_webgpu::in_process_bus(),
                         store_origin: None,
                         terminal: Box::new(Terminals::new(80, 24, command)),
-                        cursor: Some(Box::new(WindowCursor(window))),
+                        cursor: Some(Box::new(WindowCursor(window.clone()))),
                         clipboard: Some(Box::new(SystemClipboard)),
                     },
                 ))?;
@@ -1270,12 +1284,46 @@ fn agent_roles(
             })();
             if let Err(error) = result {
                 eprintln!("canvas-winit: {error:#}");
+                // The window is all a person can see, and it is still breathing
+                // a splash at them. Hand the reason back so the next turn of the
+                // loop can stop pretending.
+                if let Ok(mut slot) = failed.lock() {
+                    *slot = Some(format!("{error:#}"));
+                }
+                window.request_redraw();
             }
         });
     }
 
-    fn take_frames(&mut self, event_loop: &ActiveEventLoop) {
-        while let Ok(frame) = self.rx.try_recv() {
+    /// Give up on a start that is not going to happen, and say why.
+    ///
+    /// A component that failed has already sent its reason; one that is still
+    /// compiling after [`STARTUP_DEADLINE`] is stuck rather than slow, because a
+    /// warm package presents in a second. Either way the splash stops pretending
+    /// and the window closes with a sentence someone can act on.
+    fn note_failure(&mut self, event_loop: &ActiveEventLoop) -> Option<String> {
+        if self.failure.is_some() {
+            return None;
+        }
+        let reported = self.failed.lock().ok().and_then(|slot| slot.clone());
+        let message = reported.or_else(|| {
+            (self.frames_seen == 0 && self.opened.elapsed() > STARTUP_DEADLINE).then(|| {
+                format!(
+                    "no frame after {}s: {} is still compiling. `soil spore warm {}` compiles it \
+                     once, ahead of the click.",
+                    STARTUP_DEADLINE.as_secs(),
+                    window_title(&self.module),
+                    self.module.display()
+                )
+            })
+        })?;
+        self.failure = Some(message.clone());
+        report_startup_failure(&message);
+        event_loop.exit();
+        Some(message)
+    }
+
+    fn take_frames(&mut self, event_loop: &ActiveEventLoop) {        while let Ok(frame) = self.rx.try_recv() {
             eprintln!("canvas-winit: frame {}x{}", frame.width, frame.height);
             if let Some(path) = &self.capture
                 && let Err(error) = std::fs::write(path, &frame.rgba)
@@ -1643,6 +1691,11 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.settle_resize();
+        // A start that died, or one that is still going after the deadline, is
+        // the one thing the splash must not keep pretending to be doing.
+        if self.note_failure(event_loop).is_some() {
+            return;
+        }
         // Come back on a clock while there is something to animate: the splash
         // before the first frame, and a resize settling. With a frame on screen
         // and nothing moving, wait for an event instead of spinning.
@@ -1671,6 +1724,68 @@ impl ApplicationHandler for App {
     }
 }
 
+/// Say, out loud, that a Spore did not start.
+///
+/// A Dock app has no terminal: its stderr goes to the system log, where nobody is
+/// looking. On macOS the alert is the shortest honest path from "this window is
+/// stuck" to a sentence a person can act on. The message is on stderr either way,
+/// because that is what a shell and a log both read.
+fn report_startup_failure(message: &str) {
+    eprintln!("canvas-winit: {message}");
+    #[cfg(target_os = "macos")]
+    {
+        // One alert, bounded: a Rust error chain is longer than a dialog, and a
+        // quote or a backslash in it would end the AppleScript string early.
+        let text: String = message
+            .chars()
+            .map(|character| {
+                if character == '"' || character == '\\' || character.is_control() {
+                    '\''
+                } else {
+                    character
+                }
+            })
+            .take(600)
+            .collect();
+        let script =
+            format!("display alert \"This Spore could not start\" message \"{text}\" as critical");
+        let _ = std::process::Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(script)
+            .spawn();
+    }
+}
+
+/// Compile a package's module into this host's AOT cache, and answer the file.
+///
+/// The window reads exactly this file the next time it opens the package, so
+/// warming is what makes an install mean *ready* rather than *downloaded*: a
+/// twelve-megabyte guest is twenty seconds of compile, and paying that at the
+/// first click is a splash that looks like a hang.
+///
+/// This is a library function on purpose — `soil spore warm` and the launcher
+/// itself must write the file the window will read, and the only way to be sure
+/// is for both to call this.
+pub fn prewarm(package: &std::path::Path) -> Result<std::path::PathBuf> {
+    let manifest = Manifest::load(package)?;
+    let module = manifest.module.as_ref().with_context(|| {
+        format!(
+            "{} ships no module, so there is nothing to compile",
+            manifest.spore.id
+        )
+    })?;
+    prewarm_module(&package.join(&module.path))
+}
+
+/// Compile one module into the cache its own digest names.
+fn prewarm_module(module: &std::path::Path) -> Result<std::path::PathBuf> {
+    let bytes = std::fs::read(module).with_context(|| format!("read {}", module.display()))?;
+    let cache = component_cache(module);
+    let runtime = WebGpuRuntime::new()?.with_component_cache(&cache);
+    runtime.prewarm(&bytes)?;
+    Ok(soil_webgpu::component_cache_file(&cache, &bytes))
+}
+
 /// Compile the Spores this machine has, in the background, so opening one from
 /// the launcher does not pay for it. The module already running is skipped; a
 /// Spore whose cache is warm costs a file read and a deserialize to check.
@@ -1697,14 +1812,7 @@ fn warm_installed(roots: &[std::path::PathBuf], running: &std::path::Path) {
     }
     std::thread::spawn(move || {
         for module in modules {
-            let Ok(bytes) = std::fs::read(&module) else {
-                continue;
-            };
-            let Ok(runtime) = WebGpuRuntime::new() else {
-                continue;
-            };
-            let runtime = runtime.with_component_cache(component_cache(&module));
-            if let Err(error) = runtime.prewarm(&bytes) {
+            if let Err(error) = prewarm_module(&module) {
                 eprintln!("canvas-winit: warm {}: {error:#}", module.display());
             }
         }
@@ -2577,6 +2685,8 @@ pub fn run(options: Options) -> Result<()> {
         actor,
         agent_session,
         launch,
+        failed: Arc::new(Mutex::new(None)),
+        failure: None,
         spores: spores.map(|path| vec![path]).unwrap_or_else(|| {
             let home = std::env::var_os("HOME")
                 .map(PathBuf::from)
@@ -2597,6 +2707,11 @@ pub fn run(options: Options) -> Result<()> {
     };
     let event_loop = EventLoop::new()?;
     event_loop.run_app(&mut app)?;
+    if let Some(failure) = app.failure {
+        // The window already said this out loud; the exit code says it to
+        // anything that started this window and is waiting.
+        anyhow::bail!("{failure}");
+    }
     Ok(())
 }
 

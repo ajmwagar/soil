@@ -234,6 +234,14 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
 
 /// Run a Spore until the listener closes.
 pub fn run(args: &[String]) -> Result<()> {
+    // `soil spore warm <path>`: compile it into the window host's AOT cache and
+    // stop. This is the wait an install pays so the first click does not.
+    if args.first().map(String::as_str) == Some("warm") {
+        let path = args
+            .get(1)
+            .context("usage: soil spore warm <spore-dir|package.spore>")?;
+        return warm(Path::new(path));
+    }
     // A host that cannot say what it is doing is a host nobody can operate. The
     // default is `info` for the host crates, so a plain launch is not silent; an
     // operator can widen or narrow it with `RUST_LOG`, exactly as they can for
@@ -264,9 +272,32 @@ pub fn run(args: &[String]) -> Result<()> {
     crate::present::show(&spore.root, &spore.manifest, &run.present, &surfaces, Some(&run))
 }
 
-/// Serve the hosts a Spore claims in its `[http]` table, until the listener
-/// closes.
+/// Compile a package for the window that will open it.
 ///
+/// The cache is the window host's, keyed by the module's digest, and
+/// [`canvas_winit::prewarm`] is the only thing that writes it — the same call
+/// the launcher makes for the Spores it has not warmed yet. A composition has no
+/// module, which is a fact about the package rather than a failure.
+fn warm(path: &Path) -> Result<()> {
+    let spore = Spore::resolve(path)?;
+    if spore.manifest.module.is_none() {
+        println!(
+            "soil: {} ships no module; nothing to compile",
+            spore.manifest.spore.id
+        );
+        return Ok(());
+    }
+    let file = canvas_winit::prewarm(&spore.root)?;
+    println!(
+        "soil: warmed {} ({})",
+        spore.manifest.spore.id,
+        file.display()
+    );
+    Ok(())
+}
+
+/// Serve the hosts a Spore claims in its `[http]` table, until the listener
+/// closes.///
 /// It takes the package directory rather than a resolved `Spore` because a
 /// composite run serves these hosts on their own thread while a window is open
 /// on this one.

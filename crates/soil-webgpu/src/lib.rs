@@ -1721,6 +1721,23 @@ impl WasiWebGpuCtxView for WebGpuHost {
     }
 }
 
+/// The file a compiled component is cached in: `<sha256 of the module>.cwasm`.
+///
+/// The digest is the whole contract between whoever writes this file and whoever
+/// reads it — `soil spore warm` on one side, a window on the other — so it is
+/// derived in one place rather than twice and kept in step by hand.
+#[must_use]
+pub fn component_cache_file(directory: &std::path::Path, bytes: &[u8]) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    let mut name = String::with_capacity(digest.len() * 2 + 8);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(name, "{byte:02x}");
+    }
+    directory.join(format!("{name}.cwasm"))
+}
+
 /// A reusable engine/linker pair. Each invocation gets a fresh store and
 /// resource table, so two guests never share handles or validation state.
 pub struct WebGpuRuntime {
@@ -1817,16 +1834,10 @@ impl WebGpuRuntime {
 
     /// Compile a component, or reuse the cached compilation of the same bytes.
     fn component(&self, bytes: &[u8]) -> Result<Component> {
-        let cache_path = self.component_cache.as_ref().map(|directory| {
-            use sha2::{Digest, Sha256};
-            let digest = Sha256::digest(bytes);
-            let mut name = String::with_capacity(digest.len() * 2 + 8);
-            for byte in digest {
-                use std::fmt::Write as _;
-                let _ = write!(name, "{byte:02x}");
-            }
-            directory.join(format!("{name}.cwasm"))
-        });
+        let cache_path = self
+            .component_cache
+            .as_ref()
+            .map(|directory| component_cache_file(directory, bytes));
         if let Some(path) = &cache_path
             && let Ok(serialized) = std::fs::read(path)
         {

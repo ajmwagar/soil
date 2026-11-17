@@ -66,6 +66,15 @@ fn run(args: Vec<String>) -> Result<(), String> {
             }
             let package = first_path(rest)?;
             let keyring = named(rest, "--keyring").map(PathBuf::from);
+            let warm = named(rest, "--warm")
+                .map(PathBuf::from)
+                .or_else(default_runner);
+            if warm.is_none() && !flag(rest, "--json") {
+                eprintln!(
+                    "soil-install: no `soil` runner found, so nothing was warmed; \
+                     pass --warm BIN to compile it for the host that will open it"
+                );
+            }
             let state = install(
                 &package,
                 &root,
@@ -74,6 +83,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     key: named(rest, "--key"),
                     publisher: named(rest, "--publisher"),
                     public_key: None,
+                    warm: warm.as_deref(),
                 },
             )
             .map_err(|error| error.to_string())?;
@@ -301,7 +311,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
 }
 
 fn usage() -> &'static str {
-    "soil-install install <package.spore> --root DIR [--keyring FILE] [--key FP] [--publisher P] [--json]\n\
+    "soil-install install <package.spore> --root DIR [--keyring FILE] [--key FP] [--publisher P] [--warm BIN] [--json]\n\
      soil-install install --cid ipfs://CID --index FILE --packages DIR [--origin URL] --root DIR [--json]\n\
      soil-install update --index FILE --root DIR --packages DIR --operator-key FILE [--origin URL] [--warm BIN] [--id ID] [--write] [--allow-unsigned-dev] [--json]\n\
      soil-install progress --root DIR [--json]\n\
@@ -313,12 +323,24 @@ fn usage() -> &'static str {
      soil-install --version"
 }
 
-/// The runner that warms a compiled module, if one is installed: a host only
-/// warms what it will run, and `soil-command` is the host that runs commands.
+/// The runner that compiles a package for the host that runs it, if one is
+/// installed.
+///
+/// It is `soil`, not `soil-command`: the AOT file belongs to the window host, and
+/// `soil spore warm` is the one command that writes it. `~/.local/share/fungos/bin`
+/// is searched because that is where a Spore's own hosts live, and the runner is
+/// one of them; a machine with neither is a machine that installs without
+/// warming, which the caller says out loud.
 fn default_runner() -> Option<PathBuf> {
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        let beside_spores = home.join(".local/share/fungos/bin/soil");
+        if beside_spores.is_file() {
+            return Some(beside_spores);
+        }
+    }
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
-        .map(|dir| dir.join("soil-command"))
+        .map(|dir| dir.join("soil"))
         .find(|candidate| candidate.is_file())
 }
 
