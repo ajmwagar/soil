@@ -131,6 +131,32 @@ pub fn selected(config: &crate::config::Config, args: &mut Vec<String>) -> Optio
         })
 }
 
+/// A row for a folder inside the Desktop's own VFS.
+///
+/// `relative` is a path under the Desktop root (`notes`, `projects/shared`). The
+/// row stores the *mount* path — where this device sees it — and an identity
+/// that names the store, so two Desktops can each have their own `notes`
+/// without colliding.
+pub fn vfs_row(desktop: &Desktop, relative: &str) -> Result<ProjectRef> {
+    let relative = relative.trim().trim_matches('/');
+    let parts: Vec<&str> = relative.split('/').collect();
+    if relative.is_empty()
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || *part == "." || *part == "..")
+    {
+        bail!("a VFS path is a folder inside the Desktop: relative, without `..`");
+    }
+    if !desktop.root.join(relative).is_dir() {
+        bail!("{relative} is not a folder in Desktop {}", desktop.id);
+    }
+    Ok(ProjectRef {
+        project: Some(format!("vfs:{}/{relative}", desktop.id)),
+        host: None,
+        path: desktop.mount.join(relative),
+    })
+}
+
 /// Claim a name inside the Desktop's own `projects/` directory.
 pub fn claim(id: &str, name: &str) -> Result<()> {
     validate_id(name)?;
@@ -444,6 +470,28 @@ mod tests {
             detach_project_at(base.path(), "acme", &checkout).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn a_vfs_folder_is_a_row_with_its_own_identity() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("vfs");
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        let desktop = Desktop {
+            id: "acme".into(),
+            name: "Acme".into(),
+            root: root.clone(),
+            mount: base.path().join("mnt"),
+            theme: "deep".into(),
+            projects: Vec::new(),
+        };
+        let row = vfs_row(&desktop, "notes").unwrap();
+        assert_eq!(row.identity().as_deref(), Some("vfs:acme/notes"));
+        // Stored where this device sees it, not where the VFS keeps it.
+        assert_eq!(row.path, desktop.mount.join("notes"));
+        assert!(vfs_row(&desktop, "../escape").is_err());
+        assert!(vfs_row(&desktop, "/etc").is_err());
+        assert!(vfs_row(&desktop, "missing").is_err());
     }
 
     #[test]

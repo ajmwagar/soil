@@ -251,8 +251,15 @@ mush attach PATH [--desktop ID] [--json]
 mush detach PATH [--desktop ID] [--json]
 ```
 
-`attach` records a checkout **where it already lives**: identity, host, path.
-Nothing is copied, moved, or committed, and the checkout is not frozen —
+A **relative** path is a folder inside the Desktop's own VFS —
+`mush attach notes --desktop acme`, `mush attach projects/shared --desktop acme`
+— recorded as `vfs:<desktop>/<path>`, with no host and no git facts. That is how
+an agent gets the folders you mean it to have and nothing by default: nothing is
+attached until you name it, and `worktrees` lists exactly what was named.
+
+An **absolute** path is a checkout on this device, and `attach` records it
+**where it already lives**: identity, host, path. Nothing is copied, moved, or
+committed, and the checkout is not frozen —
 attaching the same path again refreshes the row rather than adding a second.
 
 There is nothing to approve. A row is metadata about where a checkout is, not
