@@ -64,6 +64,11 @@ pub struct Request {
     pub frame: Option<PathBuf>,
     /// A device to present on directly, e.g. `/dev/fb0`.
     pub framebuffer: Option<String>,
+    /// An input device to read keys from, e.g. `/dev/input/event0`.
+    pub input: Option<PathBuf>,
+    /// Where compiled Spores are cached, so a reload is a deserialize rather
+    /// than a compile.
+    pub cache: Option<PathBuf>,
     pub size: (u32, u32),
     /// Text delivered to the guest before it starts, for a capture that proves
     /// the input path.
@@ -94,6 +99,8 @@ impl Default for Request {
             surfaces: Vec::new(),
             frame: None,
             framebuffer: None,
+            input: None,
+            cache: None,
             size: (1280, 800),
             keys: None,
             vfs_root: None,
@@ -506,10 +513,27 @@ fn present_framebuffer(
     device: &str,
 ) -> Result<()> {
     let bytes = std::fs::read(module).with_context(|| format!("read {}", module.display()))?;
-    let presenter =
-        soil_webgpu::fb::FramebufferPresenter::open(device, request.size.0, request.size.1)?;
-    let runtime = soil_webgpu::WebGpuRuntime::new()?;
+    let presenter = soil_webgpu::fb::FramebufferPresenter::open(
+        device,
+        request.size.0,
+        request.size.1,
+    )?;
+    let runtime = soil_webgpu::WebGpuRuntime::new()?
+        .with_component_cache(component_cache(request));
     let mut setup = soil_webgpu::HostSetup::capture(Box::new(presenter));
+    // A framebuffer has no window system to deliver keys, so it either reads
+    // the device itself or takes the keys it was handed: `--keys` is how a run
+    // is driven with no hand on the phone.
+    let input = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    if let Some(script) = &request.keys {
+        play_keys(script, input.clone());
+    }
+    if let Some(input_device) = &request.input {
+        crate::evdev::spawn(input_device, input.clone())?;
+    }
+    setup.interactive = request.input.is_some() || request.keys.is_some();
+    setup.input = input;
+
     let grants = grants(request, manifest)?;
     setup.vfs = grants.vfs;
     setup.records = grants.records;
@@ -521,6 +545,93 @@ fn present_framebuffer(
         request.size.0, request.size.1
     );
     Ok(())
+}
+
+/// Where compiled components are kept.
+///
+/// Compiling a 21 MB Spore takes about 40 s on the phone and burns four cores
+/// while it does; deserializing the same one takes milliseconds. A cache is
+/// what makes reloading a Spore cheap enough to do lazily.
+fn component_cache(request: &Request) -> PathBuf {
+    if let Some(dir) = &request.cache {
+        return dir.clone();
+    }
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("soil").join("components")
+}
+
+/// `--keys "@1500,arrow-down*900,enter"`: a key script played in real time.
+///
+/// A token is a key name with an optional `*milliseconds` hold (sixty by
+/// default), or `@milliseconds` to wait without pressing anything. Played on
+/// its own thread because a hold is *time*: the guest's repeat timer runs while
+/// the key is down, and pressing everything into the queue at once would never
+/// exercise it. The leading wait is for the UI: a key that arrives while the
+/// first screen is still settling is spent dismissing it.
+fn play_keys(
+    script: &str,
+    input: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<soil_webgpu::InputEvent>>>,
+) {
+    enum Step {
+        Wait(u64),
+        Key(String, u64),
+    }
+    let plan: Vec<Step> = script
+        .split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(|token| {
+            if let Some(ms) = token.strip_prefix('@') {
+                return Step::Wait(ms.trim().parse().unwrap_or(0));
+            }
+            match token.split_once('*') {
+                Some((name, hold)) => Step::Key(
+                    name.trim().to_string(),
+                    hold.trim().parse().unwrap_or(60),
+                ),
+                None => Step::Key(token.to_string(), 60),
+            }
+        })
+        .collect();
+    std::thread::Builder::new()
+        .name("soil-keys".into())
+        .spawn(move || {
+            for step in plan {
+                match step {
+                    Step::Wait(ms) => {
+                        std::thread::sleep(std::time::Duration::from_millis(ms));
+                    }
+                    Step::Key(name, hold) => {
+                        for pressed in [true, false] {
+                            input
+                                .lock()
+                                .expect("input queue poisoned")
+                                .push_back(key_event(&name, pressed));
+                            if pressed {
+                                std::thread::sleep(std::time::Duration::from_millis(hold));
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(40));
+                    }
+                }
+            }
+        })
+        .ok();
+}
+
+fn key_event(name: &str, pressed: bool) -> soil_webgpu::InputEvent {
+    soil_webgpu::InputEvent::Key(soil_webgpu::InputKey {
+        key: name.to_string(),
+        text: None,
+        pressed,
+        shift: false,
+        control: false,
+        alt: false,
+        meta: false,
+    })
 }
 
 /// Write a captured frame. A `.png` path gets a PNG; anything else is the raw

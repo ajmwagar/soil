@@ -62,16 +62,23 @@ impl Format {
 
 pub struct FramebufferPresenter {
     file: File,
+    /// This panel's `/sys/class/graphics` directory.
+    sysfs: PathBuf,
     path: PathBuf,
+    /// The logical surface the Spore lays out against: `surface.size()`.
     width: u32,
     height: u32,
+    /// The panel's own extent, from sysfs: what actually gets scanned out.
+    panel_width: u32,
+    panel_height: u32,
     stride: usize,
     format: Format,
 }
 
 impl FramebufferPresenter {
     /// Open a framebuffer device. `width`/`height` are the logical surface the
-    /// Spore lays out against, which is the panel extent in device pixels.
+    /// Spore lays out against; the panel's own extent comes from sysfs, so a
+    /// Spore laid out at 240x320 still fills a 480x640 panel.
     ///
     /// Geometry comes from sysfs rather than a flag: the driver is the only
     /// authority on the stride, and a wrong stride writes skewed rows instead
@@ -92,30 +99,64 @@ impl FramebufferPresenter {
                 path.display()
             )
         })?;
+        // The logical size is the Spore's; the extent that gets scanned out is
+        // the driver's. Writing only the logical rows leaves the rest of the
+        // panel showing whatever was there before.
+        let (panel_width, panel_height) =
+            read_size(&sysfs.join("virtual_size")).unwrap_or((width, height));
         let stride = read_u32(&sysfs.join("stride"))
             .map(|value| value as usize)
-            .unwrap_or(width as usize * format.bytes());
-        let least = width as usize * format.bytes();
-        if stride < least {
+            .unwrap_or(panel_width as usize * format.bytes());
+        if stride < panel_width as usize * format.bytes() {
             bail!(
-                "{}: stride {stride} is narrower than {width} {} pixels ({least} bytes)",
+                "{}: stride {stride} is narrower than {panel_width} {} pixels",
                 path.display(),
                 format.name()
             );
         }
-        Ok(Self {
+        let presenter = Self {
             file,
+            sysfs,
             path,
             width,
             height,
+            panel_width,
+            panel_height,
             stride,
             format,
-        })
+        };
+        // A panel nobody woke is a panel that shows nothing, whatever the
+        // framebuffer says.
+        presenter.wake()?;
+        Ok(presenter)
+    }
+
+    /// Unblank the panel, if it is blanked.
+    ///
+    /// Blanking is invisible from the host's side: a powered-down panel still
+    /// accepts writes and still reads back byte for byte, so a dark screen and
+    /// a correct frame are indistinguishable until someone looks at it. The VT
+    /// blank timer, and anything else that speaks fbdev, can power the panel
+    /// down long after we opened it, so this runs on every present and not just
+    /// once.
+    fn wake(&self) -> Result<()> {
+        let blank = self.sysfs.join("blank");
+        if read_u32(&blank).unwrap_or(0) == 0 {
+            return Ok(());
+        }
+        std::fs::write(&blank, "0").with_context(|| format!("unblank {}", self.path.display()))
     }
 }
 
 fn read_u32(path: &Path) -> Option<u32> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// `WxH`, the way fbdev spells `virtual_size`.
+fn read_size(path: &Path) -> Option<(u32, u32)> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let (width, height) = text.trim().split_once(['x', ','])?;
+    Some((width.trim().parse().ok()?, height.trim().parse().ok()?))
 }
 
 impl CanvasGpuPresenter for FramebufferPresenter {
@@ -128,14 +169,17 @@ impl CanvasGpuPresenter for FramebufferPresenter {
             frame.rgba.len() == (frame.width * frame.height * 4) as usize,
             "frame is not tightly packed RGBA8"
         );
-        let mut buffer = vec![0u8; self.stride * self.height as usize];
-        for y in 0..self.height {
+        self.wake()?;
+        let mut buffer = vec![0u8; self.stride * self.panel_height as usize];
+        for y in 0..self.panel_height {
             // Nearest neighbour, so a frame rendered at another extent still
             // fills the panel instead of leaving the rest of it stale.
-            let source_y = (y as u64 * frame.height as u64 / self.height as u64) as u32;
+            let source_y =
+                (y as u64 * frame.height as u64 / self.panel_height as u64) as u32;
             let row = y as usize * self.stride;
-            for x in 0..self.width {
-                let source_x = (x as u64 * frame.width as u64 / self.width as u64) as u32;
+            for x in 0..self.panel_width {
+                let source_x =
+                    (x as u64 * frame.width as u64 / self.panel_width as u64) as u32;
                 let at = ((source_y * frame.width + source_x) * 4) as usize;
                 let (r, g, b) = (
                     frame.rgba[at],

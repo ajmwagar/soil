@@ -161,6 +161,14 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
                 run.present.framebuffer = Some(value(index + 1)?);
                 index += 2;
             }
+            "--input" => {
+                run.present.input = Some(PathBuf::from(value(index + 1)?));
+                index += 2;
+            }
+            "--cache" => {
+                run.present.cache = Some(PathBuf::from(value(index + 1)?));
+                index += 2;
+            }
             "--size" => {
                 let size = value(index + 1)?;
                 let (width, height) =
