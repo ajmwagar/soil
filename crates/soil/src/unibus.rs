@@ -130,6 +130,14 @@ impl std::error::Error for BusError {}
 /// One bus serves every Spore invocation in a store. The adapter owns the
 /// Unibus session and the hub endpoint; the guest never sees them.
 pub trait Bus: Send + Sync {
+    /// Whether the transport can be reached right now, cached from the link's
+    /// last attempt. A readiness scrape must not open a socket or wait on a
+    /// hub: the answer is "the last attempt did not fail", which is what a
+    /// probe can act on without becoming the outage.
+    fn ready(&self) -> bool {
+        true
+    }
+
     fn publish(
         &self,
         kind: &str,
@@ -364,6 +372,22 @@ struct Link {
 }
 
 impl Link {
+    /// A live session that has not been marked down. `take_dead` removes a
+    /// session whose worker exited, so a stale one is dropped within its read
+    /// timeout rather than counted as ready forever.
+    fn ready(&self) -> bool {
+        if self.stopped.load(std::sync::atomic::Ordering::Relaxed) {
+            return false;
+        }
+        let live = self.live.lock().map(|live| live.is_some()).unwrap_or(false);
+        let down = self
+            .down_since
+            .lock()
+            .map(|down| down.is_some())
+            .unwrap_or(true);
+        live && !down
+    }
+
     fn connect(&self, endpoint: &str) -> anyhow::Result<unibus_sdk::Session> {
         let mut config = self.base.clone();
         config.hub_endpoint = endpoint.to_owned();
@@ -653,6 +677,10 @@ impl Drop for UnibusBus {
 }
 
 impl Bus for UnibusBus {
+    fn ready(&self) -> bool {
+        self.link.ready()
+    }
+
     fn publish(
         &self,
         kind: &str,

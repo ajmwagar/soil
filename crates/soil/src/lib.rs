@@ -47,8 +47,8 @@
 // agent records — so a host that grants neither carries no clock at all.
 #[cfg(any(feature = "wasi", feature = "acp"))]
 mod clock;
-#[cfg(feature = "wasi")]
 pub mod context;
+pub mod metrics;
 #[cfg(feature = "wasi")]
 pub mod creds;
 #[cfg(feature = "wasi")]

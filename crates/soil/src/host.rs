@@ -67,7 +67,57 @@ pub struct WasiHostBuilder {
     http: Option<Arc<HttpCapability>>,
 }
 
+/// What a Spore's granted dependencies look like from the host, for `/readyz`.
+///
+/// The gateway answers this, not the Spore: a Spore that cannot start is
+/// precisely the one that cannot answer whether it is ready. A dependency the
+/// host did not grant is omitted rather than reported as failing — a Spore with
+/// no bus is not "unready", it simply has no bus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Readiness {
+    pub checks: Vec<(&'static str, &'static str)>,
+}
+
+impl Readiness {
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.checks.iter().all(|(_, state)| *state == "ok")
+    }
+
+    /// `bus=ok,creds=ok` — one line a probe can log without parsing JSON.
+    #[must_use]
+    pub fn render(&self) -> String {
+        self.checks
+            .iter()
+            .map(|(name, state)| format!("{name}={state}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
 impl WasiHostBuilder {
+
+    /// Which granted dependencies the host wired. This is a *grant* check, not
+    /// a liveness check: a bus that is granted but whose hub is down fails at
+    /// its next publish, and a probe must not force a network round trip on
+    /// every scrape.
+    #[must_use]
+    pub fn readiness(&self) -> Readiness {
+        let mut checks = Vec::new();
+        if let Some(bus) = &self.bus {
+            checks.push(("bus", if bus.ready() { "ok" } else { "down" }));
+        }
+        if let Some(credentials) = &self.credentials {
+            checks.push(("creds", if credentials.ready() { "ok" } else { "down" }));
+        }
+        if self.records.is_some() {
+            checks.push(("records", "ok"));
+        }
+        if self.http.is_some() {
+            checks.push(("http", "ok"));
+        }
+        Readiness { checks }
+    }
     pub fn new(policy: WasiHostPolicy) -> Self {
         Self {
             policy,
@@ -374,5 +424,98 @@ impl WasiHttpHooks for HttpHooks {
                 Box::new(body);
             Ok((response.map(BodyExt::boxed_unsync), body))
         })
+    }
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+
+    struct DownBus;
+
+    impl crate::unibus::Bus for DownBus {
+        fn publish(
+            &self,
+            _kind: &str,
+            _body: &[u8],
+            _destination: Option<&str>,
+            _ttl_ms: u64,
+        ) -> std::result::Result<crate::unibus::BusReceipt, crate::unibus::BusError> {
+            Err(crate::unibus::BusError::Unavailable)
+        }
+
+        fn poll(
+            &self,
+            _kinds: &[String],
+            _cursor: Option<&str>,
+            _limit: u32,
+        ) -> std::result::Result<crate::unibus::Page, crate::unibus::BusError> {
+            Err(crate::unibus::BusError::Unavailable)
+        }
+
+        fn ready(&self) -> bool {
+            false
+        }
+    }
+
+    struct DownCredentials;
+
+    impl crate::creds::CredentialProvider for DownCredentials {
+        fn sign(
+            &self,
+            _handle: &str,
+            _algorithm: crate::creds::Algorithm,
+            _message: &[u8],
+        ) -> std::result::Result<Vec<u8>, crate::creds::CredentialError> {
+            Err(crate::creds::CredentialError::Unavailable)
+        }
+
+        fn verify(
+            &self,
+            _handle: &str,
+            _algorithm: crate::creds::Algorithm,
+            _message: &[u8],
+            _signature: &[u8],
+        ) -> std::result::Result<bool, crate::creds::CredentialError> {
+            Err(crate::creds::CredentialError::Unavailable)
+        }
+
+        fn resolve(
+            &self,
+            _name: &str,
+        ) -> std::result::Result<crate::creds::ResolvedHandle, crate::creds::CredentialError>
+        {
+            Err(crate::creds::CredentialError::Invalid)
+        }
+
+        fn ready(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn a_granted_dependency_that_is_down_is_not_ready() {
+        let builder = WasiHostBuilder::new(WasiHostPolicy::default())
+            .bus(std::sync::Arc::new(DownBus))
+            .credential_provider(std::sync::Arc::new(DownCredentials));
+        let readiness = builder.readiness();
+        assert!(!readiness.is_ready());
+        assert_eq!(readiness.render(), "bus=down,creds=down");
+    }
+
+    #[test]
+    fn an_empty_readiness_is_ready() {
+        let readiness = Readiness { checks: Vec::new() };
+        assert!(readiness.is_ready());
+        assert_eq!(readiness.render(), "");
+    }
+
+    #[test]
+    fn a_failing_check_is_not_ready_and_is_named() {
+        let readiness = Readiness {
+            checks: vec![("bus", "ok"), ("creds", "down")],
+        };
+        assert!(!readiness.is_ready());
+        assert_eq!(readiness.render(), "bus=ok,creds=down");
     }
 }
