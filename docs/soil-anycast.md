@@ -21,6 +21,16 @@ alpns = ["soil/http/1"]             # what this Spore answers on
 ttl_secs = 240                      # default 240, hard ceiling 300
 ```
 
+`soil spore run` publishes the claim once the Spore is listening, when the host
+names an address a client can dial: `--announce-endpoint http://10.253.0.6:8788`.
+Repeatable, because one host may be reachable over the mesh and the LAN at once.
+A host that names no endpoint stays out of the pool and logs that it did.
+
+A lease also needs a publisher grant, which this host cannot verify yet, so the
+launcher must be told `--announce-unsigned-dev` before it publishes anything. That
+flag is the whole of the gap: when the grant path lands it disappears, and an
+unsigned lease stops being publishable at all.
+
 Absent `[anycast]` means local-only, which is the default. A claim is a
 *declaration*, not a permission: `Manifest::validate` rejects the malformed,
 and the publisher grant decides what is allowed to route.

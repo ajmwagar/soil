@@ -31,6 +31,17 @@ pub struct Run {
     pub max_body: Option<usize>,
     pub trusted_terminators: Vec<IpAddr>,
     pub state: Option<PathBuf>,
+    /// Mesh addresses this Spore's `[anycast]` lease advertises. Empty leaves
+    /// the claim unpublished: a lease that names no endpoint is invisible to
+    /// every client, so it must be this machine's answer, not the package's.
+    pub announce_endpoints: Vec<String>,
+    /// Publish the lease unsigned. The publisher-grant path does not exist yet,
+    /// so this is the only way a lease is published today, and it says so.
+    pub announce_unsigned_dev: bool,
+    /// `soil-spore`, when it is not installed beside this binary.
+    pub announce_binary: Option<PathBuf>,
+    /// Where the announcer writes the observation document, when not default.
+    pub announce_out: Option<PathBuf>,
     /// `geoded`'s socket. When set, the Spore resolves credentials through a
     /// lease instead of anything in this process.
     pub geode_socket: Option<PathBuf>,
@@ -73,6 +84,10 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
         max_body: None,
         trusted_terminators: Vec::new(),
         state: None,
+        announce_endpoints: Vec::new(),
+        announce_unsigned_dev: false,
+        announce_binary: None,
+        announce_out: None,
         geode_socket: None,
         geode_prefix: "geode://local/default/".into(),
         // Verification is what an ingress does with a credential; signing is a
@@ -263,6 +278,25 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
             "--per-principal" => {
                 run.present.per_principal = true;
                 index += 1;
+            }
+            // An `[anycast]` claim becomes a lease only when this host names an
+            // address a client can dial. That is one machine's fact, so it is a
+            // flag here rather than part of the package.
+            "--announce-endpoint" => {
+                run.announce_endpoints.push(value(index + 1)?);
+                index += 2;
+            }
+            "--announce-unsigned-dev" => {
+                run.announce_unsigned_dev = true;
+                index += 1;
+            }
+            "--announce-binary" => {
+                run.announce_binary = Some(PathBuf::from(value(index + 1)?));
+                index += 2;
+            }
+            "--announce-out" => {
+                run.announce_out = Some(PathBuf::from(value(index + 1)?));
+                index += 2;
             }
             other => bail!("unknown option `{other}`"),
         }
@@ -603,7 +637,96 @@ async fn serve(spore: Spore, run: Run) -> Result<()> {
         hosts = %claimed.hosts.join(","),
         "spore listening"
     );
+    // Listening first, then announced: a lease is a promise that a request will
+    // be answered here, so it must not exist before the socket does.
+    announce(&spore.manifest, &spore.root, &run)?;
     Arc::new(gateway).serve(listener).await
+}
+
+/// Publish this Spore's `[anycast]` claim, now that it is listening.
+///
+/// The announcer is a child process rather than a thread: it owns `SIGTERM` so
+/// it can withdraw the lease before it exits, and that drain belongs to the
+/// process that publishes, not to a listener that is shutting down. A crash
+/// here also cannot take the listener with it, and a lease nobody renews
+/// expires on its own TTL — which is the whole reason the lease is short.
+fn announce(manifest: &Manifest, root: &Path, run: &Run) -> Result<()> {
+    let Some(anycast) = &manifest.anycast else {
+        // Asking for an announcement the package cannot make is worth naming:
+        // silence here reads as a replica that is quietly in the pool.
+        if !run.announce_endpoints.is_empty() {
+            bail!(
+                "{} declares no [anycast] claim, so --announce-endpoint has nothing to publish",
+                manifest.spore.id
+            );
+        }
+        return Ok(());
+    };
+    if run.announce_endpoints.is_empty() {
+        tracing::warn!(
+            name = %anycast.name,
+            "no --announce-endpoint, so this replica is not in the anycast pool"
+        );
+        return Ok(());
+    }
+    if !run.announce_unsigned_dev {
+        bail!(
+            "{} claims the anycast name {} but no publisher grant is configured for this host;              pass --announce-unsigned-dev to publish an unsigned lease for a local test",
+            manifest.spore.id,
+            anycast.name
+        );
+    }
+    let binary = match &run.announce_binary {
+        Some(path) => path.clone(),
+        None => std::env::current_exe()
+            .context("locate this binary")?
+            .parent()
+            .map(|directory| directory.join("soil-spore"))
+            .context("this binary has no parent directory")?,
+    };
+    let mut command = std::process::Command::new(&binary);
+    command.arg("announce").arg(root);
+    for endpoint in &run.announce_endpoints {
+        command.arg("--endpoint").arg(endpoint);
+    }
+    if let Some(out) = &run.announce_out {
+        command.arg("--out").arg(out);
+    }
+    command.arg("--unsigned-dev");
+    // A killed launcher would otherwise leave a renewer behind, and a renewer
+    // that was never stopped keeps advertising a node that is gone: the lease
+    // TTL covers a process that stopped beating, not one that is still alive.
+    // SIGTERM is what the announcer already drains on.
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt as _;
+        // SAFETY: prctl is async-signal-safe and the closure allocates nothing.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("run {}", binary.display()))?;
+    tracing::info!(
+        name = %anycast.name,
+        pid = child.id(),
+        endpoints = %run.announce_endpoints.join(","),
+        "announcing this replica"
+    );
+    // Nothing waits on it: the listener is the run, and the announcer is meant
+    // to outlive every request. When it does exit, say so once — a replica that
+    // stopped renewing is out of the pool, not merely quiet.
+    std::thread::spawn(move || match child.wait() {
+        Ok(status) => tracing::warn!(%status, "the announcer exited; this replica is out of the pool"),
+        Err(error) => tracing::warn!(%error, "lost track of the announcer"),
+    });
+    Ok(())
 }
 
 /// The bus, when the Spore is granted one.
@@ -831,5 +954,26 @@ mod tests {
         let stolen = claim_hosts("dev.fungos.other", &["contacts.myc".into()], Some(&state));
         assert!(stolen.is_err(), "a name answers from one Spore at a time");
         let _ = std::fs::remove_dir_all(state);
+    }
+}
+
+#[cfg(test)]
+mod announce_tests {
+    use super::*;
+
+    /// The endpoint is this machine's answer, so it collects: one host can be
+    /// reachable over the mesh and the LAN at once, and the lease carries both.
+    #[test]
+    fn announce_endpoints_are_per_host_and_collected() {
+        let args: Vec<String> = "run /tmp/spore --announce-endpoint http://10.253.0.6:8790              --announce-endpoint tcp://192.168.1.39:8790 --announce-unsigned-dev"
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        let (_, run) = parse(&args).expect("parse");
+        assert_eq!(
+            run.announce_endpoints,
+            ["http://10.253.0.6:8790", "tcp://192.168.1.39:8790"]
+        );
+        assert!(run.announce_unsigned_dev);
     }
 }
