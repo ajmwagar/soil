@@ -104,11 +104,11 @@ impl WasiHostBuilder {
     #[must_use]
     pub fn readiness(&self) -> Readiness {
         let mut checks = Vec::new();
-        if self.bus.is_some() {
-            checks.push(("bus", "ok"));
+        if let Some(bus) = &self.bus {
+            checks.push(("bus", if bus.ready() { "ok" } else { "down" }));
         }
-        if self.credentials.is_some() {
-            checks.push(("creds", "ok"));
+        if let Some(credentials) = &self.credentials {
+            checks.push(("creds", if credentials.ready() { "ok" } else { "down" }));
         }
         if self.records.is_some() {
             checks.push(("records", "ok"));
@@ -430,6 +430,78 @@ impl WasiHttpHooks for HttpHooks {
 #[cfg(test)]
 mod readiness_tests {
     use super::*;
+
+    struct DownBus;
+
+    impl crate::unibus::Bus for DownBus {
+        fn publish(
+            &self,
+            _kind: &str,
+            _body: &[u8],
+            _destination: Option<&str>,
+            _ttl_ms: u64,
+        ) -> std::result::Result<crate::unibus::BusReceipt, crate::unibus::BusError> {
+            Err(crate::unibus::BusError::Unavailable)
+        }
+
+        fn poll(
+            &self,
+            _kinds: &[String],
+            _cursor: Option<&str>,
+            _limit: u32,
+        ) -> std::result::Result<crate::unibus::Page, crate::unibus::BusError> {
+            Err(crate::unibus::BusError::Unavailable)
+        }
+
+        fn ready(&self) -> bool {
+            false
+        }
+    }
+
+    struct DownCredentials;
+
+    impl crate::creds::CredentialProvider for DownCredentials {
+        fn sign(
+            &self,
+            _handle: &str,
+            _algorithm: crate::creds::Algorithm,
+            _message: &[u8],
+        ) -> std::result::Result<Vec<u8>, crate::creds::CredentialError> {
+            Err(crate::creds::CredentialError::Unavailable)
+        }
+
+        fn verify(
+            &self,
+            _handle: &str,
+            _algorithm: crate::creds::Algorithm,
+            _message: &[u8],
+            _signature: &[u8],
+        ) -> std::result::Result<bool, crate::creds::CredentialError> {
+            Err(crate::creds::CredentialError::Unavailable)
+        }
+
+        fn resolve(
+            &self,
+            _name: &str,
+        ) -> std::result::Result<crate::creds::ResolvedHandle, crate::creds::CredentialError>
+        {
+            Err(crate::creds::CredentialError::Invalid)
+        }
+
+        fn ready(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn a_granted_dependency_that_is_down_is_not_ready() {
+        let builder = WasiHostBuilder::new(WasiHostPolicy::default())
+            .bus(std::sync::Arc::new(DownBus))
+            .credential_provider(std::sync::Arc::new(DownCredentials));
+        let readiness = builder.readiness();
+        assert!(!readiness.is_ready());
+        assert_eq!(readiness.render(), "bus=down,creds=down");
+    }
 
     #[test]
     fn an_empty_readiness_is_ready() {

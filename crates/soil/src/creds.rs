@@ -72,6 +72,13 @@ pub struct ResolvedHandle {
 /// talking to Mycelium; [`StaticCredentials`] is the in-process test and local
 /// operator implementation.
 pub trait CredentialProvider: Send + Sync {
+    /// Whether the backend is reachable right now. A scrape must not mint a
+    /// lease or wait on a daemon; for Geode this is the socket's presence, which
+    /// is the failure a probe can act on without becoming the outage.
+    fn ready(&self) -> bool {
+        true
+    }
+
     fn resolve(&self, name: &str) -> std::result::Result<ResolvedHandle, CredentialError>;
 
     fn sign(
@@ -995,6 +1002,13 @@ impl GeodeCredentials {
 }
 
 impl CredentialProvider for GeodeCredentials {
+    fn ready(&self) -> bool {
+        use std::os::unix::fs::FileTypeExt as _;
+        std::fs::metadata(&self.socket)
+            .map(|meta| meta.file_type().is_socket())
+            .unwrap_or(false)
+    }
+
     fn resolve(&self, name: &str) -> std::result::Result<ResolvedHandle, CredentialError> {
         if name.is_empty() {
             return Err(CredentialError::Invalid);
