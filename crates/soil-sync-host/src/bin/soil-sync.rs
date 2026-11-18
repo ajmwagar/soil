@@ -12,13 +12,13 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use ed25519_dalek::SigningKey;
-use fungos_records::{PeerEndpoint, Store};
+use fungos_records::{PeerEndpoint, PeerSyncOutcome, Store};
 use iroh::{Endpoint, RelayMode, SecretKey, endpoint::presets};
 use mycelium_peer_protocol::{AccessRecord, AccessStatement};
 use serde::{Deserialize, Serialize};
@@ -393,6 +393,67 @@ fn permit(args: PermitArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether this failure happened inside a session rather than trying to open one.
+///
+/// `sync_records_over_iroh` puts the transfer under a `records peer sync` context
+/// and reports a connection that never opened as `Iroh connect: …`, so the chain
+/// says which of the two it was without a second error type between them.
+fn stalled(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string().starts_with("records peer sync"))
+}
+
+/// Sync one book, continuing a session that ended under it.
+///
+/// A page whose round trip outlasts the transport's I/O window ends the session,
+/// and everything applied before it stays applied — the next attempt starts from
+/// the vector the peer already has, so it continues instead of beginning the book
+/// again. Without this the only retry is the next anti-entropy interval, and a
+/// book that needs two windows spends five minutes per window.
+///
+/// The candidate and the assertion are rebuilt for each attempt: one is a
+/// sixty-second reading of where the peer is and the other is a short-lived claim
+/// about who it is, and reusing either past its window fails the retry for a
+/// reason that has nothing to do with the transfer.
+async fn sync_book(
+    config: &SyncConfig,
+    verifier: &VerifierSet,
+    transport: &IrohTransport,
+    store: &mut Store,
+    book: &str,
+    peer: &PeerConfig,
+) -> anyhow::Result<PeerSyncOutcome> {
+    const ATTEMPTS: u32 = 4;
+    let endpoint = PeerEndpoint {
+        installation_id: config.installation_id.clone(),
+        producer_id: config.local_producer.clone(),
+    };
+    let mut attempt = 1;
+    loop {
+        let candidate = candidate_for(config, peer, now_s());
+        let assertion = verifier.assertion_for(&peer.endpoint_id, now_s())?;
+        match sync_records_with_transport(transport, &candidate, &assertion, store, book, &endpoint)
+            .await
+        {
+            Ok(outcome) => return Ok(outcome),
+            // A session that never opened is a peer that is not there, and the
+            // next anti-entropy interval is the right answer to that — asking
+            // four more times in five seconds only fills the log. What this
+            // retries is a session that opened and then ended under a page.
+            Err(error) if !stalled(&error) || attempt >= ATTEMPTS => return Err(error),
+            Err(error) => {
+                eprintln!(
+                    "soil-sync: {book}/{} attempt {attempt}/{ATTEMPTS} ended early, continuing: {error:#}",
+                    peer.producer_id
+                );
+                tokio::time::sleep(Duration::from_millis(u64::from(attempt) * 500)).await;
+                attempt += 1;
+            }
+        }
+    }
+}
+
 async fn run_peer(config_path: PathBuf) -> anyhow::Result<()> {
     let config = Arc::new(read_config(&config_path)?);
     if config.books.is_empty() {
@@ -589,28 +650,9 @@ async fn sync_one(
             }
         }
     };
-    let assertion = match verifier.assertion_for(&peer.endpoint_id, now_s()) {
-        Ok(assertion) => assertion,
-        Err(error) => {
-            eprintln!("soil-sync: permit {book}/{}: {error}", peer.producer_id);
-            return;
-        }
-    };
-    let candidate = candidate_for(config, peer, now_s());
     let result = {
         let mut store = store.lock().await;
-        sync_records_with_transport(
-            transport,
-            &candidate,
-            &assertion,
-            &mut store,
-            book,
-            &PeerEndpoint {
-                installation_id: config.installation_id.clone(),
-                producer_id: config.local_producer.clone(),
-            },
-        )
-        .await
+        sync_book(config, verifier, transport, &mut store, book, peer).await
     };
     let store = store.lock().await;
     match result {
@@ -690,31 +732,16 @@ async fn sync(config_path: PathBuf, peer: &str, book: &str) -> anyhow::Result<()
         bail!("peer `{peer}` is not configured for book `{book}`");
     }
     let verifier = make_verifiers(&config)?;
-    let assertion = verifier.assertion_for(&peer_config.endpoint_id, now_s())?;
     let endpoint = bind_endpoint(&config).await?;
-    let transport = IrohTransport::new(endpoint.clone(), session_config(&config, verifier));
-    let candidate = PeerCandidate {
-        peer_id: peer_config.producer_id.clone(),
-        site: None,
-        endpoints: vec![],
-        iroh_endpoints: vec![IrohPeerEndpoint {
-            endpoint_id: peer_config.endpoint_id.clone(),
-            direct_addresses: peer_config.direct_addresses.clone(),
-            relay_urls: vec![],
-        }],
-        expires_at_unix_s: now_s() + 60,
-    };
+    let transport = IrohTransport::new(endpoint.clone(), session_config(&config, verifier.clone()));
     let mut store = Store::open(&config.records_root, &config.records_root.join("device_id"))?;
-    let outcome = sync_records_with_transport(
+    let outcome = sync_book(
+        &config,
+        &verifier,
         &transport,
-        &candidate,
-        &assertion,
         &mut store,
         book,
-        &PeerEndpoint {
-            installation_id: config.installation_id.clone(),
-            producer_id: config.local_producer.clone(),
-        },
+        peer_config,
     )
     .await?;
     println!(
