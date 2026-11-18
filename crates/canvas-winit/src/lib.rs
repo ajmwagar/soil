@@ -1430,13 +1430,20 @@ fn agent_roles(
                             roster.push(Box::new(live.clone()));
                             routes.push((endpoint.label.clone(), Box::new(live)));
                         }
-                        Err(error) => declared.push(soil_agent_host::Device {
-                            id: soil_agent_host::device_key(&endpoint.label),
-                            label: endpoint.label.clone(),
-                            current,
-                            attached: false,
-                            detail: Some(error),
-                        }),
+                        Err(error) => {
+                            // A device that did not answer is listed with its
+                            // reason, and the reason also goes to stderr: a
+                            // window that only draws a hollow dot cannot be
+                            // debugged from a terminal.
+                            eprintln!("colony: device {}: {error}", endpoint.label);
+                            declared.push(soil_agent_host::Device {
+                                id: soil_agent_host::device_key(&endpoint.label),
+                                label: endpoint.label.clone(),
+                                current,
+                                attached: false,
+                                detail: Some(error),
+                            })
+                        }
                     }
                 }
                 // The transcript source is not a machine a person chooses: it
