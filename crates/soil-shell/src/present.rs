@@ -413,6 +413,10 @@ pub fn show(
 ) -> Result<()> {
     let module = resolve_module(root, manifest)?;
     let mut servers: Vec<Box<dyn std::any::Any>> = Vec::new();
+    // The http surface owns a socket, not a value, so there is nothing to keep
+    // alive by holding it; only the fact that a server is running. A service
+    // Spore that asks for `--surface http` alone is exactly that case.
+    let mut serving = false;
 
     if surfaces.contains(&Surface::Http) {
         let Some(run) = http else {
@@ -420,6 +424,7 @@ pub fn show(
         };
         let directory = root.to_path_buf();
         let run = run.clone();
+        serving = true;
         std::thread::spawn(move || {
             if let Err(error) = crate::spore::serve_http(&directory, run) {
                 eprintln!("soil: http: {error:#}");
@@ -518,8 +523,16 @@ pub fn show(
     // The servers stay alive exactly as long as they are wanted: dropping them
     // is what closes the sockets. When nothing else is holding the process open
     // — a window blocks until it closes — serving *is* the run, so wait here
-    // instead of starting a listener and exiting.
-    if !servers.is_empty() && !surfaces.contains(&Surface::Window) {
+    // instead of starting a listener and exiting. A surface that runs to
+    // completion (a window, a framebuffer, one captured frame) is the run by
+    // itself; only the ones that never return need the wait.
+    let one_shot = surfaces.iter().any(|surface| {
+        matches!(
+            surface,
+            Surface::Window | Surface::Framebuffer | Surface::Headless
+        )
+    });
+    if !one_shot && (serving || !servers.is_empty()) {
         println!("soil: serving; interrupt to stop");
         loop {
             std::thread::park();
