@@ -18,7 +18,7 @@ use std::{
 use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use ed25519_dalek::SigningKey;
-use fungos_records::{PeerEndpoint, Store};
+use fungos_records::{PeerEndpoint, PeerSyncOutcome, Store};
 use iroh::{Endpoint, RelayMode, SecretKey, endpoint::presets};
 use mycelium_peer_protocol::{AccessRecord, AccessStatement};
 use serde::{Deserialize, Serialize};
@@ -397,31 +397,40 @@ fn permit(args: PermitArgs) -> anyhow::Result<()> {
 ///
 /// A page whose round trip outlasts the transport's I/O window ends the session,
 /// and everything applied before it stays applied — the next attempt starts from
-/// the vector the peer already has, so it continues instead of beginning again.
-/// Without this the only retry is the next anti-entropy interval, and a book that
-/// needs two windows spends five minutes per window.
+/// the vector the peer already has, so it continues instead of beginning the book
+/// again. Without this the only retry is the next anti-entropy interval, and a
+/// book that needs two windows spends five minutes per window.
+///
+/// The candidate and the assertion are rebuilt for each attempt: one is a
+/// sixty-second reading of where the peer is and the other is a short-lived claim
+/// about who it is, and reusing either past its window fails the retry for a
+/// reason that has nothing to do with the transfer.
 async fn sync_book(
+    config: &SyncConfig,
+    verifier: &VerifierSet,
     transport: &IrohTransport,
-    candidate: &PeerCandidate,
-    assertion: &str,
     store: &mut Store,
     book: &str,
-    endpoint: &PeerEndpoint,
-) -> anyhow::Result<fungos_records::PeerSyncOutcome> {
+    peer: &PeerConfig,
+) -> anyhow::Result<PeerSyncOutcome> {
     const ATTEMPTS: u32 = 4;
+    let endpoint = PeerEndpoint {
+        installation_id: config.installation_id.clone(),
+        producer_id: config.local_producer.clone(),
+    };
     let mut attempt = 1;
     loop {
-        match sync_records_with_transport(
-            transport, candidate, assertion, store, book, endpoint,
-        )
-        .await
+        let candidate = candidate_for(config, peer, now_s());
+        let assertion = verifier.assertion_for(&peer.endpoint_id, now_s())?;
+        match sync_records_with_transport(transport, &candidate, &assertion, store, book, &endpoint)
+            .await
         {
             Ok(outcome) => return Ok(outcome),
             Err(error) if attempt >= ATTEMPTS => return Err(error),
             Err(error) => {
                 eprintln!(
                     "soil-sync: {book}/{} attempt {attempt}/{ATTEMPTS} ended early, continuing: {error:#}",
-                    candidate.peer_id
+                    peer.producer_id
                 );
                 tokio::time::sleep(Duration::from_millis(u64::from(attempt) * 500)).await;
                 attempt += 1;
@@ -626,28 +635,9 @@ async fn sync_one(
             }
         }
     };
-    let assertion = match verifier.assertion_for(&peer.endpoint_id, now_s()) {
-        Ok(assertion) => assertion,
-        Err(error) => {
-            eprintln!("soil-sync: permit {book}/{}: {error}", peer.producer_id);
-            return;
-        }
-    };
-    let candidate = candidate_for(config, peer, now_s());
     let result = {
         let mut store = store.lock().await;
-        sync_book(
-            transport,
-            &candidate,
-            &assertion,
-            &mut store,
-            book,
-            &PeerEndpoint {
-                installation_id: config.installation_id.clone(),
-                producer_id: config.local_producer.clone(),
-            },
-        )
-        .await
+        sync_book(config, verifier, transport, &mut store, book, peer).await
     };
     let store = store.lock().await;
     match result {
@@ -727,31 +717,16 @@ async fn sync(config_path: PathBuf, peer: &str, book: &str) -> anyhow::Result<()
         bail!("peer `{peer}` is not configured for book `{book}`");
     }
     let verifier = make_verifiers(&config)?;
-    let assertion = verifier.assertion_for(&peer_config.endpoint_id, now_s())?;
     let endpoint = bind_endpoint(&config).await?;
-    let transport = IrohTransport::new(endpoint.clone(), session_config(&config, verifier));
-    let candidate = PeerCandidate {
-        peer_id: peer_config.producer_id.clone(),
-        site: None,
-        endpoints: vec![],
-        iroh_endpoints: vec![IrohPeerEndpoint {
-            endpoint_id: peer_config.endpoint_id.clone(),
-            direct_addresses: peer_config.direct_addresses.clone(),
-            relay_urls: vec![],
-        }],
-        expires_at_unix_s: now_s() + 60,
-    };
+    let transport = IrohTransport::new(endpoint.clone(), session_config(&config, verifier.clone()));
     let mut store = Store::open(&config.records_root, &config.records_root.join("device_id"))?;
     let outcome = sync_book(
+        &config,
+        &verifier,
         &transport,
-        &candidate,
-        &assertion,
         &mut store,
         book,
-        &PeerEndpoint {
-            installation_id: config.installation_id.clone(),
-            producer_id: config.local_producer.clone(),
-        },
+        peer_config,
     )
     .await?;
     println!(
