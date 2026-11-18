@@ -33,7 +33,8 @@ fn usage() -> &'static str {
        spore run <dir|package.spore> [--listen ADDR] [--hub ADDR]... [--unibus-config FILE]\n\
                                     [--bridge ADDR] [--bridge-wait SECS] [--allow-origin URL]...\n\
                                     [--credential-env NAME] [--appdata-root DIR] [--hue-bridge URL] [--surface window|web|frame|fb]...\n\
-       spore warm <dir|package.spore>   compile it into the window host's cache\n\
+                                    [--announce-endpoint URI]... [--announce-unsigned-dev]
+\n       spore warm <dir|package.spore>   compile it into the window host's cache\n\
        install --id SPORE [--json] [--root DIR] [--index FILE] [--packages DIR] [--origin URL]\n\
        shell [--mount DIR] [--fuse-binary PATH] [--shell PATH] [--no-mount] [-- command...]\n\
        ls [PREFIX]\n\

@@ -7701,6 +7701,7 @@ dependencies = [
  "fungos-vfs",
  "http",
  "image",
+ "libc",
  "pollster 0.4.0",
  "serde",
  "serde_json",

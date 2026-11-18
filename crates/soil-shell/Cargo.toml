@@ -12,6 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+# The announcer is a child process; `PR_SET_PDEATHSIG` is what stops it
+# outliving the node it advertises.
+libc = "0.2"
 fungos-vfs = { git = "https://github.com/mycelium-linux/fungos-vfs.git", rev = "8ad45a7fb1ce01fbbc6f764d10524baf5a24c0af" }
 soil = { path = "../soil" }
 serde = { version = "1", features = ["derive"] }
