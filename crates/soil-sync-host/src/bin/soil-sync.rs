@@ -12,7 +12,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, bail};
@@ -393,6 +393,43 @@ fn permit(args: PermitArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Sync one book, continuing a session that ended under it.
+///
+/// A page whose round trip outlasts the transport's I/O window ends the session,
+/// and everything applied before it stays applied — the next attempt starts from
+/// the vector the peer already has, so it continues instead of beginning again.
+/// Without this the only retry is the next anti-entropy interval, and a book that
+/// needs two windows spends five minutes per window.
+async fn sync_book(
+    transport: &IrohTransport,
+    candidate: &PeerCandidate,
+    assertion: &str,
+    store: &mut Store,
+    book: &str,
+    endpoint: &PeerEndpoint,
+) -> anyhow::Result<fungos_records::PeerSyncOutcome> {
+    const ATTEMPTS: u32 = 4;
+    let mut attempt = 1;
+    loop {
+        match sync_records_with_transport(
+            transport, candidate, assertion, store, book, endpoint,
+        )
+        .await
+        {
+            Ok(outcome) => return Ok(outcome),
+            Err(error) if attempt >= ATTEMPTS => return Err(error),
+            Err(error) => {
+                eprintln!(
+                    "soil-sync: {book}/{} attempt {attempt}/{ATTEMPTS} ended early, continuing: {error:#}",
+                    candidate.peer_id
+                );
+                tokio::time::sleep(Duration::from_millis(u64::from(attempt) * 500)).await;
+                attempt += 1;
+            }
+        }
+    }
+}
+
 async fn run_peer(config_path: PathBuf) -> anyhow::Result<()> {
     let config = Arc::new(read_config(&config_path)?);
     if config.books.is_empty() {
@@ -599,7 +636,7 @@ async fn sync_one(
     let candidate = candidate_for(config, peer, now_s());
     let result = {
         let mut store = store.lock().await;
-        sync_records_with_transport(
+        sync_book(
             transport,
             &candidate,
             &assertion,
@@ -705,7 +742,7 @@ async fn sync(config_path: PathBuf, peer: &str, book: &str) -> anyhow::Result<()
         expires_at_unix_s: now_s() + 60,
     };
     let mut store = Store::open(&config.records_root, &config.records_root.join("device_id"))?;
-    let outcome = sync_records_with_transport(
+    let outcome = sync_book(
         &transport,
         &candidate,
         &assertion,
