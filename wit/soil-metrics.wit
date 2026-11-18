@@ -6,9 +6,9 @@
 // the host's HTTP surface answers `GET /metrics` in Prometheus text format.
 //
 // The host is the one that exposes it, so a Spore never learns a port, a path,
-// or a scraper. One process owns one registry; a host that runs several Spores
-// merges their series under the producer label and refuses a series that two
-// Spores would define differently.
+// or a scraper. Each Spore has its own registry and the host renders it on that
+// Spore's vhost, so one Spore's series can never be attributed to another; a
+// series with two kinds under one name is refused rather than rendered twice.
 //
 // Alerting is not here. A scrape is a sample; an alert is a decision with a
 // person on the other end, and those travel as `soil:unibus` frames (the

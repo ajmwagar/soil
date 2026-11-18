@@ -352,7 +352,11 @@ impl HttpGateway {
         // Host-owned probes. They are not grants and a Spore cannot opt out: a
         // probe that reads a 404 as an outage turns every Spore into a false
         // alarm, and a Spore that cannot start cannot answer for itself.
-        if let Some(response) = host_probe(path, || vhost.service.readiness()) {
+        if let Some(response) = host_probe(
+            path,
+            || vhost.service.readiness(),
+            || vhost.service.metrics_text(),
+        ) {
             return response;
         }
 
@@ -578,9 +582,11 @@ fn allow_header(route: &GatewayRoute) -> String {
 fn host_probe(
     path: &str,
     readiness: impl FnOnce() -> crate::host::Readiness,
+    metrics: impl FnOnce() -> String,
 ) -> Option<Response<HyperOutgoingBody>> {
     match path {
         "/healthz" => Some(text_response(StatusCode::OK, "ok")),
+        "/metrics" => Some(text_response(StatusCode::OK, &metrics())),
         "/readyz" => {
             let readiness = readiness();
             let status = if readiness.is_ready() {
@@ -745,19 +751,40 @@ mod tests {
 
     #[test]
     fn the_host_answers_its_own_probes_before_the_grant_table() {
-        let health = host_probe("/healthz", || unreachable!("health is not readiness")).unwrap();
+        let health = host_probe(
+            "/healthz",
+            || unreachable!("health is not readiness"),
+            String::new,
+        )
+        .unwrap();
         assert_eq!(health.status(), StatusCode::OK);
 
-        let ready = host_probe("/readyz", || crate::host::Readiness { checks: Vec::new() })
-            .unwrap();
+        let ready = host_probe(
+            "/readyz",
+            || crate::host::Readiness { checks: Vec::new() },
+            String::new,
+        )
+        .unwrap();
         assert_eq!(ready.status(), StatusCode::OK);
 
-        let not_ready = host_probe("/readyz", || crate::host::Readiness {
-            checks: vec![("bus", "down")],
-        })
+        let not_ready = host_probe(
+            "/readyz",
+            || crate::host::Readiness {
+                checks: vec![("bus", "down")],
+            },
+            String::new,
+        )
         .unwrap();
         assert_eq!(not_ready.status(), StatusCode::SERVICE_UNAVAILABLE);
 
-        assert!(host_probe("/some/granted/route", || unreachable!()).is_none());
+        assert!(host_probe("/some/granted/route", || unreachable!(), String::new).is_none());
+
+        let metrics = host_probe(
+            "/metrics",
+            || unreachable!("metrics is not readiness"),
+            || "# TYPE soil_probe gauge\nsoil_probe 1\n".to_owned(),
+        )
+        .unwrap();
+        assert_eq!(metrics.status(), StatusCode::OK);
     }
 }

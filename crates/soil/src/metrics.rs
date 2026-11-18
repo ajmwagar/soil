@@ -66,8 +66,9 @@ struct Registry {
     series: BTreeMap<Series, (Kind, f64, Option<String>)>,
 }
 
-/// The per-host metrics registry. One instance is shared by every Spore the
-/// process runs; `emit` is the only writer.
+/// The per-Spore metrics registry. One instance per hosted Spore, shared by
+/// every request store and the renderer, so `/metrics` shows exactly the series
+/// that guest wrote; `emit` is the only writer.
 #[derive(Default)]
 pub struct Metrics {
     registry: Mutex<Registry>,

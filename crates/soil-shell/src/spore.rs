@@ -535,6 +535,12 @@ async fn serve(spore: Spore, run: Run) -> Result<()> {
     if let Some(bus) = bus(&spore.manifest, &run)? {
         builder = builder.bus(bus);
     }
+    // The manifest is the whole grant decision for metrics: the import always
+    // links, so a Spore that declares it but was not granted it starts and is
+    // told `denied`, instead of failing to instantiate with only the import
+    // named. The registry is rendered at `/metrics` either way; ungranted it
+    // stays empty.
+    builder = builder.metrics_granted(spore.manifest.grants.contains_key("soil:metrics"));
 
     // The browser, when one connects. The Spore still runs here; `soil:http`
     // reaches the network through a page that volunteered the interface, and

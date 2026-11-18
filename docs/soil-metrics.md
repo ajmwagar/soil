@@ -1,8 +1,10 @@
 # `soil:metrics` — a Spore's numbers, the host's endpoint
 
-Status: **contract + registry landed; host wiring next.** `wit/soil-metrics.wit`
-and `crates/soil/src/metrics.rs` are in. Not yet wired into the wasmtime linker
-or an HTTP surface.
+Status: **wired into both hosts; `/metrics` served by the gateway.** The
+`runner` world imports `soil:metrics/metrics` and `HttpHost` implements `emit`
+and `snapshot` over a registry; a manifest-hosted Spore gets the same interface
+on `WasiHost`, gated on the `[grants]` entry. The gateway answers `GET /metrics`
+next to `/healthz` and `/readyz`.
 
 ## Why the host owns the registry
 
@@ -16,6 +18,9 @@ names a series and a value, and the host keeps the registry:
 - **The HTTP surface is the host's.** `GET /metrics` answers Prometheus text
   from the registry the host already holds. A Spore cannot choose a port, a
   path, a scraper, or a label that the host would not put on the wire.
+- **A registry per Spore, one endpoint per vhost.** `HttpService` owns the
+  registry its guest writes and renders it on that Spore's vhost, so a host
+  running several Spores cannot merge one Spore's series into another's.
 - **Budgets fail closed.** A name outside `[A-Za-z_][A-Za-z0-9_]*` (100 chars),
   a label value over 200 chars or containing a quote or newline, a non-finite
   value, more than 16 labels, or more than 10,000 series is refused at write
@@ -70,12 +75,25 @@ Spore ── soil:metrics ──▶ host registry ──▶ GET /metrics ──�
 That is what makes the fleet feed cheap to extend: a new alert is a rule and a
 frame, not another shell script per host.
 
-## Remaining wiring
+## What is wired
 
-1. Import `soil:metrics` in the component linker and implement `emit` /
-   `snapshot` over [`Metrics`](../crates/soil/src/metrics.rs).
-2. Add `GET /metrics` to the HTTP surface host, reading the same registry.
-3. Grant `soil:metrics` to a Spore in `spore.toml`; a Spore without the grant
-   gets `denied`, never a silent no-op.
-4. Move `fpl-node-health`'s checks (mesh, probes, connector, shroud, bob) into a
+1. The `runner` world imports `soil:metrics/metrics`; `HttpHost` implements the
+   generated host trait over [`Metrics`](../crates/soil/src/metrics.rs) and
+   links it into `HttpRuntime`.
+2. A manifest-hosted Spore gets the same interface on the `wasi:http` surface:
+   `WasiHostBuilder` holds the registry, `HttpService` links the import and
+   renders that registry, and `soil spore run` sets the grant from
+   `[grants] "soil:metrics" = "..."` in `spore.toml`.
+3. `emit` is `denied` without the grant. The import still links, so the Spore
+   starts, discovers the missing grant on its first write, and its `/metrics`
+   stays empty rather than the process failing to instantiate.
+4. `GET /metrics` answers on every vhost, before the grant table, rendering
+   `HttpService::metrics_text()`.
+5. `Readiness` (`/readyz`) reports the bus link and the geode socket.
+
+## Remaining
+
+1. Move `fpl-node-health`'s checks (mesh, probes, connector, shroud, bob) into a
    Spore that emits them as metrics, so the shell script retires.
+2. A `soil-sdk-metrics` guest crate (typed `Counter`/`Gauge` over the WIT) so a
+   Spore does not hand-write the `sample` record.

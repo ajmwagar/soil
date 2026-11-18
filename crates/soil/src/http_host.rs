@@ -18,6 +18,10 @@ wasmtime::component::bindgen!({ path: "wit/http", world: "runner" });
 
 use self::soil::http::http;
 
+// The generated `soil:metrics` interface, shared by both hosts that link it:
+// the `runner` world's [`HttpHost`] and the `wasi:http` surface's [`WasiHost`].
+pub(crate) use self::soil::metrics::metrics as metrics_api;
+
 // The generated interface, re-exported so a host that links `soil:http` from
 // its own store (rather than running a `runner`-world component) implements the
 // same trait this crate does instead of a second copy of it.
@@ -435,6 +439,7 @@ fn method_name(method: http::Method) -> &'static str {
 
 pub struct HttpHost {
     policy: HttpPolicy,
+    metrics: Arc<crate::metrics::Metrics>,
     credentials: Arc<dyn CredentialProvider>,
     transport: Arc<dyn HttpTransport>,
     table: ResourceTable,
@@ -445,6 +450,7 @@ impl HttpHost {
     pub fn new(policy: HttpPolicy) -> Self {
         Self {
             policy,
+            metrics: Arc::new(crate::metrics::Metrics::new()),
             credentials: Arc::new(NoCredentials),
             transport: Arc::new(DirectTransport),
             table: ResourceTable::new(),
@@ -465,6 +471,15 @@ impl HttpHost {
     pub fn with_transport(mut self, transport: Arc<dyn HttpTransport>) -> Self {
         self.transport = transport;
         self
+    }
+
+    /// The registry this host writes to; a caller renders it for `/metrics`.
+    ///
+    /// This host is built by the process that runs the component, so linking
+    /// the import *is* the grant: there is no manifest here to ask.
+    #[must_use]
+    pub fn metrics(&self) -> &Arc<crate::metrics::Metrics> {
+        &self.metrics
     }
 
     pub fn policy(&self) -> &HttpPolicy {
@@ -704,6 +719,64 @@ fn origin_of(url: &Url) -> Option<String> {
     Some(format!("{}://{}:{port}", url.scheme(), host))
 }
 
+impl metrics_api::Host for HttpHost {
+    fn emit(
+        &mut self,
+        samples: Vec<metrics_api::Sample>,
+    ) -> std::result::Result<(), metrics_api::Error> {
+        emit_metrics(&self.metrics, samples)
+    }
+
+    fn snapshot(&mut self) -> Vec<metrics_api::Sample> {
+        snapshot_metrics(&self.metrics)
+    }
+}
+
+/// Translate one `soil:metrics` sample into the registry's own shape.
+fn registry_sample(sample: metrics_api::Sample) -> crate::metrics::Sample {
+    crate::metrics::Sample {
+        name: sample.name,
+        kind: match sample.kind {
+            metrics_api::Kind::Counter => crate::metrics::Kind::Counter,
+            metrics_api::Kind::Gauge => crate::metrics::Kind::Gauge,
+        },
+        value: sample.value,
+        help: sample.help,
+        labels: sample.labels.into_iter().collect(),
+    }
+}
+
+/// Translate one registry sample back onto the interface, for `snapshot`.
+fn guest_sample(sample: crate::metrics::Sample) -> metrics_api::Sample {
+    metrics_api::Sample {
+        name: sample.name,
+        kind: match sample.kind {
+            crate::metrics::Kind::Counter => metrics_api::Kind::Counter,
+            crate::metrics::Kind::Gauge => metrics_api::Kind::Gauge,
+        },
+        value: sample.value,
+        help: sample.help,
+        labels: sample.labels.into_iter().collect(),
+    }
+}
+
+/// The one implementation of `emit`, used by both hosts so the budgets and the
+/// error mapping cannot drift between the `runner` world and `wasi:http`.
+pub(crate) fn emit_metrics(
+    registry: &crate::metrics::Metrics,
+    samples: Vec<metrics_api::Sample>,
+) -> std::result::Result<(), metrics_api::Error> {
+    let mapped: Vec<crate::metrics::Sample> = samples.into_iter().map(registry_sample).collect();
+    registry.emit(&mapped).map_err(|error| match error {
+        crate::metrics::MetricsError::Invalid => metrics_api::Error::Invalid,
+        crate::metrics::MetricsError::OverBudget => metrics_api::Error::OverBudget,
+    })
+}
+
+pub(crate) fn snapshot_metrics(registry: &crate::metrics::Metrics) -> Vec<metrics_api::Sample> {
+    registry.snapshot().into_iter().map(guest_sample).collect()
+}
+
 /// Run a component that imports `soil:http` and exports `run(args)`.
 pub struct HttpRuntime {
     engine: Engine,
@@ -720,6 +793,10 @@ impl HttpRuntime {
             .map_err(anyhow::Error::from)
             .context("link wasi:io polling")?;
         http::add_to_linker::<HttpHost, wasmtime::component::HasSelf<HttpHost>>(
+            &mut linker,
+            |host| host,
+        )?;
+        metrics_api::add_to_linker::<HttpHost, wasmtime::component::HasSelf<HttpHost>>(
             &mut linker,
             |host| host,
         )?;

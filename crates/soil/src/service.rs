@@ -39,6 +39,14 @@ pub struct HttpService {
 }
 
 impl HttpService {
+    /// Prometheus text for this Spore's registry, served by the gateway at
+    /// `/metrics`. Empty is a valid answer: a Spore that was not granted
+    /// `soil:metrics` has nothing to say, and that is not an error.
+    #[must_use]
+    pub fn metrics_text(&self) -> String {
+        self.builder.metrics().render()
+    }
+
     /// The host's view of this Spore's granted dependencies, for the gateway's
     /// `/readyz`. Answered by the host, never by the guest.
     #[must_use]
@@ -86,6 +94,12 @@ impl HttpService {
         creds::add_to_linker(&mut linker)?;
         unibus::add_to_linker(&mut linker)?;
         crate::time::add_to_linker(&mut linker)?;
+        // Linked whether or not the Spore was granted `soil:metrics`: the grant
+        // is what `emit` answers with, not whether the import resolves.
+        crate::http_host::metrics_api::add_to_linker::<
+            super::host::WasiHost,
+            HasSelf<super::host::WasiHost>,
+        >(&mut linker, |state| state)?;
         if builder.has_records() {
             crate::records_host::add_to_linker(&mut linker).context("link soil:records")?;
         }

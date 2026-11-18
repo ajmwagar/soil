@@ -81,5 +81,6 @@ world guest {
 /// Host-runner world for a component that exports the bounded HTTP smoke test.
 world runner {
   import http;
+  import soil:metrics/metrics@0.1.0;
   export run: func(args: list<string>) -> result<string, string>;
 }

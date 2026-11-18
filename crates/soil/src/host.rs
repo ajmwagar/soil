@@ -20,6 +20,7 @@ use wasmtime_wasi_http::{
 use crate::{
     context::HttpContext,
     creds::CredentialProvider,
+    metrics::Metrics,
     policy::{HttpPolicy, WasiHostPolicy},
     unibus::Bus,
 };
@@ -65,6 +66,13 @@ pub struct WasiHostBuilder {
     records: Option<Arc<Mutex<RecordsBookHost>>>,
     /// `soil:http` policy and route. Absent means the interface is not linked.
     http: Option<Arc<HttpCapability>>,
+    /// One registry per hosted Spore: the guest writes it and the service
+    /// renders it at `/metrics`. Held by the builder so every request store and
+    /// the renderer are looking at the same series.
+    metrics: Arc<Metrics>,
+    /// Whether the manifest granted `soil:metrics`. The import is linked either
+    /// way; the grant decides whether `emit` answers or refuses.
+    metrics_granted: bool,
 }
 
 /// What a Spore's granted dependencies look like from the host, for `/readyz`.
@@ -212,6 +220,24 @@ impl WasiHostBuilder {
         self.http.is_some()
     }
 
+    /// The registry `/metrics` renders. Empty until the Spore emits.
+    #[must_use]
+    pub fn metrics(&self) -> &Arc<Metrics> {
+        &self.metrics
+    }
+
+    /// Grant `soil:metrics` to this Spore.
+    ///
+    /// The interface is linked whether or not the grant is given, because a
+    /// component that imports it must still instantiate: the Spore that asked
+    /// for a capability it did not declare hears `denied` on its first emit,
+    /// which is a bug it can fix, where a failed instantiation names only the
+    /// import.
+    pub fn metrics_granted(mut self, granted: bool) -> Self {
+        self.metrics_granted = granted;
+        self
+    }
+
     /// Create fresh WASI state for one component invocation.
     pub fn build(&self) -> Result<WasiHost> {
         let mut wasi = WasiCtxBuilder::new();
@@ -241,6 +267,7 @@ impl WasiHostBuilder {
             bus: self.bus.clone(),
             records: self.records.clone(),
             soil_http: self.http.clone(),
+            metrics: self.metrics_granted.then(|| Arc::clone(&self.metrics)),
         })
     }
 
@@ -261,6 +288,8 @@ pub struct WasiHost {
     bus: Option<Arc<dyn Bus>>,
     records: Option<Arc<Mutex<RecordsBookHost>>>,
     soil_http: Option<Arc<HttpCapability>>,
+    /// `Some` only when the manifest granted `soil:metrics`.
+    metrics: Option<Arc<Metrics>>,
 }
 
 impl crate::http_host::api::Host for WasiHost {
@@ -277,6 +306,24 @@ impl crate::http_host::api::Host for WasiHost {
             capability.transport.as_ref(),
             request,
         )
+    }
+}
+
+impl crate::http_host::metrics_api::Host for WasiHost {
+    fn emit(
+        &mut self,
+        samples: Vec<crate::http_host::metrics_api::Sample>,
+    ) -> std::result::Result<(), crate::http_host::metrics_api::Error> {
+        let Some(registry) = self.metrics.as_ref() else {
+            return Err(crate::http_host::metrics_api::Error::Denied);
+        };
+        crate::http_host::emit_metrics(registry, samples)
+    }
+
+    fn snapshot(&mut self) -> Vec<crate::http_host::metrics_api::Sample> {
+        self.metrics.as_ref().map_or_else(Vec::new, |registry| {
+            crate::http_host::snapshot_metrics(registry)
+        })
     }
 }
 
@@ -508,6 +555,44 @@ mod readiness_tests {
         let readiness = Readiness { checks: Vec::new() };
         assert!(readiness.is_ready());
         assert_eq!(readiness.render(), "");
+    }
+
+    fn gauge(name: &str, value: f64) -> crate::http_host::metrics_api::Sample {
+        crate::http_host::metrics_api::Sample {
+            name: name.into(),
+            kind: crate::http_host::metrics_api::Kind::Gauge,
+            value,
+            help: None,
+            labels: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_granted_spore_writes_the_registry_the_gateway_renders() {
+        use crate::http_host::metrics_api::Host as _;
+
+        let builder = WasiHostBuilder::new(WasiHostPolicy::default()).metrics_granted(true);
+        let mut host = builder.build().expect("host");
+        host.emit(vec![gauge("soil_probe", 1.0)]).expect("granted");
+
+        // The same registry the builder holds, which is what `metrics_text`
+        // renders: a scrape of `/metrics` sees what the guest wrote.
+        let rendered = builder.metrics().render();
+        assert!(rendered.contains("# TYPE soil_probe gauge"), "{rendered}");
+        assert!(rendered.contains("soil_probe 1"), "{rendered}");
+    }
+
+    #[test]
+    fn an_ungranted_spore_is_denied_and_leaves_the_registry_empty() {
+        use crate::http_host::metrics_api::{Error, Host as _};
+
+        let builder = WasiHostBuilder::new(WasiHostPolicy::default());
+        let mut host = builder.build().expect("host");
+        assert_eq!(
+            host.emit(vec![gauge("soil_probe", 1.0)]).unwrap_err(),
+            Error::Denied
+        );
+        assert!(builder.metrics().render().is_empty());
     }
 
     #[test]
