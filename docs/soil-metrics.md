@@ -91,9 +91,35 @@ frame, not another shell script per host.
    `HttpService::metrics_text()`.
 5. `Readiness` (`/readyz`) reports the bus link and the geode socket.
 
+## Proven, with a real Spore
+
+[`spores/health-smoke`](https://github.com/fungOS-linux/spores/tree/main/spores/health-smoke)
+is a `wasi:http` component that imports `soil:metrics`, answers 200 and counts
+the request; [`spores/metrics-sdk`](https://github.com/fungOS-linux/spores/tree/main/spores/metrics-sdk)
+is the typed `Counter`/`Gauge` it builds on. Against this crate:
+
+```console
+$ soil --root /tmp/smoke spore run spores/health-smoke --listen 127.0.0.1:39314 --state /tmp/smoke/state
+$ curl -H 'Host: health-smoke.local' 127.0.0.1:39314/healthz
+ok
+$ curl -H 'Host: health-smoke.local' 127.0.0.1:39314/readyz
+$ curl -H 'Host: health-smoke.local' 127.0.0.1:39314/metrics
+# HELP health_smoke_answered_total Requests health-smoke answered with 200
+# TYPE health_smoke_answered_total counter
+health_smoke_answered_total 2
+```
+
+The counter reads 2 after two requests to `/`, not 5: `/healthz`, `/readyz` and
+`/metrics` are the host's and never enter the guest. With the `[grants]` entry
+removed the 200s continue and `/metrics` stays empty — `denied`, not a silent
+success, and not a failed request.
+
 ## Remaining
 
 1. Move `fpl-node-health`'s checks (mesh, probes, connector, shroud, bob) into a
-   Spore that emits them as metrics, so the shell script retires.
-2. A `soil-sdk-metrics` guest crate (typed `Counter`/`Gauge` over the WIT) so a
-   Spore does not hand-write the `sample` record.
+   Spore that emits them as metrics, so the shell script retires. `health-smoke`
+   is the shape to copy: one counter per check, labels for the node.
+2. `/readyz` names only granted dependencies, so a Spore with none answers 200
+   with an empty body. Whether an empty body is the right probe answer — versus
+   `ok` — is a question the fleet's scrape config should settle before more
+   hosts publish the endpoint.
