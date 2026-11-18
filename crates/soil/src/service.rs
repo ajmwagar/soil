@@ -39,6 +39,13 @@ pub struct HttpService {
 }
 
 impl HttpService {
+    /// The host's view of this Spore's granted dependencies, for the gateway's
+    /// `/readyz`. Answered by the host, never by the guest.
+    #[must_use]
+    pub fn readiness(&self) -> crate::host::Readiness {
+        self.builder.readiness()
+    }
+
     pub fn from_bytes(bytes: &[u8], builder: WasiHostBuilder) -> Result<Self> {
         Self::from_bytes_named("spore", bytes, builder)
     }
