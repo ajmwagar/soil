@@ -393,6 +393,17 @@ fn permit(args: PermitArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether this failure happened inside a session rather than trying to open one.
+///
+/// `sync_records_over_iroh` puts the transfer under a `records peer sync` context
+/// and reports a connection that never opened as `Iroh connect: …`, so the chain
+/// says which of the two it was without a second error type between them.
+fn stalled(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string().starts_with("records peer sync"))
+}
+
 /// Sync one book, continuing a session that ended under it.
 ///
 /// A page whose round trip outlasts the transport's I/O window ends the session,
@@ -426,7 +437,11 @@ async fn sync_book(
             .await
         {
             Ok(outcome) => return Ok(outcome),
-            Err(error) if attempt >= ATTEMPTS => return Err(error),
+            // A session that never opened is a peer that is not there, and the
+            // next anti-entropy interval is the right answer to that — asking
+            // four more times in five seconds only fills the log. What this
+            // retries is a session that opened and then ended under a page.
+            Err(error) if !stalled(&error) || attempt >= ATTEMPTS => return Err(error),
             Err(error) => {
                 eprintln!(
                     "soil-sync: {book}/{} attempt {attempt}/{ATTEMPTS} ended early, continuing: {error:#}",
