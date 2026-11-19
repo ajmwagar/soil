@@ -45,6 +45,8 @@ use wasmtime::component::{HasSelf, Linker};
 
 use crate::host::WasiHost;
 
+// The generated module (`soil:unibus/bus`) is re-exported as `api` by bindgen
+// itself, so every host that links the interface implements one public trait.
 wasmtime::component::bindgen!({
     path: "../../wit/soil-unibus.wit",
     world: "unibus-host",
@@ -753,7 +755,23 @@ impl Bus for UnibusBus {
     }
 }
 
-impl api::Host for WasiHost {
+/// `soil:unibus` over an optional bus.
+///
+/// Every surface that grants the interface holds one of these and
+/// delegates, so a guest meets one implementation of the contract no
+/// matter which host linked it, and the two cannot drift.
+pub struct BusHost {
+    bus: Option<Arc<dyn Bus>>,
+}
+
+impl BusHost {
+    #[must_use]
+    pub fn new(bus: Option<Arc<dyn Bus>>) -> Self {
+        Self { bus }
+    }
+}
+
+impl api::Host for BusHost {
     fn publish(
         &mut self,
         kind: String,
@@ -761,7 +779,7 @@ impl api::Host for WasiHost {
         destination: Option<String>,
         ttl_ms: u64,
     ) -> std::result::Result<api::Receipt, api::Error> {
-        let bus = self.bus().ok_or(api::Error::Unavailable)?;
+        let bus = self.bus.as_ref().ok_or(api::Error::Unavailable)?;
         let receipt = bus
             .publish(&kind, &body, destination.as_deref(), ttl_ms)
             .map_err(map_error)?;
@@ -776,7 +794,7 @@ impl api::Host for WasiHost {
         cursor: Option<String>,
         limit: u32,
     ) -> std::result::Result<api::Page, api::Error> {
-        let bus = self.bus().ok_or(api::Error::Unavailable)?;
+        let bus = self.bus.as_ref().ok_or(api::Error::Unavailable)?;
         let page = bus
             .poll(&kinds, cursor.as_deref(), limit)
             .map_err(map_error)?;
@@ -793,6 +811,27 @@ impl api::Host for WasiHost {
                 .collect(),
             next: page.next,
         })
+    }
+}
+
+impl api::Host for WasiHost {
+    fn publish(
+        &mut self,
+        kind: String,
+        body: Vec<u8>,
+        destination: Option<String>,
+        ttl_ms: u64,
+    ) -> std::result::Result<api::Receipt, api::Error> {
+        BusHost::new(self.bus()).publish(kind, body, destination, ttl_ms)
+    }
+
+    fn poll(
+        &mut self,
+        kinds: Vec<String>,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> std::result::Result<api::Page, api::Error> {
+        BusHost::new(self.bus()).poll(kinds, cursor, limit)
     }
 }
 

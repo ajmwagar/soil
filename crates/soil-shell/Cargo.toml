@@ -25,6 +25,10 @@ soil-spore = { path = "../soil-spore" }
 # verifies and writes it.
 soil-install = { path = "../soil-install" }
 soil-web-bridge = { path = "../soil-web-bridge" }
+# The command registry and runner: `soil command …` is the same CLI the
+# standalone `soil-command` binary runs, so a shell spore installs into is the
+# same one `soil` knows about.
+soil-command = { path = "../soil-command" }
 # The one runner owns every presentation: the window, the frame, the
 # framebuffer. Each is a library the runner composes, never a binary of its own.
 canvas-winit = { path = "../canvas-winit" }

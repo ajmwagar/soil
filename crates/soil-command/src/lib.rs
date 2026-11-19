@@ -109,7 +109,11 @@ pub struct Refusal {
     pub reason: String,
 }
 
-pub const RUNNER_CAPABILITIES: &[&str] = &["soil:records"];
+pub mod cli;
+
+/// What the runner can link for a command. A package that requires anything
+/// else is refused by the registry instead of failing at instantiation.
+pub const RUNNER_CAPABILITIES: &[&str] = &["soil:records", "soil:unibus"];
 
 #[derive(Debug, Clone)]
 pub struct CommandRegistry {
@@ -280,6 +284,7 @@ pub fn write_shims(
     registry: &CommandRegistry,
     dir: &Path,
     runner: &Path,
+    subcommand: &[&str],
     prune: bool,
 ) -> Result<ShimReport> {
     std::fs::create_dir_all(dir)
@@ -305,8 +310,11 @@ pub fn write_shims(
                 }
             }
         }
-        std::fs::write(&target, shim_script(entry, registry.roots(), runner))
-            .with_context(|| format!("write {}", target.display()))?;
+        std::fs::write(
+            &target,
+            shim_script(entry, registry.roots(), runner, subcommand),
+        )
+        .with_context(|| format!("write {}", target.display()))?;
         make_executable(&target)?;
         report.written.push(target);
     }
@@ -332,7 +340,12 @@ pub fn write_shims(
     Ok(report)
 }
 
-fn shim_script(entry: &CommandEntry, roots: &[PathBuf], runner: &Path) -> String {
+fn shim_script(
+    entry: &CommandEntry,
+    roots: &[PathBuf],
+    runner: &Path,
+    subcommand: &[&str],
+) -> String {
     let mut script = format!(
         "#!/bin/sh\n\
          # {SHIM_MARKER} for the {} command. Do not edit; regenerate it.\n\
@@ -359,6 +372,13 @@ fn shim_script(entry: &CommandEntry, roots: &[PathBuf], runner: &Path) -> String
          \x20   env_flags=\"$env_flags --env-from $name\"\n\
          done\n",
     );
+    // The runner may be a subcommand of a larger binary (`soil command`), so
+    // the shim names it explicitly instead of assuming the argv shape.
+    let mut subcommand_flag = String::new();
+    for arg in subcommand {
+        subcommand_flag.push(' ');
+        subcommand_flag.push_str(&shell_quote(arg));
+    }
     let mut roots_flag = String::new();
     for root in roots {
         roots_flag.push_str(" --root ");
@@ -369,13 +389,13 @@ fn shim_script(entry: &CommandEntry, roots: &[PathBuf], runner: &Path) -> String
     script.push_str(&format!(
         "book=\"${{FUNGOS_RECORDS_BOOK:-${{RECORDS_BOOK:-}}}}\"\n\
          if [ -n \"$book\" ]; then\n\
-         \x20   exec {runner}{roots_flag} \\\n\
+         \x20   exec {runner}{subcommand_flag}{roots_flag} \\\n\
          \x20       --records-root \"${{FUNGOS_RECORDS_ROOT:-${{RECORDS_ROOT:-$HOME/.local/share/fungos/records}}}}\" \\\n\
          \x20       --book \"$book\" \\\n\
          \x20       --collection \"${{FUNGOS_RECORDS_COLLECTION:-${{RECORDS_COLLECTION:-records}}}}\" \\\n\
          \x20       $env_flags run {name} \"$@\"\n\
          fi\n\
-         exec {runner}{roots_flag} $env_flags run {name} \"$@\"\n"
+         exec {runner}{subcommand_flag}{roots_flag} $env_flags run {name} \"$@\"\n"
     ));
     script
 }
@@ -622,17 +642,22 @@ pub struct RunOutput {
 pub struct CommandRunner {
     engine: Engine,
     records: Option<RecordsBinding>,
+    /// The bus a command may publish on. Only linked for a command that
+    /// declares `soil:unibus`; without a bus the import fails at start-up
+    /// rather than answering `unavailable` on the first publish.
+    bus: Option<Arc<dyn ::soil::Bus>>,
     components: Mutex<BTreeMap<PathBuf, Arc<wasmtime::component::Component>>>,
 }
 
 impl CommandRunner {
-    pub fn new(records: Option<RecordsBinding>) -> Result<Self> {
+    pub fn new(records: Option<RecordsBinding>, bus: Option<Arc<dyn ::soil::Bus>>) -> Result<Self> {
         let mut config = caching_config();
         config.epoch_interruption(true);
         let engine = Engine::new(&config)?;
         Ok(Self {
             engine,
             records,
+            bus,
             components: Mutex::new(BTreeMap::new()),
         })
     }
@@ -672,6 +697,19 @@ impl CommandRunner {
         if records.is_some() {
             ::soil::records_host::add_to_linker::<Host>(&mut linker)?;
         }
+        // The grant is the command's own declaration, not the caller's wish: a
+        // command that lists `soil:unibus` in `requires` gets the interface,
+        // and one that does not cannot reach the bus even if the host has one.
+        let bus = if entry.requires.iter().any(|cap| cap == "soil:unibus") {
+            self.bus
+                .clone()
+                .map(|bus| ::soil::unibus::BusHost::new(Some(bus)))
+        } else {
+            None
+        };
+        if bus.is_some() {
+            ::soil::unibus::add_to_linker::<Host>(&mut linker)?;
+        }
 
         let stdout = MemoryOutputPipe::new(entry.max_stdout_bytes);
         let stderr = MemoryOutputPipe::new(entry.max_stderr_bytes);
@@ -697,6 +735,7 @@ impl CommandRunner {
                 table: wasmtime::component::ResourceTable::new(),
                 limits,
                 records,
+                bus,
             },
         );
         store.limiter(|host| &mut host.limits);
@@ -736,6 +775,10 @@ struct Host {
     table: wasmtime::component::ResourceTable,
     limits: StoreLimits,
     records: Option<RecordsBookHost>,
+    /// `soil:unibus`, when the command declared it and the caller supplied a
+    /// bus. The command publishes through this; the records host never learns
+    /// the bus exists, which is what keeps the two capabilities independent.
+    bus: Option<::soil::unibus::BusHost>,
 }
 
 impl WasiView for Host {
@@ -744,6 +787,35 @@ impl WasiView for Host {
             ctx: &mut self.wasi,
             table: &mut self.table,
         }
+    }
+}
+
+impl ::soil::unibus::bus::Host for Host {
+    fn publish(
+        &mut self,
+        kind: String,
+        body: Vec<u8>,
+        destination: Option<String>,
+        ttl_ms: u64,
+    ) -> Result<::soil::unibus::bus::Receipt, ::soil::unibus::bus::Error> {
+        let bus = self
+            .bus
+            .as_mut()
+            .ok_or(::soil::unibus::bus::Error::Unavailable)?;
+        bus.publish(kind, body, destination, ttl_ms)
+    }
+
+    fn poll(
+        &mut self,
+        kinds: Vec<String>,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> Result<::soil::unibus::bus::Page, ::soil::unibus::bus::Error> {
+        let bus = self
+            .bus
+            .as_mut()
+            .ok_or(::soil::unibus::bus::Error::Unavailable)?;
+        bus.poll(kinds, cursor, limit)
     }
 }
 
@@ -964,8 +1036,14 @@ mod tests {
         let roots = vec![commands.path().to_path_buf()];
         let registry = CommandRegistry::scan_roots(&roots).unwrap();
 
-        let report =
-            write_shims(&registry, &dir, Path::new("/opt/soil/soil-command"), false).unwrap();
+        let report = write_shims(
+            &registry,
+            &dir,
+            Path::new("/opt/soil/soil-command"),
+            &[],
+            false,
+        )
+        .unwrap();
 
         assert_eq!(report.written, vec![dir.join("sfx")]);
         let shim = std::fs::read_to_string(dir.join("sfx")).unwrap();
@@ -1000,6 +1078,31 @@ mod tests {
     }
 
     #[test]
+    fn a_shim_names_the_subcommand_that_brought_it() {
+        let commands = tempfile::tempdir().unwrap();
+        standalone(commands.path(), "sfx");
+        let prefix = tempfile::tempdir().unwrap();
+        let dir = prefix.path().join("bin");
+        let roots = vec![commands.path().to_path_buf()];
+        let registry = CommandRegistry::scan_roots(&roots).unwrap();
+
+        write_shims(
+            &registry,
+            &dir,
+            Path::new("/opt/soil/soil"),
+            &["command"],
+            false,
+        )
+        .unwrap();
+
+        let shim = std::fs::read_to_string(dir.join("sfx")).unwrap();
+        // A shim written by `soil command shims` has to come back through
+        // `soil command`, not through a bare `soil` whose next word is a flag.
+        assert!(shim.contains("exec '/opt/soil/soil' 'command' "), "{shim}");
+        assert!(shim.ends_with("run 'sfx' \"$@\"\n"), "{shim}");
+    }
+
+    #[test]
     fn shims_leave_a_hand_written_script_alone_and_prune_only_their_own() {
         let commands = tempfile::tempdir().unwrap();
         standalone(commands.path(), "sfx");
@@ -1008,14 +1111,14 @@ mod tests {
         let runner = Path::new("/opt/soil/soil-command");
 
         let registry = CommandRegistry::scan(commands.path()).unwrap();
-        write_shims(&registry, &dir, runner, false).unwrap();
+        write_shims(&registry, &dir, runner, &[], false).unwrap();
 
         // A person put their own `mb` there, with a records binding and an actor.
         let policy = "#!/bin/sh\necho mine\n";
         std::fs::write(dir.join("mb"), policy).unwrap();
         standalone(commands.path(), "mb");
         let registry = CommandRegistry::scan(commands.path()).unwrap();
-        let report = write_shims(&registry, &dir, runner, false).unwrap();
+        let report = write_shims(&registry, &dir, runner, &[], false).unwrap();
         assert_eq!(report.kept.len(), 1, "{report:?}");
         assert_eq!(report.kept[0].0, "mb");
         assert_eq!(std::fs::read_to_string(dir.join("mb")).unwrap(), policy);
@@ -1023,7 +1126,7 @@ mod tests {
         // `sfx` goes away; pruning takes its shim and leaves the hand-written one.
         std::fs::remove_dir_all(commands.path().join("sfx")).unwrap();
         let registry = CommandRegistry::scan(commands.path()).unwrap();
-        let report = write_shims(&registry, &dir, runner, true).unwrap();
+        let report = write_shims(&registry, &dir, runner, &[], true).unwrap();
         assert_eq!(report.pruned, vec![dir.join("sfx")]);
         assert!(!dir.join("sfx").exists());
         assert_eq!(std::fs::read_to_string(dir.join("mb")).unwrap(), policy);

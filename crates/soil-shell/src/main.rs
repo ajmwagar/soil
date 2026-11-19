@@ -33,9 +33,12 @@ fn usage() -> &'static str {
        spore run <dir|package.spore> [--listen ADDR] [--hub ADDR]... [--unibus-config FILE]\n\
                                     [--bridge ADDR] [--bridge-wait SECS] [--allow-origin URL]...\n\
                                     [--credential-env NAME] [--appdata-root DIR] [--hue-bridge URL] [--surface window|web|frame|fb]...\n\
-                                    [--announce-endpoint URI]... [--announce-unsigned-dev]
-\n       spore warm <dir|package.spore>   compile it into the window host's cache\n\
+                                    [--announce-endpoint URI]... [--announce-unsigned-dev]\n\
+       spore warm <dir|package.spore>   compile it into the window host's cache\n\
        install --id SPORE [--json] [--root DIR] [--index FILE] [--packages DIR] [--origin URL]\n\
+       command [--root DIR]... [--list] run NAME [ARGS...]\n\
+       command [--root DIR]... shims [--dir DIR] [--prune]\n\
+       command [--root DIR]... warm\n\
        shell [--mount DIR] [--fuse-binary PATH] [--shell PATH] [--no-mount] [-- command...]\n\
        ls [PREFIX]\n\
        stat PATH\n\
@@ -43,8 +46,7 @@ fn usage() -> &'static str {
        history PATH\n\
        rm PATH...\n\
        content import --manifest FILE [--prefix DIR] [--limit N]\n\
-       search QUERY\
-     \
+       search QUERY\n\
      whoami                      the principal this machine runs as"
 }
 
@@ -79,6 +81,10 @@ fn run() -> Result<()> {
         // Any `.spore` on the names it claims: the same launcher for every
         // Spore, so a product never ships its own host again.
         "spore" => spore::run(&args),
+        // The command registry and runner, in this binary: a Spore installs a
+        // command and `soil command run <name>` runs it, with no second tool to
+        // find and no separate policy to drift.
+        "command" => run_command(args),
         "install" => spore::install(&args),
         "shell" => shell(&root, args),
         "rm" => remove(&root, args),
@@ -95,6 +101,16 @@ fn run() -> Result<()> {
             Ok(())
         }
         other => bail!("unknown soil command {other}\n{}", usage()),
+    }
+}
+
+/// `soil command …`: the registry and runner, the same CLI the standalone
+/// `soil-command` binary runs. The guest's exit code is the caller's: a command
+/// that exits 3 has said 3, and the runner has not failed.
+fn run_command(args: Vec<String>) -> Result<()> {
+    match soil_command::cli::run_under_soil(args)? {
+        0 => Ok(()),
+        code => std::process::exit(code),
     }
 }
 
