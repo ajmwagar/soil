@@ -222,13 +222,17 @@ impl VfsHost {
     }
 
     pub fn refresh_index(&self) -> anyhow::Result<index::IndexState> {
-        {
-            let mut vfs = self.vfs.lock().expect("vfs poisoned");
-            let mut index = self.index.lock().expect("index poisoned");
-            index.refresh(&mut vfs)?;
-        }
+        self.refresh_view()?;
         self.refresh_embeddings()?;
         Ok(self.index_read().state())
+    }
+
+    /// Refresh the namespace cache without paying for semantic embeddings.
+    /// A lookup only needs the current files and directories.
+    fn refresh_view(&self) -> anyhow::Result<()> {
+        let mut vfs = self.vfs.lock().expect("vfs poisoned");
+        let mut index = self.index.lock().expect("index poisoned");
+        index.refresh(&mut vfs)
     }
 
     fn refresh_embeddings(&self) -> anyhow::Result<()> {
@@ -460,6 +464,10 @@ impl vfs::Host for VfsHost {
             return Err(vfs::Error::OverBudget);
         }
         let parent = normalize_parent(&parent)?;
+        // The index is a cache shared by every process on this root. A
+        // directory listing must observe writes committed by another host
+        // (Scribe's ingest) without requiring a restart.
+        self.refresh_view().map_err(|_| vfs::Error::Io)?;
         let index = self.index_read();
         let Some(node) = index.entry(&parent) else {
             return Err(vfs::Error::NotFound);
@@ -486,6 +494,7 @@ impl vfs::Host for VfsHost {
 
     fn stat(&mut self, path: String) -> Result<vfs::Entry, vfs::Error> {
         let path = normalize_parent(&path)?;
+        self.refresh_view().map_err(|_| vfs::Error::Io)?;
         let index = self.index_read();
         let node = index.entry(&path).ok_or(vfs::Error::NotFound)?;
         Ok(to_entry(node))
@@ -493,6 +502,7 @@ impl vfs::Host for VfsHost {
 
     fn read(&mut self, path: String, offset: u64, length: u32) -> Result<vfs::Chunk, vfs::Error> {
         let path = normalize_parent(&path)?;
+        self.refresh_view().map_err(|_| vfs::Error::Io)?;
         let kind = self
             .index_read()
             .entry(&path)
@@ -980,6 +990,21 @@ mod tests {
             tail.content_id,
             fungos_vfs::ContentId::from_bytes(b"hello greece trip").to_string()
         );
+    }
+
+    #[test]
+    fn a_listing_sees_a_write_from_another_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = VfsHost::open(dir.path()).unwrap();
+        {
+            let mut vfs = Vfs::open(dir.path()).unwrap();
+            vfs.put("later.txt", b"from ingest", "text/plain", Expect::Any)
+                .unwrap();
+        }
+        let page = host.ls("".into(), 0, 10).unwrap();
+        assert!(page.entries.iter().any(|entry| entry.path == "later.txt"));
+        let chunk = host.read("later.txt".into(), 0, 64).unwrap();
+        assert_eq!(chunk.data, b"from ingest");
     }
 
     #[test]
