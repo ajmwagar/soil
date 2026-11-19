@@ -83,6 +83,7 @@ impl CommandService {
         creds::add_to_linker(&mut linker)?;
         unibus::add_to_linker(&mut linker)?;
         crate::time::add_to_linker(&mut linker)?;
+        crate::stream::add_to_linker(&mut linker)?;
         if self.builder.has_vfs() {
             crate::vfs_host::add_to_linker::<WasiHost>(&mut linker).context("link soil:vfs")?;
             crate::vfs_host::add_mutation_to_linker::<WasiHost>(&mut linker)

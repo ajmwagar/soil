@@ -97,6 +97,7 @@ pub struct VfsWriter {
     temp: PathBuf,
     bytes: u64,
     max_bytes: u64,
+    finished: bool,
 }
 
 impl VfsHost {
@@ -206,6 +207,7 @@ impl VfsHost {
             temp,
             bytes: 0,
             max_bytes,
+            finished: false,
         })
     }
 
@@ -407,7 +409,10 @@ impl VfsWriter {
         Ok(self.bytes)
     }
 
-    pub fn finish(mut self) -> Result<vfs_mut_api::WriteResult, vfs_mut_api::Error> {
+    pub fn finish(&mut self) -> Result<vfs_mut_api::WriteResult, vfs_mut_api::Error> {
+        if self.finished {
+            return Err(vfs_mut_api::Error::Invalid);
+        }
         if let Some(mut file) = self.file.take() {
             file.flush().map_err(|_| vfs_mut_api::Error::Io)?;
         }
@@ -430,12 +435,14 @@ impl VfsWriter {
             .refresh(&mut self.vfs.lock().expect("vfs poisoned"))
             .map_err(|_| vfs_mut_api::Error::Io)?;
         let _ = std::fs::remove_file(&self.temp);
+        self.finished = true;
         Ok(write_result(entry))
     }
 
-    pub fn abort(mut self) -> Result<(), vfs_mut_api::Error> {
+    pub fn abort(&mut self) -> Result<(), vfs_mut_api::Error> {
         self.file.take();
         let _ = std::fs::remove_file(&self.temp);
+        self.finished = true;
         Ok(())
     }
 }

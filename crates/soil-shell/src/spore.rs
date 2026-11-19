@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use ::soil::{
     CommandService, GatewayRoute, GeodeCredentials, HttpGatewayBuilder, HttpService, OriginAuth,
-    RecordsBookHost, UnibusBus, VfsHost, WasiHostBuilder, WasiHostPolicy,
+    RecordsBookHost, StreamHub, UnibusBus, VfsHost, WasiHostBuilder, WasiHostPolicy,
 };
 use anyhow::{Context, Result, bail};
 use soil_spore::{Manifest, OriginAuth as ClaimedAuth};
@@ -423,6 +423,8 @@ pub fn exec(args: &[String]) -> Result<()> {
     let mut unibus_config = None;
     let mut hubs = Vec::new();
     let mut allow_origins = Vec::new();
+    let mut wss_listen = None;
+    let mut wss_token = None;
     let mut guest_args = Vec::new();
     let mut index = 2;
     while index < args.len() {
@@ -460,6 +462,14 @@ pub fn exec(args: &[String]) -> Result<()> {
                 allow_origins.push(value(index + 1)?);
                 index += 2;
             }
+            "--wss-listen" => {
+                wss_listen = Some(value(index + 1)?.parse().context("--wss-listen is addr:port")?);
+                index += 2;
+            }
+            "--wss-token" => {
+                wss_token = Some(value(index + 1)?);
+                index += 2;
+            }
             other => bail!("unknown exec option `{other}` (separate guest args with --)"),
         }
     }
@@ -487,6 +497,15 @@ pub fn exec(args: &[String]) -> Result<()> {
 
     let mut builder = WasiHostBuilder::new(WasiHostPolicy::default())
         .vfs(VfsHost::open(&vfs_root).context("open soil:vfs")?);
+    if let Some(listen) = wss_listen {
+        let hub = StreamHub::new();
+        let token = wss_token
+            .or_else(|| std::env::var("SOIL_STREAM_TOKEN").ok())
+            .or_else(|| std::env::var("OMI_TOKEN").ok())
+            .unwrap_or_default();
+        crate::wss::spawn(hub.clone(), listen, token.into())?;
+        builder = builder.stream_hub(hub);
+    }
     if spore
         .manifest
         .grants

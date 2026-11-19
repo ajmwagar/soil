@@ -56,6 +56,7 @@ Principles:
 | [`soil:http@0.1.0`](wit/soil-http.wit) | `soil:http` | WIT + bounded host + direct transport proof |
 | [`soil:index@1.1.0`](wit/soil-index.wit) | `soil:index` | derived browse/search + explicit KNN; fast direct-child traversal |
 | [`soil:vfs@1.0.0`](wit/soil-vfs.wit) | `soil:vfs` | read-only workspace namespace |
+| [`soil:streams@0.1.0`](wit/soil-stream.wit) | `soil:stream` | host-issued WSS/Iroh/pipe byte sessions; `accept` is a poll, `read` is bounded |
 | [`soil:vfs-mut@0.1.0`](wit/soil-vfs-mut.wit) | `soil:vfs-mut` | separate write/mkdir/rmdir/rename grant; streaming writer for uploads |
 | [`soil:vfs-cid@0.1.0`](wit/soil-vfs-cid.wit) | `soil:vfs-cid` | content-id lookup inside the workspace namespace |
 | [`soil:git@0.1.0`](wit/soil-git.wit) | `soil:git` | repository status for a granted workspace path |

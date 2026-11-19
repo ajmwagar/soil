@@ -63,6 +63,12 @@ pub const CONTRACTS: &[Contract] = &[
         interfaces: &[("storage", &["read", "write"])],
     },
     Contract {
+        file: "wit/soil-stream.wit",
+        source: include_str!("../../../wit/soil-stream.wit"),
+        package: "soil:streams@0.1.0",
+        interfaces: &[("duplex", &["accept"])],
+    },
+    Contract {
         file: "wit/soil-vfs.wit",
         source: include_str!("../../../wit/soil-vfs.wit"),
         package: "soil:vfs@1.0.0",

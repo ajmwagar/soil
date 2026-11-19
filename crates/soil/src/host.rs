@@ -8,6 +8,7 @@ use std::{
 
 use crate::http_host::HttpTransport;
 use crate::records_host::{RecordsBookHost, records};
+use crate::stream::{StreamHub, StreamInfo, StreamSession, duplex as stream_api};
 use crate::vfs_host::{VfsHost, VfsWriter, cid, index, vfs, vfs_mut};
 use anyhow::Result;
 use http_body_util::BodyExt;
@@ -80,6 +81,8 @@ pub struct WasiHostBuilder {
     /// Optional VFS. The same host serves `soil:vfs`, `soil:vfs-mut`,
     /// `soil:vfs-cid` and `soil:index`.
     vfs: Option<VfsHost>,
+    /// Optional host-accepted byte streams.
+    streams: Option<Arc<StreamHub>>,
 }
 
 /// What a Spore's granted dependencies look like from the host, for `/readyz`.
@@ -276,7 +279,19 @@ impl WasiHostBuilder {
             soil_http: self.http.clone(),
             metrics: self.metrics_granted.then(|| Arc::clone(&self.metrics)),
             inference: self.inference.clone(),
-            vfs: self.vfs.clone(),        })
+            vfs: self.vfs.clone(),
+            streams: self.streams.clone(),
+        })
+    }
+
+    /// Link `soil:stream` to the host's accepted-session queue.
+    pub fn stream_hub(mut self, hub: StreamHub) -> Self {
+        self.streams = Some(Arc::new(hub));
+        self
+    }
+
+    pub fn has_streams(&self) -> bool {
+        self.streams.is_some()
     }
 
     /// Link the VFS and its derived index.
@@ -316,6 +331,7 @@ pub struct WasiHost {
     metrics: Option<Arc<Metrics>>,
     inference: Option<Arc<Mutex<soil_inference_host::InferenceHost>>>,
     vfs: Option<VfsHost>,
+    streams: Option<Arc<StreamHub>>,
 }
 
 impl vfs::Host for WasiHost {
@@ -483,22 +499,20 @@ impl vfs_mut::HostWriter for WasiHost {
         &mut self,
         writer: Resource<VfsWriter>,
     ) -> std::result::Result<vfs_mut::WriteResult, vfs_mut::Error> {
-        let writer = self
-            .table
-            .delete(writer)
-            .map_err(|_| vfs_mut::Error::Invalid)?;
-        writer.finish()
+        self.table
+            .get_mut(&writer)
+            .map_err(|_| vfs_mut::Error::Invalid)?
+            .finish()
     }
 
     fn abort(
         &mut self,
         writer: Resource<VfsWriter>,
     ) -> std::result::Result<(), vfs_mut::Error> {
-        let writer = self
-            .table
-            .delete(writer)
-            .map_err(|_| vfs_mut::Error::Invalid)?;
-        writer.abort()
+        self.table
+            .get_mut(&writer)
+            .map_err(|_| vfs_mut::Error::Invalid)?
+            .abort()
     }
 
     fn drop(
@@ -506,6 +520,85 @@ impl vfs_mut::HostWriter for WasiHost {
         writer: Resource<VfsWriter>,
     ) -> std::result::Result<(), wasmtime::Error> {
         let _ = self.table.delete(writer);
+        Ok(())
+    }
+}
+
+impl stream_api::Host for WasiHost {
+    fn accept(
+        &mut self,
+        protocol: String,
+    ) -> std::result::Result<Option<Resource<StreamSession>>, stream_api::Error> {
+        let Some(hub) = &self.streams else {
+            return Err(stream_api::Error::Denied);
+        };
+        let Some(session) = hub.accept(&protocol) else {
+            return Ok(None);
+        };
+        self.table
+            .push(session)
+            .map(Some)
+            .map_err(|_| stream_api::Error::OverBudget)
+    }
+}
+
+impl stream_api::HostSession for WasiHost {
+    fn info(
+        &mut self,
+        session: Resource<StreamSession>,
+    ) -> stream_api::Info {
+        let info = self
+            .table
+            .get(&session)
+            .map(|session| session.info.clone())
+            .unwrap_or_else(|_| StreamInfo {
+                protocol: String::new(),
+                peer: None,
+                principal: None,
+                media_type: None,
+            });
+        stream_api::Info {
+            protocol: info.protocol,
+            peer: info.peer,
+            principal: info.principal,
+            media_type: info.media_type,
+        }
+    }
+
+    fn read(
+        &mut self,
+        session: Resource<StreamSession>,
+        max: u32,
+    ) -> std::result::Result<Option<Vec<u8>>, stream_api::Error> {
+        self.table
+            .get_mut(&session)
+            .map_err(|_| stream_api::Error::Invalid)?
+            .read(max)
+    }
+
+    fn write(
+        &mut self,
+        session: Resource<StreamSession>,
+        data: Vec<u8>,
+    ) -> std::result::Result<u64, stream_api::Error> {
+        self.table
+            .get_mut(&session)
+            .map_err(|_| stream_api::Error::Invalid)?
+            .write(&data)
+    }
+
+    fn close(
+        &mut self,
+        session: Resource<StreamSession>,
+    ) -> std::result::Result<(), stream_api::Error> {
+        self.table
+            .get_mut(&session)
+            .map_err(|_| stream_api::Error::Invalid)?
+            .close()
+    }
+
+    fn drop(&mut self, session: Resource<StreamSession>) -> std::result::Result<(), wasmtime::Error> {
+        let _ = self.table.delete(session);
         Ok(())
     }
 }

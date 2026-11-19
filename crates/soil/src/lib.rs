@@ -83,6 +83,8 @@ pub mod git_host;
 #[cfg(feature = "desktops")]
 pub mod desktops;
 #[cfg(feature = "wasi")]
+pub mod stream;
+#[cfg(feature = "wasi")]
 pub mod unibus;
 #[cfg(feature = "vfs")]
 pub mod vfs_host;
@@ -112,6 +114,8 @@ pub use policy::{HttpPolicy, NetworkPolicy, WasiHostPolicy};
 pub use records_host::RecordsBookHost;
 #[cfg(feature = "wasi")]
 pub use service::HttpService;
+#[cfg(feature = "wasi")]
+pub use stream::{StreamHub, StreamInfo, StreamSession};
 #[cfg(feature = "wasi")]
 pub use unibus::{
     Bus, BusError, BusReceipt, Frame, MAX_BUS_BODY, MAX_POLL_LIMIT, MemoryBus, Page, UnibusBus,

@@ -19,6 +19,7 @@ use fungos_vfs::Vfs;
 mod evdev;
 mod present;
 mod spore;
+mod wss;
 
 fn main() {
     if let Err(error) = run() {
