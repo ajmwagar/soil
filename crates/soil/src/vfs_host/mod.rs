@@ -6,13 +6,27 @@
 mod embeddings;
 mod indexer;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    fs::File,
+    io::Write,
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use anyhow::Context;
 use fungos_vfs::{Expect, Hydration, Vfs, VfsError, normalize_path};
-use wasmtime::component::{HasSelf, Linker};
+use wasmtime::component::{HasSelf, Linker, Resource};
 
-wasmtime::component::bindgen!({ path: "wit/vfs", world: "host" });
+wasmtime::component::bindgen!({
+    path: "wit/vfs",
+    world: "host",
+    with: {
+        "soil:vfs-mut/vfs-mut.writer": VfsWriter,
+    },
+});
 
 pub use embeddings::EmbeddingProvider;
 #[cfg(feature = "model2vec")]
@@ -33,6 +47,9 @@ use self::soil::vfs_mut::vfs_mut as vfs_mut_api;
 pub(crate) const MAX_PAGE: u32 = 512;
 const MAX_RANGE: u32 = 1024 * 1024;
 const MAX_MUTATION_BYTES: usize = 16 * 1024 * 1024;
+const MAX_STREAM_BYTES: u64 = 512 * 1024 * 1024;
+
+static NEXT_WRITER: AtomicU64 = AtomicU64::new(0);
 
 /// Optional content transport used when a VFS path is only a placeholder.
 pub trait ContentHydrator: Send + Sync {
@@ -62,6 +79,24 @@ pub struct VfsHost {
     hydrator: Option<Arc<dyn ContentHydrator>>,
     index: Arc<Mutex<Box<dyn IndexBackend>>>,
     embeddings: Option<Arc<dyn EmbeddingProvider>>,
+    staging: PathBuf,
+}
+
+/// A host-owned temp object for one streamed VFS write.
+///
+/// The guest never sees the host path. Bytes go to disk as they arrive; the
+/// namespace and content store are changed only on `finish`.
+pub struct VfsWriter {
+    vfs: Arc<Mutex<Vfs>>,
+    index: Arc<Mutex<Box<dyn IndexBackend>>>,
+    path: String,
+    media_type: String,
+    expected_version: Option<u64>,
+    mode: Option<u32>,
+    file: Option<File>,
+    temp: PathBuf,
+    bytes: u64,
+    max_bytes: u64,
 }
 
 impl VfsHost {
@@ -120,20 +155,58 @@ impl VfsHost {
         index_path: impl AsRef<std::path::Path>,
         store: Option<&std::path::Path>,
     ) -> anyhow::Result<Self> {
+        let root = root.as_ref();
         let mut vfs = Vfs::open_with(root, role, store).context("open fungos-vfs")?;
         let mut index = SqliteIndex::open(index_path).context("open soil index")?;
         index.refresh(&mut vfs).context("refresh soil index")?;
+        let staging = root.join(".fungos/staging");
+        std::fs::create_dir_all(&staging).context("create VFS staging")?;
         Ok(Self {
             vfs: Arc::new(Mutex::new(vfs)),
             hydrator: None,
             index: Arc::new(Mutex::new(Box::new(index))),
             embeddings: None,
+            staging,
         })
     }
 
     pub fn with_hydrator(mut self, hydrator: Arc<dyn ContentHydrator>) -> Self {
         self.hydrator = Some(hydrator);
         self
+    }
+
+    /// Open a streaming writer. The path is validated now, so a caller learns
+    /// about a bad workspace path before uploading a large object.
+    pub fn begin_writer(
+        &self,
+        path: String,
+        media_type: String,
+        expected_size: Option<u64>,
+        expected_version: Option<u64>,
+        mode: Option<u32>,
+    ) -> Result<VfsWriter, vfs_mut_api::Error> {
+        let path = normalize_path(&path).map_err(|_| vfs_mut_api::Error::Invalid)?;
+        if media_type.trim().is_empty() {
+            return Err(vfs_mut_api::Error::Invalid);
+        }
+        let max_bytes = expected_size
+            .unwrap_or(MAX_STREAM_BYTES)
+            .min(MAX_STREAM_BYTES);
+        let id = NEXT_WRITER.fetch_add(1, Ordering::Relaxed);
+        let temp = self.staging.join(format!("write-{}-{id}", std::process::id()));
+        let file = File::create(&temp).map_err(|_| vfs_mut_api::Error::Io)?;
+        Ok(VfsWriter {
+            vfs: self.vfs.clone(),
+            index: self.index.clone(),
+            path,
+            media_type,
+            expected_version,
+            mode,
+            file: Some(file),
+            temp,
+            bytes: 0,
+            max_bytes,
+        })
     }
 
     /// Opt in to semantic indexing with an explicit host-selected provider.
@@ -317,6 +390,61 @@ fn vfs_error(error: VfsError) -> vfs::Error {
 fn index_error(error: anyhow::Error) -> index::Error {
     eprintln!("soil index: {error:#}");
     index::Error::Io
+}
+
+impl VfsWriter {
+    pub fn write(&mut self, data: &[u8]) -> Result<u64, vfs_mut_api::Error> {
+        let next = self
+            .bytes
+            .checked_add(data.len() as u64)
+            .ok_or(vfs_mut_api::Error::OverBudget)?;
+        if next > self.max_bytes {
+            return Err(vfs_mut_api::Error::OverBudget);
+        }
+        let file = self.file.as_mut().ok_or(vfs_mut_api::Error::Io)?;
+        file.write_all(data).map_err(|_| vfs_mut_api::Error::Io)?;
+        self.bytes = next;
+        Ok(self.bytes)
+    }
+
+    pub fn finish(mut self) -> Result<vfs_mut_api::WriteResult, vfs_mut_api::Error> {
+        if let Some(mut file) = self.file.take() {
+            file.flush().map_err(|_| vfs_mut_api::Error::Io)?;
+        }
+        let data = std::fs::read(&self.temp).map_err(|_| vfs_mut_api::Error::Io)?;
+        let entry = {
+            let mut vfs = self.vfs.lock().expect("vfs poisoned");
+            let expect = self
+                .expected_version
+                .map(Expect::Version)
+                .unwrap_or(Expect::Any);
+            let result = match self.mode {
+                Some(mode) => vfs.put_with_mode(&self.path, &data, &self.media_type, mode, expect),
+                None => vfs.put(&self.path, &data, &self.media_type, expect),
+            };
+            result.map_err(mutation_error)?
+        };
+        self.index
+            .lock()
+            .expect("index poisoned")
+            .refresh(&mut self.vfs.lock().expect("vfs poisoned"))
+            .map_err(|_| vfs_mut_api::Error::Io)?;
+        let _ = std::fs::remove_file(&self.temp);
+        Ok(write_result(entry))
+    }
+
+    pub fn abort(mut self) -> Result<(), vfs_mut_api::Error> {
+        self.file.take();
+        let _ = std::fs::remove_file(&self.temp);
+        Ok(())
+    }
+}
+
+impl Drop for VfsWriter {
+    fn drop(&mut self) {
+        self.file.take();
+        let _ = std::fs::remove_file(&self.temp);
+    }
 }
 
 impl vfs::Host for VfsHost {
@@ -534,6 +662,17 @@ impl VfsHost {
 }
 
 impl vfs_mut_api::Host for VfsHost {
+    fn begin_write(
+        &mut self,
+        _path: String,
+        _media_type: String,
+        _expected_size: Option<u64>,
+        _expected_version: Option<u64>,
+        _mode: Option<u32>,
+    ) -> Result<Resource<VfsWriter>, vfs_mut_api::Error> {
+        Err(vfs_mut_api::Error::Denied)
+    }
+
     fn write(
         &mut self,
         path: String,
@@ -629,6 +768,31 @@ impl vfs_mut_api::Host for VfsHost {
     }
 }
 
+impl vfs_mut_api::HostWriter for VfsHost {
+    fn write(
+        &mut self,
+        _writer: Resource<VfsWriter>,
+        _data: Vec<u8>,
+    ) -> Result<u64, vfs_mut_api::Error> {
+        Err(vfs_mut_api::Error::Denied)
+    }
+
+    fn finish(
+        &mut self,
+        _writer: Resource<VfsWriter>,
+    ) -> Result<vfs_mut_api::WriteResult, vfs_mut_api::Error> {
+        Err(vfs_mut_api::Error::Denied)
+    }
+
+    fn abort(&mut self, _writer: Resource<VfsWriter>) -> Result<(), vfs_mut_api::Error> {
+        Err(vfs_mut_api::Error::Denied)
+    }
+
+    fn drop(&mut self, _writer: Resource<VfsWriter>) -> Result<(), wasmtime::Error> {
+        Ok(())
+    }
+}
+
 fn write_result(entry: fungos_vfs::FileEntry) -> vfs_mut_api::WriteResult {
     vfs_mut_api::WriteResult {
         path: entry.path,
@@ -695,6 +859,52 @@ mod tests {
             .unwrap();
         vfs.put("photos/greece-02.jpg", b"jpeg-two", "image/jpeg", Expect::Any)
             .unwrap();
+    }
+
+    #[test]
+    fn streams_a_write_into_the_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = VfsHost::open(dir.path()).unwrap();
+        let mut writer = host
+            .begin_writer(
+                "captures/test/audio.pcm".into(),
+                "application/octet-stream".into(),
+                Some(11),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(writer.write(b"hello ").unwrap(), 6);
+        assert_eq!(writer.write(b"world").unwrap(), 11);
+        let result = writer.finish().unwrap();
+        assert_eq!(result.path, "captures/test/audio.pcm");
+        assert_eq!(result.size, 11);
+
+        let mut host = VfsHost::open(dir.path()).unwrap();
+        let chunk = <VfsHost as vfs::Host>::read(
+            &mut host,
+            "captures/test/audio.pcm".into(),
+            0,
+            MAX_RANGE,
+        )
+        .unwrap();
+        assert_eq!(chunk.data, b"hello world");
+    }
+
+    #[test]
+    fn abort_removes_the_staged_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = VfsHost::open(dir.path()).unwrap();
+        let mut writer = host
+            .begin_writer("aborted.bin".into(), "application/octet-stream".into(), None, None, None)
+            .unwrap();
+        writer.write(b"never committed").unwrap();
+        writer.abort().unwrap();
+        let mut host = VfsHost::open(dir.path()).unwrap();
+        assert!(matches!(
+            <VfsHost as vfs::Host>::stat(&mut host, "aborted.bin".into()),
+            Err(vfs::Error::NotFound)
+        ));
     }
 
     #[test]

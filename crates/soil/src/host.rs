@@ -8,7 +8,7 @@ use std::{
 
 use crate::http_host::HttpTransport;
 use crate::records_host::{RecordsBookHost, records};
-use crate::vfs_host::{VfsHost, cid, index, vfs, vfs_mut};
+use crate::vfs_host::{VfsHost, VfsWriter, cid, index, vfs, vfs_mut};
 use anyhow::Result;
 use http_body_util::BodyExt;
 use soil_inference_host::api as inference_api;
@@ -394,6 +394,24 @@ impl index::Host for WasiHost {
 }
 
 impl vfs_mut::Host for WasiHost {
+    fn begin_write(
+        &mut self,
+        path: String,
+        media_type: String,
+        expected_size: Option<u64>,
+        expected_version: Option<u64>,
+        mode: Option<u32>,
+    ) -> std::result::Result<Resource<VfsWriter>, vfs_mut::Error> {
+        let writer = self
+            .vfs
+            .as_ref()
+            .ok_or(vfs_mut::Error::Denied)?
+            .begin_writer(path, media_type, expected_size, expected_version, mode)?;
+        self.table
+            .push(writer)
+            .map_err(|_| vfs_mut::Error::OverBudget)
+    }
+
     fn write(
         &mut self,
         path: String,
@@ -446,6 +464,49 @@ impl vfs_mut::Host for WasiHost {
             .as_mut()
             .ok_or(vfs_mut::Error::Denied)?
             .rename(source, target)
+    }
+}
+
+impl vfs_mut::HostWriter for WasiHost {
+    fn write(
+        &mut self,
+        writer: Resource<VfsWriter>,
+        data: Vec<u8>,
+    ) -> std::result::Result<u64, vfs_mut::Error> {
+        self.table
+            .get_mut(&writer)
+            .map_err(|_| vfs_mut::Error::Invalid)?
+            .write(&data)
+    }
+
+    fn finish(
+        &mut self,
+        writer: Resource<VfsWriter>,
+    ) -> std::result::Result<vfs_mut::WriteResult, vfs_mut::Error> {
+        let writer = self
+            .table
+            .delete(writer)
+            .map_err(|_| vfs_mut::Error::Invalid)?;
+        writer.finish()
+    }
+
+    fn abort(
+        &mut self,
+        writer: Resource<VfsWriter>,
+    ) -> std::result::Result<(), vfs_mut::Error> {
+        let writer = self
+            .table
+            .delete(writer)
+            .map_err(|_| vfs_mut::Error::Invalid)?;
+        writer.abort()
+    }
+
+    fn drop(
+        &mut self,
+        writer: Resource<VfsWriter>,
+    ) -> std::result::Result<(), wasmtime::Error> {
+        let _ = self.table.delete(writer);
+        Ok(())
     }
 }
 
