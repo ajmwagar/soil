@@ -6,12 +6,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::Result;
-use http_body_util::BodyExt;
 use crate::http_host::HttpTransport;
 use crate::records_host::{RecordsBookHost, records};
-use wasmtime::component::{Resource, ResourceTable};
+use crate::vfs_host::{VfsHost, cid, index, vfs, vfs_mut};
+use anyhow::Result;
+use http_body_util::BodyExt;
 use soil_inference_host::api as inference_api;
+use wasmtime::component::{Resource, ResourceTable};
 use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use wasmtime_wasi_http::{
     DEFAULT_FORBIDDEN_HEADERS, Error, ForbiddenHeaderFilter, RequestOptions, WasiBody, WasiHttpCtx,
@@ -76,6 +77,9 @@ pub struct WasiHostBuilder {
     metrics_granted: bool,
     /// Optional `soil:inference` provider. Absent answers `unsupported`.
     inference: Option<Arc<Mutex<soil_inference_host::InferenceHost>>>,
+    /// Optional VFS. The same host serves `soil:vfs`, `soil:vfs-mut`,
+    /// `soil:vfs-cid` and `soil:index`.
+    vfs: Option<VfsHost>,
 }
 
 /// What a Spore's granted dependencies look like from the host, for `/readyz`.
@@ -271,7 +275,18 @@ impl WasiHostBuilder {
             records: self.records.clone(),
             soil_http: self.http.clone(),
             metrics: self.metrics_granted.then(|| Arc::clone(&self.metrics)),
-        })
+            inference: self.inference.clone(),
+            vfs: self.vfs.clone(),        })
+    }
+
+    /// Link the VFS and its derived index.
+    pub fn vfs(mut self, vfs: VfsHost) -> Self {
+        self.vfs = Some(vfs);
+        self
+    }
+
+    pub fn has_vfs(&self) -> bool {
+        self.vfs.is_some()
     }
 
     /// Link `soil:inference` and route it to this provider.
@@ -300,6 +315,138 @@ pub struct WasiHost {
     /// `Some` only when the manifest granted `soil:metrics`.
     metrics: Option<Arc<Metrics>>,
     inference: Option<Arc<Mutex<soil_inference_host::InferenceHost>>>,
+    vfs: Option<VfsHost>,
+}
+
+impl vfs::Host for WasiHost {
+    fn ls(
+        &mut self,
+        parent: String,
+        offset: u64,
+        limit: u32,
+    ) -> std::result::Result<vfs::Page, vfs::Error> {
+        self.vfs
+            .as_mut()
+            .ok_or(vfs::Error::Denied)?
+            .ls(parent, offset, limit)
+    }
+
+    fn stat(&mut self, path: String) -> std::result::Result<vfs::Entry, vfs::Error> {
+        self.vfs.as_mut().ok_or(vfs::Error::Denied)?.stat(path)
+    }
+
+    fn read(
+        &mut self,
+        path: String,
+        offset: u64,
+        length: u32,
+    ) -> std::result::Result<vfs::Chunk, vfs::Error> {
+        self.vfs
+            .as_mut()
+            .ok_or(vfs::Error::Denied)?
+            .read(path, offset, length)
+    }
+}
+
+impl cid::Host for WasiHost {
+    fn find(
+        &mut self,
+        content_id: String,
+        offset: u64,
+        limit: u32,
+    ) -> std::result::Result<cid::Page, cid::Error> {
+        self.vfs
+            .as_mut()
+            .ok_or(cid::Error::Denied)?
+            .find(content_id, offset, limit)
+    }
+}
+
+impl index::Host for WasiHost {
+    fn browse(
+        &mut self,
+        parent: String,
+        order: index::Order,
+        offset: u64,
+        limit: u32,
+    ) -> std::result::Result<index::Page, index::Error> {
+        self.vfs
+            .as_mut()
+            .ok_or(index::Error::Denied)?
+            .browse(parent, order, offset, limit)
+    }
+
+    fn search(&mut self, query: index::Query) -> std::result::Result<index::Page, index::Error> {
+        self.vfs.as_mut().ok_or(index::Error::Denied)?.search(query)
+    }
+
+    fn knn(&mut self, query: index::KnnQuery) -> std::result::Result<index::Page, index::Error> {
+        self.vfs.as_mut().ok_or(index::Error::Denied)?.knn(query)
+    }
+
+    fn state(&mut self) -> std::result::Result<index::IndexState, index::Error> {
+        self.vfs.as_mut().ok_or(index::Error::Denied)?.state()
+    }
+
+    fn refresh(&mut self) -> std::result::Result<index::IndexState, index::Error> {
+        self.vfs.as_mut().ok_or(index::Error::Denied)?.refresh()
+    }
+}
+
+impl vfs_mut::Host for WasiHost {
+    fn write(
+        &mut self,
+        path: String,
+        data: Vec<u8>,
+        media_type: String,
+        expected_version: Option<u64>,
+        mode: Option<u32>,
+    ) -> std::result::Result<vfs_mut::WriteResult, vfs_mut::Error> {
+        self.vfs.as_mut().ok_or(vfs_mut::Error::Denied)?.write(
+            path,
+            data,
+            media_type,
+            expected_version,
+            mode,
+        )
+    }
+
+    fn chmod(
+        &mut self,
+        path: String,
+        mode: u32,
+    ) -> std::result::Result<vfs_mut::WriteResult, vfs_mut::Error> {
+        self.vfs
+            .as_mut()
+            .ok_or(vfs_mut::Error::Denied)?
+            .chmod(path, mode)
+    }
+
+    fn remove(&mut self, path: String) -> std::result::Result<(), vfs_mut::Error> {
+        self.vfs
+            .as_mut()
+            .ok_or(vfs_mut::Error::Denied)?
+            .remove(path)
+    }
+
+    fn mkdir(&mut self, path: String) -> std::result::Result<(), vfs_mut::Error> {
+        self.vfs.as_mut().ok_or(vfs_mut::Error::Denied)?.mkdir(path)
+    }
+
+    fn rmdir(&mut self, path: String) -> std::result::Result<(), vfs_mut::Error> {
+        self.vfs.as_mut().ok_or(vfs_mut::Error::Denied)?.rmdir(path)
+    }
+
+    fn rename(
+        &mut self,
+        source: String,
+        target: String,
+    ) -> std::result::Result<vfs_mut::WriteResult, vfs_mut::Error> {
+        self.vfs
+            .as_mut()
+            .ok_or(vfs_mut::Error::Denied)?
+            .rename(source, target)
+    }
 }
 
 impl crate::http_host::api::Host for WasiHost {
@@ -464,7 +611,9 @@ impl inference_api::Host for WasiHost {
         Err(inference_api::Error::Unsupported)
     }
 
-    fn state(&mut self) -> std::result::Result<inference_api::InferenceState, inference_api::Error> {
+    fn state(
+        &mut self,
+    ) -> std::result::Result<inference_api::InferenceState, inference_api::Error> {
         let Some(host) = &self.inference else {
             return Err(inference_api::Error::Unsupported);
         };

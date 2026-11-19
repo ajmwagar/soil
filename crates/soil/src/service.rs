@@ -101,7 +101,11 @@ impl HttpService {
             super::host::WasiHost,
             HasSelf<super::host::WasiHost>,
         >(&mut linker, |state| state)?;
-        if builder.has_records() {
+        if builder.has_vfs() {
+            crate::vfs_host::add_to_linker::<WasiHost>(&mut linker).context("link soil:vfs")?;
+            crate::vfs_host::add_mutation_to_linker::<WasiHost>(&mut linker)
+                .context("link soil:vfs-mut")?;
+        }        if builder.has_records() {
             crate::records_host::add_to_linker(&mut linker).context("link soil:records")?;
         }
         if builder.has_http() {

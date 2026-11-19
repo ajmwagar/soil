@@ -98,6 +98,27 @@ Battery, estimate, lid and Canvas animation are semantic WIT but are lowered
 through a bounded core-Wasm ABI by the S22 runtime. See
 [`docs/abi-core-wasm.md`](docs/abi-core-wasm.md).
 
+## One runner
+
+`soil` is one host and one binary. A Spore can run as a command, an HTTP
+service, a window or a browser bridge; the manifest's grants decide what it may
+call, not which executable started it.
+
+```sh
+soil spore run ./spore --mode command -- ingest --event '<json>'
+soil spore run ./spore --mode http
+soil spore run ./spore --mode ui
+soil spore run ./spore --mode web
+```
+
+The command path links VFS, VFS mutation, the derived index, records, Unibus,
+inference, HTTP, time and credentials in the same `WasiHost`. A Spore that
+imports an interface it was not granted still fails; linking is the host
+offering, grants are the Spore's authority.
+
+See [docs/soil-shell.md](docs/soil-shell.md) for the modes and the host
+environment.
+
 The first host-backed capability is BLE: [`crates/soil-ble-host`](crates/soil-ble-host)
 runs the [COLMI ring Spore](https://github.com/ajmwagar/spores/tree/main/spores/colmi-ring)
 against a real radio on desktop. `SOIL_BLE_SIM=1` swaps the radio for

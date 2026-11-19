@@ -14,12 +14,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use ::soil::{
+    CommandService, GatewayRoute, GeodeCredentials, HttpGatewayBuilder, HttpService, OriginAuth,
+    RecordsBookHost, UnibusBus, VfsHost, WasiHostBuilder, WasiHostPolicy,
+};
 use anyhow::{Context, Result, bail};
 use soil_spore::{Manifest, OriginAuth as ClaimedAuth};
-use ::soil::{
-    GatewayRoute, GeodeCredentials, HttpGatewayBuilder, HttpService, OriginAuth, UnibusBus,
-    WasiHostBuilder, WasiHostPolicy,
-};
 use tokio::net::TcpListener;
 
 /// How a run is asked for.
@@ -204,8 +204,7 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
             }
             "--size" => {
                 let size = value(index + 1)?;
-                let (width, height) =
-                    size.split_once('x').context("--size is WxH")?;
+                let (width, height) = size.split_once('x').context("--size is WxH")?;
                 run.present.size = (
                     width.parse().context("--size is WxH")?,
                     height.parse().context("--size is WxH")?,
@@ -306,8 +305,22 @@ pub fn parse(args: &[String]) -> Result<(PathBuf, Run)> {
 
 /// Run a Spore until the listener closes.
 pub fn run(args: &[String]) -> Result<()> {
+    // One verb, four ways to run the same component. `--mode command` is the
+    // `run(args)` export; the other modes are the surfaces `present` already
+    // knows. A mode is a request, not a different executable.
+    let (mode, args) = split_mode(args)?;
+    if mode.as_deref() == Some("command") {
+        let mut exec_args = args;
+        if exec_args.first().map(String::as_str) == Some("run") {
+            exec_args[0] = "exec".into();
+        }
+        return exec(&exec_args);
+    }
     // `soil spore warm <path>`: compile it into the window host's AOT cache and
     // stop. This is the wait an install pays so the first click does not.
+    if args.first().map(String::as_str) == Some("exec") {
+        return exec(&args);
+    }
     if args.first().map(String::as_str) == Some("warm") {
         let path = args
             .get(1)
@@ -326,7 +339,12 @@ pub fn run(args: &[String]) -> Result<()> {
         .with_writer(std::io::stderr)
         .try_init();
 
-    let (path, run) = parse(args)?;
+    let (path, mut run) = parse(&args)?;
+    if let Some(surface) = mode_surface(mode.as_deref())? {
+        if !run.present.surfaces.contains(&surface) {
+            run.present.surfaces.push(surface);
+        }
+    }
     let spore = Spore::resolve(&path)?;
     let surfaces = crate::present::plan(&run.present, &spore.manifest)?;
     if surfaces.is_empty() {
@@ -341,7 +359,168 @@ pub fn run(args: &[String]) -> Result<()> {
             .join(","),
         "presenting"
     );
-    crate::present::show(&spore.root, &spore.manifest, &run.present, &surfaces, Some(&run))
+    crate::present::show(
+        &spore.root,
+        &spore.manifest,
+        &run.present,
+        &surfaces,
+        Some(&run),
+    )
+}
+
+/// Split `--mode NAME` from the rest, leaving everything after `--` alone.
+fn split_mode(args: &[String]) -> Result<(Option<String>, Vec<String>)> {
+    let mut mode = None;
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "--" {
+            out.extend(args[index..].iter().cloned());
+            break;
+        }
+        if args[index] == "--mode" {
+            let value = args
+                .get(index + 1)
+                .with_context(|| "--mode needs command, http, ui, web or bridge")?;
+            if mode.replace(value.clone()).is_some() {
+                bail!("--mode was given more than once");
+            }
+            index += 2;
+            continue;
+        }
+        out.push(args[index].clone());
+        index += 1;
+    }
+    Ok((mode, out))
+}
+
+fn mode_surface(mode: Option<&str>) -> Result<Option<crate::present::Surface>> {
+    Ok(match mode {
+        None => None,
+        Some("http") => Some(crate::present::Surface::Http),
+        Some("ui") | Some("window") => Some(crate::present::Surface::Window),
+        Some("web") | Some("bridge") => Some(crate::present::Surface::Web),
+        Some("command") => None,
+        Some(other) => bail!("unknown --mode {other:?} (command, http, ui, web, bridge)"),
+    })
+}
+
+/// Run a command Spore in the same host as the HTTP and window runners.
+///
+/// `soil spore exec <spore-dir|package.spore> [options] -- <args...>`
+pub fn exec(args: &[String]) -> Result<()> {
+    let path = args
+        .get(1)
+        .map(PathBuf::from)
+        .context("usage: soil spore exec <spore-dir|package.spore> [options] -- <args...>")?;
+    let mut vfs_root = None;
+    let mut records_root = None;
+    let mut book = "fungos".to_string();
+    let mut unibus_config = None;
+    let mut hubs = Vec::new();
+    let mut allow_origins = Vec::new();
+    let mut guest_args = Vec::new();
+    let mut index = 2;
+    while index < args.len() {
+        if args[index] == "--" {
+            guest_args.extend(args[index + 1..].iter().cloned());
+            break;
+        }
+        let value = |index: usize| {
+            args.get(index)
+                .cloned()
+                .with_context(|| format!("{} needs a value", args[index - 1]))
+        };
+        match args[index].as_str() {
+            "--vfs-root" => {
+                vfs_root = Some(PathBuf::from(value(index + 1)?));
+                index += 2;
+            }
+            "--records-root" => {
+                records_root = Some(PathBuf::from(value(index + 1)?));
+                index += 2;
+            }
+            "--book" => {
+                book = value(index + 1)?;
+                index += 2;
+            }
+            "--unibus-config" => {
+                unibus_config = Some(PathBuf::from(value(index + 1)?));
+                index += 2;
+            }
+            "--hub" => {
+                hubs.push(value(index + 1)?);
+                index += 2;
+            }
+            "--allow-origin" => {
+                allow_origins.push(value(index + 1)?);
+                index += 2;
+            }
+            other => bail!("unknown exec option `{other}` (separate guest args with --)"),
+        }
+    }
+
+    let spore = Spore::resolve(&path)?;
+    let module = spore
+        .manifest
+        .module
+        .as_ref()
+        .map(|module| module.path.clone())
+        .with_context(|| format!("{} has no [module] to run", spore.manifest.spore.id))?;
+    let wasm =
+        std::fs::read(spore.root.join(&module)).with_context(|| format!("read module {module}"))?;
+
+    let vfs_root = vfs_root
+        .or_else(|| std::env::var_os("SOIL_VFS_ROOT").map(PathBuf::from))
+        .unwrap_or_else(|| crate::expand_home("~/.local/share/fungos/vfs"));
+    let records_root = records_root
+        .or_else(|| std::env::var_os("SOIL_RECORDS_ROOT").map(PathBuf::from))
+        .unwrap_or_else(|| crate::expand_home("~/.local/share/fungos/records"));
+
+    std::fs::create_dir_all(&vfs_root).with_context(|| format!("create {}", vfs_root.display()))?;
+    std::fs::create_dir_all(&records_root)
+        .with_context(|| format!("create {}", records_root.display()))?;
+
+    let mut builder = WasiHostBuilder::new(WasiHostPolicy::default())
+        .vfs(VfsHost::open(&vfs_root).context("open soil:vfs")?);
+    if spore
+        .manifest
+        .grants
+        .keys()
+        .any(|grant| grant == "soil:records")
+    {
+        builder = builder.records_book(
+            RecordsBookHost::open(&records_root, book, "capture").context("open soil:records")?,
+        );
+    }
+    if let Some(inference) = inference_host() {
+        builder = builder.inference(inference);
+    }
+    if unibus_config.is_some() {
+        if let Some(bus) = bus(&spore.manifest, unibus_config.as_deref(), &hubs)? {
+            builder = builder.bus(bus);
+        }
+    }
+    if !allow_origins.is_empty() {
+        let policy = ::soil::http_host::HttpPolicy::new(
+            allow_origins,
+            8 * 1024 * 1024,
+            Duration::from_secs(30),
+        )
+        .context("soil:http policy")?;
+        builder = builder.with_http(::soil::HttpCapability::new(
+            policy,
+            Arc::new(::soil::http_host::DirectTransport),
+        ));
+    }
+
+    let service = CommandService::from_bytes_named(spore.manifest.spore.id.clone(), &wasm, builder)
+        .with_context(|| format!("load {}", spore.manifest.spore.id))?;
+    let outcome = service.run(guest_args)?;
+    if let Some(snapshot) = outcome.snapshot {
+        println!("{}", String::from_utf8_lossy(&snapshot));
+    }
+    Ok(())
 }
 
 /// `soil install --id <id>`: fetch, verify, write and compile a listing.
@@ -535,7 +714,7 @@ async fn serve(spore: Spore, run: Run) -> Result<()> {
             Duration::from_secs(run.geode_ttl_secs),
         )));
     }
-    if let Some(bus) = bus(&spore.manifest, &run)? {
+    if let Some(bus) = bus(&spore.manifest, run.unibus_config.as_deref(), &run.hubs)? {
         builder = builder.bus(bus);
     }
     // The manifest is the whole grant decision for metrics: the import always
@@ -749,28 +928,29 @@ fn inference_host() -> Option<::soil::InferenceHost> {
     if url.trim().is_empty() {
         return None;
     }
-    let model = std::env::var("SOIL_INFERENCE_MODEL")
-        .unwrap_or_else(|_| "scribe/summarize".to_string());
+    let model =
+        std::env::var("SOIL_INFERENCE_MODEL").unwrap_or_else(|_| "scribe/summarize".to_string());
     let api_key = std::env::var("SOIL_INFERENCE_API_KEY").ok().or_else(|| {
-        std::env::var("SOIL_INFERENCE_KEY_FILE").ok().and_then(|path| {
-            std::fs::read_to_string(crate::expand_home(&path))
-                .ok()
-                .map(|value| value.trim().to_string())
-        })
+        std::env::var("SOIL_INFERENCE_KEY_FILE")
+            .ok()
+            .and_then(|path| {
+                std::fs::read_to_string(crate::expand_home(&path))
+                    .ok()
+                    .map(|value| value.trim().to_string())
+            })
     });
-    Some(::soil::InferenceHost::new(
-        url,
-        api_key,
-        "soil",
-        model,
-    ))
+    Some(::soil::InferenceHost::new(url, api_key, "soil", model))
 }
 
 /// The bus, when the Spore is granted one.
 ///
 /// A Spore that observes or publishes needs a hub; one that does not must not
 /// be handed a connection it never asked for.
-fn bus(manifest: &Manifest, run: &Run) -> Result<Option<Arc<dyn ::soil::Bus>>> {
+fn bus(
+    manifest: &Manifest,
+    config: Option<&Path>,
+    hubs: &[String],
+) -> Result<Option<Arc<dyn ::soil::Bus>>> {
     let wants = manifest
         .grants
         .keys()
@@ -778,7 +958,7 @@ fn bus(manifest: &Manifest, run: &Run) -> Result<Option<Arc<dyn ::soil::Bus>>> {
     if !wants {
         return Ok(None);
     }
-    let config = run.unibus_config.as_ref().with_context(|| {
+    let config = config.with_context(|| {
         format!(
             "{} is granted soil:unibus but no --unibus-config was given",
             manifest.spore.id
@@ -790,7 +970,7 @@ fn bus(manifest: &Manifest, run: &Run) -> Result<Option<Arc<dyn ::soil::Bus>>> {
     .with_context(|| format!("parse {}", config.display()))?;
     base.resolve_token_file(config);
     let mut endpoints = vec![base.hub_endpoint.clone()];
-    endpoints.extend(run.hubs.iter().cloned());
+    endpoints.extend(hubs.iter().cloned());
     let bus = UnibusBus::connect_any(&base, &endpoints)?;
     Ok(Some(Arc::new(bus)))
 }

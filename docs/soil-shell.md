@@ -3,6 +3,53 @@
 `soil` is the one runner: it hosts a Spore on every surface this machine and the
 package can provide, and it is also a front door to a VFS workspace.
 
+## One runner, four modes
+
+A Spore is one component. `soil` is one host: it links the capability adapters
+once, and the Spore's manifest decides which imports it may call. The same
+binary can run a command, an HTTP service, a window, or the browser bridge.
+
+```sh
+soil spore run <spore-dir|package.spore> [--mode command|http|ui|web|bridge] [options]
+```
+
+| Mode | What runs | Entry point |
+|---|---|---|
+| `command` | one invocation, then exit | `run(args)` export |
+| `http` | the hosts the package claims | `wasi:http/incoming-handler` |
+| `ui` | a window and keyboard | Canvas surface |
+| `web` | the browser bridge | `soil-web-bridge` |
+| `bridge` | the browser bridge, named explicitly | `soil-web-bridge` |
+
+`--mode command` takes the guest's arguments after `--`:
+
+```sh
+soil spore run ./scribe --mode command \
+  --vfs-root ~/.local/share/fungos/vfs \
+  --records-root ~/.local/share/fungos/records \
+  -- ingest --event '{"capture_id":"omi-123", ...}' \
+  --model fpl/ornith-1.5-9b-heretic
+```
+
+`spore exec` is the same path without the `--mode` word:
+
+```sh
+soil spore exec ./scribe --vfs-root DIR --records-root DIR \
+  -- ingest --event '<json>' --model ALIAS
+```
+
+The command host links `soil:vfs`, `soil:vfs-mut`, `soil:vfs-cid`,
+`soil:index`, `soil:records`, `soil:unibus`, `soil:inference`, `soil:http`,
+`soil:time` and `soil:creds` when the Spore is granted them. Grants still gate
+every call: linking an interface the manifest did not grant is not permission.
+
+`soil:inference` is configured from the environment, not the manifest:
+`SOIL_INFERENCE_URL` (for example `http://agora-one:8717/v1`),
+`SOIL_INFERENCE_MODEL`, and `SOIL_INFERENCE_API_KEY` or
+`SOIL_INFERENCE_KEY_FILE`. A model named by the guest is sent as the request
+model, so a host that fronts an alias resolves it; a direct backend needs the
+name it serves.
+
 ## Presenting a Spore
 
 ```sh
@@ -12,7 +59,9 @@ soil spore run <spore-dir|package.spore> [--surface S]... [options]
 A Spore is one component; a machine can offer several ways to watch it. The
 surfaces are `http` (the hosts the package claims in `[http]`), `window` (a real
 window and keyboard), `web` (a browser through the bridge), `frame` (one
-captured image) and `framebuffer` (straight onto a device).
+captured image) and `framebuffer` (straight onto a device). `--mode` is the
+short spelling: `http`, `ui`, `web` and `bridge` select the corresponding
+surface; `command` selects the `run(args)` export.
 
 With no `--surface`, `soil` runs the Spore however this machine can: a window
 when the session has a display, the hosts a `[http]` table claims, and the web
@@ -51,6 +100,10 @@ soil spore run ./worklog --surface window --surface web --bind 127.0.0.1:8795 \
 
 `--vfs-root`, `--records`/`--collection`/`--book` and `--actor` are the grants a
 Spore is given; a surface that was not given one denies it.
+
+For a command Spore, `--vfs-root`, `--records-root`, `--book`,
+`--unibus-config`, `--hub` and `--allow-origin` configure the same host. A
+command that only ingests does not need Unibus; a `watch` command does.
 
 The `web` surface can be put behind an SSO ingress: `--actor-secret-env NAME`
 verifies Palisade's signed actor and gives each signed-in person their own records

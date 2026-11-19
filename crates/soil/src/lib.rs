@@ -58,6 +58,8 @@ mod host;
 #[cfg(any(feature = "http", feature = "wasi"))]
 pub mod http_host;
 pub use soil_inference_host::InferenceHost;
+#[cfg(feature = "wasi")]
+mod command;
 #[cfg(feature = "principal")]
 pub mod local_identity;
 #[cfg(any(feature = "http", feature = "wasi"))]
@@ -87,6 +89,8 @@ pub mod vfs_host;
 #[cfg(feature = "work")]
 pub mod work;
 
+#[cfg(feature = "wasi")]
+pub use command::{CommandOutcome, CommandService};
 #[cfg(feature = "wasi")]
 pub use context::HttpContext;
 #[cfg(feature = "wasi")]

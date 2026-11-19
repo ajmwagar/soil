@@ -672,9 +672,10 @@ where
 
 pub fn add_to_linker<T>(linker: &mut Linker<T>) -> anyhow::Result<()>
 where
-    T: vfs::Host + index::Host + 'static,
+    T: vfs::Host + index::Host + cid::Host + 'static,
 {
     vfs::add_to_linker::<T, HasSelf<T>>(linker, |state| state)?;
+    cid::add_to_linker::<T, HasSelf<T>>(linker, |state| state)?;
     index::add_to_linker::<T, HasSelf<T>>(linker, |state| state)?;
     Ok(())
 }
