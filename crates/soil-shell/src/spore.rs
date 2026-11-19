@@ -340,6 +340,10 @@ pub fn run(args: &[String]) -> Result<()> {
         .try_init();
 
     let (path, mut run) = parse(&args)?;
+    if mode.as_deref() == Some("http") {
+        let spore = Spore::resolve(&path)?;
+        return serve_http(&spore.root, run);
+    }
     if let Some(surface) = mode_surface(mode.as_deref())? {
         if !run.present.surfaces.contains(&surface) {
             run.present.surfaces.push(surface);
@@ -702,7 +706,15 @@ async fn serve(spore: Spore, run: Run) -> Result<()> {
     let wasm =
         std::fs::read(spore.root.join(&module)).with_context(|| format!("read module {module}"))?;
 
-    let mut builder = WasiHostBuilder::new(WasiHostPolicy::default());
+    let vfs_root = run
+        .present
+        .vfs_root
+        .clone()
+        .or_else(|| std::env::var_os("SOIL_VFS_ROOT").map(PathBuf::from))
+        .unwrap_or_else(|| crate::expand_home("~/.local/share/fungos/vfs"));
+    std::fs::create_dir_all(&vfs_root).with_context(|| format!("create {}", vfs_root.display()))?;
+    let mut builder = WasiHostBuilder::new(WasiHostPolicy::default())
+        .vfs(VfsHost::open(&vfs_root).context("open soil:vfs")?);
     if let Some(inference) = inference_host() {
         builder = builder.inference(inference);
     }
