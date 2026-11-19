@@ -57,6 +57,7 @@ mod gateway;
 mod host;
 #[cfg(any(feature = "http", feature = "wasi"))]
 pub mod http_host;
+pub use soil_inference_host::InferenceHost;
 #[cfg(feature = "principal")]
 pub mod local_identity;
 #[cfg(any(feature = "http", feature = "wasi"))]

@@ -88,6 +88,7 @@ cli = [
 ]
 
 [dependencies]
+soil-inference-host = { path = "../soil-inference-host" }
 anyhow = "1"
 base64 = { version = "0.22", optional = true }
 blake3 = { version = "1", optional = true }

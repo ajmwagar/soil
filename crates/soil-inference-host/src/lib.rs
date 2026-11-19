@@ -21,7 +21,10 @@ wasmtime::component::bindgen!({
     },
 });
 
-use soil::inference::inference as api;
+pub mod api {
+    pub use crate::soil::inference::inference::*;
+}
+
 
 const MAX_CHUNK: usize = 16 * 1024;
 const BASE64_STANDARD: base64::engine::general_purpose::GeneralPurpose =

@@ -524,6 +524,9 @@ async fn serve(spore: Spore, run: Run) -> Result<()> {
         std::fs::read(spore.root.join(&module)).with_context(|| format!("read module {module}"))?;
 
     let mut builder = WasiHostBuilder::new(WasiHostPolicy::default());
+    if let Some(inference) = inference_host() {
+        builder = builder.inference(inference);
+    }
     if let Some(socket) = &run.geode_socket {
         builder = builder.credential_provider(Arc::new(GeodeCredentials::new(
             socket,
@@ -733,6 +736,34 @@ fn announce(manifest: &Manifest, root: &Path, run: &Run) -> Result<()> {
         Err(error) => tracing::warn!(%error, "lost track of the announcer"),
     });
     Ok(())
+}
+
+/// Optional `soil:inference` provider, configured from the environment.
+///
+/// `SOIL_INFERENCE_URL` is the OpenAI-compatible base URL, e.g.
+/// `http://agora-one:8717/v1`. `SOIL_INFERENCE_MODEL` defaults to
+/// `scribe/summarize`. The key comes from `SOIL_INFERENCE_API_KEY` or
+/// `SOIL_INFERENCE_KEY_FILE`.
+fn inference_host() -> Option<::soil::InferenceHost> {
+    let url = std::env::var("SOIL_INFERENCE_URL").ok()?;
+    if url.trim().is_empty() {
+        return None;
+    }
+    let model = std::env::var("SOIL_INFERENCE_MODEL")
+        .unwrap_or_else(|_| "scribe/summarize".to_string());
+    let api_key = std::env::var("SOIL_INFERENCE_API_KEY").ok().or_else(|| {
+        std::env::var("SOIL_INFERENCE_KEY_FILE").ok().and_then(|path| {
+            std::fs::read_to_string(crate::expand_home(&path))
+                .ok()
+                .map(|value| value.trim().to_string())
+        })
+    });
+    Some(::soil::InferenceHost::new(
+        url,
+        api_key,
+        "soil",
+        model,
+    ))
 }
 
 /// The bus, when the Spore is granted one.
