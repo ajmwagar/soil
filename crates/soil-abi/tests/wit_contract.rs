@@ -1,12 +1,21 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
-use soil_abi::CONTRACTS;
+use soil_abi::{CONTRACTS, DEPENDENCIES};
 use wit_parser::Resolve;
 
 #[test]
 fn every_capability_contract_parses_with_its_reviewed_package_name() {
     let mut resolve = Resolve::default();
     let mut packages = BTreeMap::new();
+
+    for dependency in DEPENDENCIES {
+        resolve
+            .push_str(dependency.file, dependency.source)
+            .unwrap_or_else(|error| {
+                panic!("{} must be valid WIT: {error}", dependency.file);
+            });
+    }
 
     for contract in CONTRACTS {
         let id = resolve
@@ -71,5 +80,54 @@ fn package_names_are_unique() {
                 contract.file, other.file
             );
         }
+    }
+}
+
+/// The reviewed list is the point of this crate, but it must not silently fall
+/// behind the directory it claims to cover. A new `wit/*.wit` file has to be
+/// added here with a reviewed package name; a stale file reference fails too.
+#[test]
+fn every_wit_file_is_a_reviewed_contract() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let wit_dir = root.join("wit");
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(&wit_dir).unwrap_or_else(|error| {
+        panic!("read {}: {error}", wit_dir.display());
+    }) {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|value| value.to_str()) == Some("wit") {
+            files.push(format!(
+                "wit/{}",
+                path.file_name().unwrap().to_string_lossy()
+            ));
+        }
+    }
+    files.sort();
+
+    let reviewed = CONTRACTS
+        .iter()
+        .map(|contract| contract.file)
+        .collect::<BTreeSet<_>>();
+    let missing = files
+        .iter()
+        .filter(|file| !reviewed.contains(file.as_str()))
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "unreviewed WIT packages under wit/: {missing:?}"
+    );
+
+    for file in reviewed {
+        assert!(
+            root.join(file).is_file(),
+            "{file} is reviewed but does not exist"
+        );
+    }
+    for dependency in DEPENDENCIES {
+        assert!(
+            root.join(dependency.file).is_file(),
+            "{} is a vendored dependency but does not exist",
+            dependency.file
+        );
     }
 }

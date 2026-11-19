@@ -115,7 +115,10 @@ pub const CONTRACTS: &[Contract] = &[
         file: "wit/soil-spore.wit",
         source: include_str!("../../../wit/soil-spore.wit"),
         package: "soil:spore@0.3.0",
-        interfaces: &[("catalog", &["entries", "launch", "running", "stop", "install"])],
+        interfaces: &[(
+            "catalog",
+            &["entries", "launch", "running", "stop", "install"],
+        )],
     },
     Contract {
         file: "wit/soil-search.wit",
@@ -289,4 +292,84 @@ pub const CONTRACTS: &[Contract] = &[
             ("lid", &["read", "log-change"]),
         ],
     },
+    Contract {
+        file: "wit/soil-metrics.wit",
+        source: include_str!("../../../wit/soil-metrics.wit"),
+        package: "soil:metrics@0.1.0",
+        interfaces: &[("metrics", &["emit", "snapshot"])],
+    },
+    Contract {
+        file: "wit/soil-net.wit",
+        source: include_str!("../../../wit/soil-net.wit"),
+        package: "soil:net@0.1.0",
+        interfaces: &[("net", &["resolve", "probe"])],
+    },
+    Contract {
+        file: "wit/soil-present.wit",
+        source: include_str!("../../../wit/soil-present.wit"),
+        package: "soil:present@0.1.0",
+        interfaces: &[
+            ("types", &[]),
+            (
+                "surface",
+                &["size", "scale", "delivery", "present", "present-rgba"],
+            ),
+            ("input", &["interactive", "poll"]),
+            ("cursor", &["set"]),
+            ("clipboard", &["set-text"]),
+        ],
+    },
+    Contract {
+        file: "wit/soil-terminal-screen.wit",
+        source: include_str!("../../../wit/soil-terminal-screen.wit"),
+        package: "soil:terminal-screen@0.1.0",
+        interfaces: &[(
+            "screen",
+            &[
+                "open-session",
+                "sessions",
+                "select-session",
+                "close-session",
+                "snapshot",
+                "wait",
+                "write",
+                "scroll",
+                "resize",
+            ],
+        )],
+    },
+    Contract {
+        file: "wit/soil-vfs-cid.wit",
+        source: include_str!("../../../wit/soil-vfs-cid.wit"),
+        package: "soil:vfs-cid@0.1.0",
+        interfaces: &[("cid", &["find"])],
+    },
+    Contract {
+        file: "wit/soil-worktrees.wit",
+        source: include_str!("../../../wit/soil-worktrees.wit"),
+        package: "soil:worktrees@0.1.0",
+        interfaces: &[("worktrees", &["checkouts"])],
+    },
+    Contract {
+        file: "wit/fungos-webhooks.wit",
+        source: include_str!("../../../wit/fungos-webhooks.wit"),
+        package: "fungos:webhooks@0.1.0",
+        interfaces: &[("admin", &["create", "revoke", "hooks"])],
+    },
+    Contract {
+        file: "wit/terminal-spore.wit",
+        source: include_str!("../../../wit/terminal-spore.wit"),
+        package: "fungos:terminal-spore@0.1.0",
+        interfaces: &[],
+    },
 ];
+
+/// External WIT packages imported by canonical contracts. These are upstream,
+/// not Soil-owned, and are vendored under `wit/deps/` so the canonical tree
+/// resolves as one graph.
+pub const DEPENDENCIES: &[Contract] = &[Contract {
+    file: "wit/deps/wasi-webgpu-0.3.0-rc.2/package.wit",
+    source: include_str!("../../../wit/deps/wasi-webgpu-0.3.0-rc.2/package.wit"),
+    package: "wasi:webgpu@0.3.0-rc.2",
+    interfaces: &[("webgpu", &[])],
+}];

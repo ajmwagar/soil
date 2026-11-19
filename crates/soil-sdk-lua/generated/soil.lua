@@ -30,7 +30,7 @@ function M.fungos.actions.actions.invoke(args)
 end
 M.fungos.actions.catalog = M.fungos.actions.catalog or {}
 --- Presentation projection of the granted action catalog.
---- 
+---
 --- This never grants execution. A caller may render a button or parameter form
 --- from this data, then invoke through `actions.invoke`.
 M.fungos.actions.catalog.types = M.fungos.actions.catalog.types or {}
@@ -52,6 +52,37 @@ function M.fungos.http_context.context.current(args)
   return dispatch("fungos:http-context@0.1.0/context", "current", args)
 end
 M.fungos.http_context = M.fungos.http_context.context
+M.fungos.mycelium = M.fungos.mycelium or {}
+M.fungos.mycelium.pulse = M.fungos.mycelium.pulse or {}
+M.fungos.mycelium.pulse.types = M.fungos.mycelium.pulse.types or {}
+M.fungos.mycelium.pulse.types.Cron = { fields = { { name = "id", type = "string" }, { name = "schedule", type = "string" }, { name = "command", type = "string" }, { name = "enabled", type = "bool" }, { name = "next-at-ms", type = "option<u64>" }, { name = "last-fired-ms", type = "u64" } } }
+M.fungos.mycelium.pulse.types.Error = { DENIED = "denied", INVALID = "invalid", NOT_FOUND = "not-found", UNAVAILABLE = "unavailable", IO = "io" }
+M.fungos.mycelium.pulse.types.Run = { fields = { { name = "id", type = "string" }, { name = "pulse-id", type = "string" }, { name = "scheduled-at-ms", type = "u64" }, { name = "fired-at-ms", type = "u64" }, { name = "finished-at-ms", type = "u64" }, { name = "outcome", type = "string" }, { name = "detail", type = "string" } } }
+M.fungos.mycelium.pulse.types.Snapshot = { fields = { { name = "system", type = "list<system-pulse>" }, { name = "user", type = "list<cron>" } } }
+M.fungos.mycelium.pulse.types.SystemPulse = { fields = { { name = "id", type = "string" }, { name = "interval-secs", type = "u64" }, { name = "description", type = "string" } } }
+--- System and user pulses. System entries are read-only.
+-- WIT: all -> result<snapshot, error>
+function M.fungos.mycelium.pulse.all(args)
+  return dispatch("fungos:mycelium@0.1.0/pulse", "all", args)
+end
+--- Create or replace a user pulse. The host validates the cron expression
+--- and the command before persisting it.
+-- WIT: put -> result<cron, error>
+function M.fungos.mycelium.pulse.put(args)
+  return dispatch("fungos:mycelium@0.1.0/pulse", "put", args)
+end
+--- Remove a user pulse by id.
+-- WIT: remove -> result<bool, error>
+function M.fungos.mycelium.pulse.remove(args)
+  return dispatch("fungos:mycelium@0.1.0/pulse", "remove", args)
+end
+--- Run history, newest first. `id` filters to one user pulse.
+-- WIT: runs -> result<list<run>, error>
+function M.fungos.mycelium.pulse.runs(args)
+  return dispatch("fungos:mycelium@0.1.0/pulse", "runs", args)
+end
+M.fungos.mycelium = M.fungos.mycelium.pulse
+M.fungos.terminal_spore = M.fungos.terminal_spore or {}
 M.fungos.webhooks = M.fungos.webhooks or {}
 M.fungos.webhooks.admin = M.fungos.webhooks.admin or {}
 M.fungos.webhooks.admin.types = M.fungos.webhooks.admin.types or {}
@@ -59,7 +90,7 @@ M.fungos.webhooks.admin.types.Created = { fields = { { name = "hook", type = "ho
 M.fungos.webhooks.admin.types.Error = { INVALID = "invalid", CONFLICT = "conflict", DENIED = "denied", UNAVAILABLE = "unavailable" }
 M.fungos.webhooks.admin.types.Hook = { fields = { { name = "slug", type = "string" }, { name = "provider", type = "string" }, { name = "tenant", type = "string" }, { name = "created-at-ms", type = "u64" } } }
 --- Register a hook and mint its credential.
---- 
+---
 --- One call, not two: a hook without a credential accepts nothing, and a
 --- credential without a hook is a secret nobody owns.
 -- WIT: create -> result<created, error>
@@ -79,6 +110,107 @@ function M.fungos.webhooks.admin.revoke(args)
 end
 M.fungos.webhooks = M.fungos.webhooks.admin
 M.soil = M.soil or {}
+M.soil.agents = M.soil.agents or {}
+M.soil.agents.control = M.soil.agents.control or {}
+--- Control: the three things a person may do to an agent.
+---
+--- Deliberately not a general RPC to the harness. Starting sessions, editing
+--- configuration, and choosing models are separate authorities with separate
+--- grants; a surface that answers questions cannot also spawn processes.
+M.soil.agents.control.types = M.soil.agents.control.types or {}
+M.soil.agents.control.types.Error = { type = "error" }
+M.soil.agents.control.types.Response = { type = "response" }
+--- Ask the agent to stop the current turn. The agent stays observable and may
+--- be sent another message afterwards.
+-- WIT: interrupt -> result<_, error>
+function M.soil.agents.control.interrupt(args)
+  return dispatch("soil:agents@0.1.0/control", "interrupt", args)
+end
+--- Answer one prompt. The prompt id makes this idempotent: answering a prompt
+--- the agent already resolved is `stale`, not a second action.
+-- WIT: respond -> result<_, error>
+function M.soil.agents.control.respond(args)
+  return dispatch("soil:agents@0.1.0/control", "respond", args)
+end
+--- Say something to the agent as the user. Refused with `invalid` while a
+--- prompt is open: an answer is not a message, and treating it as one is how
+--- two people answer the same question twice.
+-- WIT: send -> result<_, error>
+function M.soil.agents.control.send(args)
+  return dispatch("soil:agents@0.1.0/control", "send", args)
+end
+M.soil.agents.observe = M.soil.agents.observe or {}
+--- Read-only: what the agents are doing.
+M.soil.agents.observe.types = M.soil.agents.observe.types or {}
+M.soil.agents.observe.types.Agent = { type = "agent" }
+M.soil.agents.observe.types.Binding = { type = "binding" }
+M.soil.agents.observe.types.Change = { UPSERTED = "upserted", REMOVED = "removed" }
+M.soil.agents.observe.types.Error = { type = "error" }
+M.soil.agents.observe.types.Page = { fields = { { name = "turns", type = "list<turn>" }, { name = "before", type = "option<u64>" } } }
+M.soil.agents.observe.types.Scope = { type = "scope" }
+M.soil.agents.observe.types.Subscription = { resource = true }
+M.soil.agents.observe.types.Turn = { type = "turn" }
+M.soil.agents.observe.Subscription = M.soil.agents.observe.Subscription or {}
+-- WIT: [method]subscription.next -> result<option<change>, error>
+function M.soil.agents.observe.Subscription:next(args)
+  return dispatch("soil:agents@0.1.0/observe", "subscription.next", args, self)
+end
+--- The agents this host can see, in the host's own order: agents that need a
+--- person first, then most recently active. A view may reorder; a surface
+--- that only has room for one row should not have to.
+-- WIT: agents -> result<list<agent>, error>
+function M.soil.agents.observe.agents(args)
+  return dispatch("soil:agents@0.1.0/observe", "agents", args)
+end
+--- What this surface is allowed to see. A wall over a shared desktop names
+--- the desktop; a session window names the principal it was opened for.
+--- (`current-scope` rather than `scope`: WIT keeps a function and a type in
+--- one interface apart by name, and the record is the useful half to keep.)
+-- WIT: current-scope -> scope
+function M.soil.agents.observe.current_scope(args)
+  return dispatch("soil:agents@0.1.0/observe", "current-scope", args)
+end
+-- WIT: get -> result<agent, error>
+function M.soil.agents.observe.get(args)
+  return dispatch("soil:agents@0.1.0/observe", "get", args)
+end
+--- The launch intent the host chose for this surface.
+-- WIT: intent -> binding
+function M.soil.agents.observe.intent(args)
+  return dispatch("soil:agents@0.1.0/observe", "intent", args)
+end
+--- One subscription per surface. Changes that happened before it opened are
+--- not replayed: `agents` is the snapshot, the subscription is the delta.
+-- WIT: subscribe -> result<own<subscription>, error>
+function M.soil.agents.observe.subscribe(args)
+  return dispatch("soil:agents@0.1.0/observe", "subscribe", args)
+end
+--- Conversation text, newest page first. `limit` is bounded by the host; a
+--- Spore asks again with `before` while the person scrolls back.
+-- WIT: transcript -> result<page, error>
+function M.soil.agents.observe.transcript(args)
+  return dispatch("soil:agents@0.1.0/observe", "transcript", args)
+end
+M.soil.agents.types = M.soil.agents.types or {}
+M.soil.agents.types.types = M.soil.agents.types.types or {}
+M.soil.agents.types.types.Activity = { fields = { { name = "kind", type = "activity-kind" }, { name = "label", type = "string" }, { name = "detail", type = "option<string>" }, { name = "status", type = "status" }, { name = "started-at-ms", type = "u64" }, { name = "finished-at-ms", type = "option<u64>" } } }
+M.soil.agents.types.types.ActivityKind = { YOU = "you", MODEL = "model", MEMORY = "memory", FILES = "files", SHELL = "shell", NETWORK = "network", BROWSER = "browser", AGENT = "agent", SKILL = "skill", HOOK = "hook", OTHER = "other" }
+M.soil.agents.types.types.Agent = { fields = { { name = "id", type = "string" }, { name = "harness", type = "string" }, { name = "title", type = "string" }, { name = "workspace", type = "option<string>" }, { name = "model", type = "option<string>" }, { name = "phase", type = "phase" }, { name = "goal", type = "option<goal>" }, { name = "owner", type = "option<owner>" }, { name = "activity", type = "list<activity>" }, { name = "prompts", type = "list<prompt>" }, { name = "usage", type = "usage" }, { name = "revision", type = "u64" }, { name = "started-at-ms", type = "u64" }, { name = "updated-at-ms", type = "u64" } } }
+M.soil.agents.types.types.Binding = { fields = { { name = "agent", type = "option<string>" }, { name = "view", type = "option<string>" } } }
+M.soil.agents.types.types.Choice = { fields = { { name = "id", type = "string" }, { name = "label", type = "string" }, { name = "detail", type = "option<string>" }, { name = "danger", type = "bool" } } }
+M.soil.agents.types.types.Error = { DENIED = "denied", NOT_FOUND = "not-found", NOT_READY = "not-ready", INVALID = "invalid", OVER_BUDGET = "over-budget", STALE = "stale", UNSUPPORTED = "unsupported", IO = "io" }
+M.soil.agents.types.types.Goal = { fields = { { name = "text", type = "string" }, { name = "set-at-ms", type = "u64" } } }
+M.soil.agents.types.types.Owner = { fields = { { name = "actor", type = "string" }, { name = "display-name", type = "option<string>" } } }
+M.soil.agents.types.types.Phase = { CONNECTING = "connecting", IDLE = "idle", THINKING = "thinking", WORKING = "working", NEEDS_YOU = "needs-you", FINISHED = "finished", FAILED = "failed", PAUSED = "paused" }
+M.soil.agents.types.types.Prompt = { fields = { { name = "id", type = "string" }, { name = "kind", type = "prompt-kind" }, { name = "title", type = "string" }, { name = "body", type = "option<string>" }, { name = "details", type = "option<string>" }, { name = "origin", type = "option<string>" }, { name = "options", type = "list<choice>" }, { name = "allows-text", type = "bool" }, { name = "asked-at-ms", type = "u64" }, { name = "deadline-at-ms", type = "option<u64>" } } }
+M.soil.agents.types.types.PromptKind = { QUESTION = "question", APPROVAL = "approval", CHOICE = "choice" }
+M.soil.agents.types.types.Response = { fields = { { name = "choice", type = "option<string>" }, { name = "text", type = "option<string>" } } }
+M.soil.agents.types.types.Role = { USER = "user", ASSISTANT = "assistant", TOOL = "tool" }
+M.soil.agents.types.types.Scope = { fields = { { name = "kind", type = "scope-kind" }, { name = "id", type = "option<string>" }, { name = "label", type = "option<string>" }, { name = "owner", type = "option<owner>" } } }
+M.soil.agents.types.types.ScopeKind = { DEVICE = "device", DESKTOP = "desktop", PRINCIPAL = "principal" }
+M.soil.agents.types.types.Status = { RUNNING = "running", OK = "ok", FAILED = "failed", BLOCKED = "blocked" }
+M.soil.agents.types.types.Turn = { fields = { { name = "role", type = "role" }, { name = "text", type = "string" }, { name = "at-ms", type = "u64" } } }
+M.soil.agents.types.types.Usage = { fields = { { name = "context-tokens", type = "u64" }, { name = "context-window", type = "u64" }, { name = "input-tokens", type = "u64" }, { name = "output-tokens", type = "u64" }, { name = "turns", type = "u32" } } }
 M.soil.appdata = M.soil.appdata or {}
 M.soil.appdata.appdata = M.soil.appdata.appdata or {}
 M.soil.appdata.appdata.types = M.soil.appdata.appdata.types or {}
@@ -135,46 +267,66 @@ M.soil.ble.ble.types.Device = { type = "device" }
 M.soil.ble.ble.types.DeviceHandle = { type = "device-handle" }
 M.soil.ble.ble.types.Error = { DENIED = "denied", NOT_FOUND = "not-found", NOT_CONNECTED = "not-connected", LEASED = "leased", TIMEOUT = "timeout", OVER_BUDGET = "over-budget", NOT_READY = "not-ready", INVALID = "invalid", IO = "io" }
 M.soil.ble.ble.types.Event = { type = "event" }
+M.soil.ble.ble.types.Link = { type = "link" }
 M.soil.ble.ble.types.Service = { type = "service" }
---- Connect to a previously scanned handle. The host takes the radio lease.
--- WIT: connect -> result<_, error>
+--- Bind a scan handle to a caller-chosen id, once. Soil records the
+--- peripheral's platform address in its session, so later scans report that
+--- `device-id` before any read. This is how two identical devices with no
+--- serial stay distinguishable: the wearer claims each one while it is the
+--- only candidate, and identity is stable from then on. Re-claiming moves
+--- the id to the current peripheral; `invalid` for an empty id.
+-- WIT: claim -> result<_, error>
+function M.soil.ble.ble.claim(args)
+  return dispatch("soil:ble@1.2.0/ble", "claim", args)
+end
+--- Connect to a previously scanned handle, returning a link handle. The host
+--- takes that device's radio lease. Reconnecting to a device already linked
+--- returns the existing link; when the budget is spent the call fails
+--- `over-budget` before any handshake starts.
+-- WIT: connect -> result<link, error>
 function M.soil.ble.ble.connect(args)
-  return dispatch("soil:ble@1.0.0/ble", "connect", args)
+  return dispatch("soil:ble@1.2.0/ble", "connect", args)
 end
 -- WIT: disconnect -> result<_, error>
 function M.soil.ble.ble.disconnect(args)
-  return dispatch("soil:ble@1.0.0/ble", "disconnect", args)
+  return dispatch("soil:ble@1.2.0/ble", "disconnect", args)
 end
---- Wait up to `timeout-ms` for one event; `none` means the deadline expired
---- and is not an error.
+--- Concurrent links this host will grant. Callers that need several devices
+--- plan against this instead of discovering the ceiling by failing.
+-- WIT: max-links -> u32
+function M.soil.ble.ble.max_links(args)
+  return dispatch("soil:ble@1.2.0/ble", "max-links", args)
+end
+--- Wait up to `timeout-ms` for one event from that link's own queue; `none`
+--- means the deadline expired and is not an error.
 -- WIT: next-event -> result<option<event>, error>
 function M.soil.ble.ble.next_event(args)
-  return dispatch("soil:ble@1.0.0/ble", "next-event", args)
+  return dispatch("soil:ble@1.2.0/ble", "next-event", args)
 end
 --- Read at most `max-bytes` from a characteristic. `0` is `invalid`.
 -- WIT: read -> result<list<u8>, error>
 function M.soil.ble.ble.read(args)
-  return dispatch("soil:ble@1.0.0/ble", "read", args)
+  return dispatch("soil:ble@1.2.0/ble", "read", args)
 end
 --- Active scan for `timeout-ms`, returning Soil-issued handles.
 -- WIT: scan -> result<list<device>, error>
 function M.soil.ble.ble.scan(args)
-  return dispatch("soil:ble@1.0.0/ble", "scan", args)
+  return dispatch("soil:ble@1.2.0/ble", "scan", args)
 end
---- Discovered GATT tree on the current link.
+--- Discovered GATT tree on that link.
 -- WIT: services -> result<list<service>, error>
 function M.soil.ble.ble.services(args)
-  return dispatch("soil:ble@1.0.0/ble", "services", args)
+  return dispatch("soil:ble@1.2.0/ble", "services", args)
 end
---- Enable notifications for a characteristic. Events are drained with
---- `next-event`.
+--- Enable notifications for a characteristic on that link. Events are
+--- drained with `next-event` for the same link.
 -- WIT: subscribe -> result<_, error>
 function M.soil.ble.ble.subscribe(args)
-  return dispatch("soil:ble@1.0.0/ble", "subscribe", args)
+  return dispatch("soil:ble@1.2.0/ble", "subscribe", args)
 end
 -- WIT: write -> result<_, error>
 function M.soil.ble.ble.write(args)
-  return dispatch("soil:ble@1.0.0/ble", "write", args)
+  return dispatch("soil:ble@1.2.0/ble", "write", args)
 end
 M.soil.ble.types = M.soil.ble.types or {}
 M.soil.ble.types.types = M.soil.ble.types.types or {}
@@ -182,6 +334,7 @@ M.soil.ble.types.types.Characteristic = { fields = { { name = "uuid", type = "st
 M.soil.ble.types.types.Device = { fields = { { name = "handle", type = "device-handle" }, { name = "name", type = "option<string>" }, { name = "rssi", type = "option<s16>" }, { name = "device-id", type = "option<string>" } } }
 M.soil.ble.types.types.DeviceHandle = { type = "u32" }
 M.soil.ble.types.types.Event = { NOTIFICATION = "notification", DISCONNECTED = "disconnected" }
+M.soil.ble.types.types.Link = { type = "u32" }
 M.soil.ble.types.types.Notification = { fields = { { name = "char-uuid", type = "string" }, { name = "data", type = "list<u8>" } } }
 M.soil.ble.types.types.Service = { fields = { { name = "uuid", type = "string" }, { name = "characteristics", type = "list<characteristic>" } } }
 M.soil.canvas = M.soil.canvas or {}
@@ -214,7 +367,7 @@ function M.soil.canvas.surface.observe(args)
   return dispatch("soil:canvas@1.0.0/surface", "observe", args)
 end
 --- Present into the space the host granted.
---- 
+---
 --- `document` is a versioned payload from `soil-scene`: a scene the host
 --- rasterizes, an RGBA frame the Spore rendered, or a lease on a GPU texture.
 --- It is bytes rather than a WIT type on purpose -- a new node kind must not
@@ -241,13 +394,50 @@ end
 function M.soil.creds.creds.sign(args)
   return dispatch("soil:creds@1.0.0/creds", "sign", args)
 end
+--- Sign with a PGP key. Kept separate from `algorithm` so a guest built
+--- against the two-variant enum keeps its ABI when PGP is added.
+-- WIT: sign-pgp -> result<list<u8>, error>
+function M.soil.creds.creds.sign_pgp(args)
+  return dispatch("soil:creds@1.0.0/creds", "sign-pgp", args)
+end
 --- Verify a signature with a resolved handle. A mismatched signature is
 --- `ok(false)`, not an error; errors describe the credential or request.
 -- WIT: verify -> result<bool, error>
 function M.soil.creds.creds.verify(args)
   return dispatch("soil:creds@1.0.0/creds", "verify", args)
 end
+--- Verify a detached PGP signature.
+-- WIT: verify-pgp -> result<bool, error>
+function M.soil.creds.creds.verify_pgp(args)
+  return dispatch("soil:creds@1.0.0/creds", "verify-pgp", args)
+end
 M.soil.creds = M.soil.creds.creds
+M.soil.desktops = M.soil.desktops or {}
+M.soil.desktops.desktops = M.soil.desktops.desktops or {}
+M.soil.desktops.desktops.types = M.soil.desktops.desktops.types or {}
+M.soil.desktops.desktops.types.Access = { BOUND = "bound", AVAILABLE = "available", DENIED = "denied" }
+M.soil.desktops.desktops.types.Desktop = { fields = { { name = "id", type = "string" }, { name = "name", type = "string" }, { name = "theme", type = "string" }, { name = "access", type = "access" } } }
+M.soil.desktops.desktops.types.Error = { UNKNOWN = "unknown", DENIED = "denied", NOT_A_WORKSPACE = "not-a-workspace", BUSY = "busy", IO = "io" }
+--- Every Desktop this machine registers, with this window's access to each.
+---
+--- Named `available`, not `list`: `list` is a WIT keyword and cannot name a
+--- function. It reads the same way — *what is available to this window*.
+---
+--- Rows the principal cannot open are listed rather than hidden: a picker that
+--- silently omits a Desktop reads as "it does not exist", which is a different
+--- and much worse claim than "you cannot open this".
+-- WIT: available -> result<list<desktop>, error>
+function M.soil.desktops.desktops.available(args)
+  return dispatch("soil:desktops@0.1.0/desktops", "available", args)
+end
+--- Bind this window to `id` and return it as the window now sees it.
+---
+--- Callable while already bound, including for the Desktop it is bound to.
+-- WIT: open -> result<desktop, error>
+function M.soil.desktops.desktops.open(args)
+  return dispatch("soil:desktops@0.1.0/desktops", "open", args)
+end
+M.soil.desktops = M.soil.desktops.desktops
 M.soil.device = M.soil.device or {}
 M.soil.device.battery = M.soil.device.battery or {}
 --- Semantic interface. Runtime uses the documented core-Wasm lowering, not
@@ -294,6 +484,17 @@ end
 function M.soil.device.lid.read(args)
   return dispatch("soil:device@0.1.0/lid", "read", args)
 end
+M.soil.git = M.soil.git or {}
+M.soil.git.git = M.soil.git.git or {}
+M.soil.git.git.types = M.soil.git.git.types or {}
+M.soil.git.git.types.Error = { DENIED = "denied", NOT_A_REPOSITORY = "not-a-repository", INVALID = "invalid", IO = "io" }
+M.soil.git.git.types.Repository = { fields = { { name = "root", type = "string" }, { name = "branch", type = "string" }, { name = "head", type = "string" }, { name = "dirty", type = "bool" }, { name = "changed", type = "u32" }, { name = "ahead", type = "u32" }, { name = "behind", type = "u32" }, { name = "has-upstream", type = "bool" } } }
+--- Status of the repository containing `path`.
+-- WIT: status -> result<repository, error>
+function M.soil.git.git.status(args)
+  return dispatch("soil:git@0.1.0/git", "status", args)
+end
+M.soil.git = M.soil.git.git
 M.soil.graph = M.soil.graph or {}
 M.soil.graph.graph = M.soil.graph.graph or {}
 M.soil.graph.graph.types = M.soil.graph.graph.types or {}
@@ -516,6 +717,24 @@ end
 function M.soil.media.playback.open(args)
   return dispatch("soil:media@0.1.0/playback", "open", args)
 end
+M.soil.metrics = M.soil.metrics or {}
+M.soil.metrics.metrics = M.soil.metrics.metrics or {}
+M.soil.metrics.metrics.types = M.soil.metrics.metrics.types or {}
+M.soil.metrics.metrics.types.Error = { INVALID = "invalid", OVER_BUDGET = "over-budget", DENIED = "denied" }
+M.soil.metrics.metrics.types.Kind = { COUNTER = "counter", GAUGE = "gauge" }
+M.soil.metrics.metrics.types.Sample = { fields = { { name = "name", type = "string" }, { name = "kind", type = "kind" }, { name = "value", type = "f64" }, { name = "help", type = "option<string>" }, { name = "labels", type = "list<tuple<string, string>>" } } }
+--- Record samples. Counters add to the series; gauges replace it.
+-- WIT: emit -> result<_, error>
+function M.soil.metrics.metrics.emit(args)
+  return dispatch("soil:metrics@0.1.0/metrics", "emit", args)
+end
+--- What the registry currently holds, for a Spore that renders its own view
+--- and for tests. The HTTP surface is the host's, not the Spore's.
+-- WIT: snapshot -> list<sample>
+function M.soil.metrics.metrics.snapshot(args)
+  return dispatch("soil:metrics@0.1.0/metrics", "snapshot", args)
+end
+M.soil.metrics = M.soil.metrics.metrics
 M.soil.mycelium = M.soil.mycelium or {}
 M.soil.mycelium.directory = M.soil.mycelium.directory or {}
 M.soil.mycelium.directory.types = M.soil.mycelium.directory.types or {}
@@ -573,6 +792,25 @@ end
 function M.soil.mycelium.session.write(args)
   return dispatch("soil:mycelium@0.1.0/session", "write", args)
 end
+M.soil.net = M.soil.net or {}
+M.soil.net.net = M.soil.net.net or {}
+M.soil.net.net.types = M.soil.net.net.types or {}
+M.soil.net.net.types.Address = { fields = { { name = "family", type = "family" }, { name = "addr", type = "string" } } }
+M.soil.net.net.types.Error = { NOT_FOUND = "not-found", TIMEOUT = "timeout", INVALID = "invalid", UNREACHABLE = "unreachable" }
+M.soil.net.net.types.Family = { IPV4 = "ipv4", IPV6 = "ipv6" }
+M.soil.net.net.types.Reachability = { fields = { { name = "name", type = "string" }, { name = "addr", type = "string" }, { name = "port", type = "u16" }, { name = "rtt-ms", type = "u64" } } }
+M.soil.net.net.types.Resolution = { fields = { { name = "name", type = "string" }, { name = "addresses", type = "list<address>" }, { name = "elapsed-ms", type = "u64" } } }
+--- Resolve, then connect and close a TCP session to prove the service is up.
+-- WIT: probe -> result<reachability, error>
+function M.soil.net.net.probe(args)
+  return dispatch("soil:net@0.1.0/net", "probe", args)
+end
+--- Resolve a name. `<node>.<site>.myc` is answered by the mesh resolver.
+-- WIT: resolve -> result<resolution, error>
+function M.soil.net.net.resolve(args)
+  return dispatch("soil:net@0.1.0/net", "resolve", args)
+end
+M.soil.net = M.soil.net.net
 M.soil.notify = M.soil.notify or {}
 M.soil.notify.cleanup = M.soil.notify.cleanup or {}
 M.soil.notify.cleanup.types = M.soil.notify.cleanup.types or {}
@@ -703,15 +941,108 @@ M.soil.notify.types.types.Action = { fields = { { name = "id", type = "string" }
 M.soil.notify.types.types.Context = { fields = { { name = "summary", type = "option<string>" }, { name = "entities", type = "list<string>" }, { name = "topics", type = "list<string>" }, { name = "urgency-hint", type = "option<priority>" } } }
 M.soil.notify.types.types.Error = { DENIED = "denied", NOT_READY = "not-ready", INVALID = "invalid", OVER_BUDGET = "over-budget", STALE = "stale", IO = "io", UNSUPPORTED = "unsupported" }
 M.soil.notify.types.types.Priority = { PASSIVE = "passive", ACTIVE = "active", URGENT = "urgent" }
+M.soil.present = M.soil.present or {}
+M.soil.present.clipboard = M.soil.present.clipboard or {}
+--- The system clipboard. A Spore selects text; the presenter owns the
+--- pasteboard, so selection stays a Spore concern and the transfer is one call.
+-- WIT: set-text -> result<_, string>
+function M.soil.present.clipboard.set_text(args)
+  return dispatch("soil:present@0.1.0/clipboard", "set-text", args)
+end
+M.soil.present.cursor = M.soil.present.cursor or {}
+--- Cursor shape for the window. The Spore says what it is pointing at; the
+--- presenter applies it. A headless or capture host reports success and does
+--- nothing, so no Spore has to test which host it is running under.
+M.soil.present.cursor.types = M.soil.present.cursor.types or {}
+M.soil.present.cursor.types.CursorStyle = { DEFAULT = "default", TEXT = "text", POINTER = "pointer", CROSSHAIR = "crosshair", MOVE = "move", GRAB = "grab", GRABBING = "grabbing", NO_DROP = "no-drop", WAIT = "wait", HELP = "help" }
+-- WIT: set -> result<_, string>
+function M.soil.present.cursor.set(args)
+  return dispatch("soil:present@0.1.0/cursor", "set", args)
+end
+M.soil.present.input = M.soil.present.input or {}
+--- Keyboard and pointer events from the presenter. The Spore decides what they
+--- mean; the host only normalizes them. Keys and pointer actions share one
+--- ordered stream, so a click that lands between two keystrokes cannot be
+--- reordered against them.
+M.soil.present.input.types = M.soil.present.input.types or {}
+M.soil.present.input.types.Event = { KEY_INPUT = "key-input", MOVED = "moved", BUTTON = "button", SCROLLED = "scrolled" }
+M.soil.present.input.types.Key = { fields = { { name = "key", type = "string" }, { name = "text", type = "option<string>" }, { name = "pressed", type = "bool" }, { name = "shift", type = "bool" }, { name = "control", type = "bool" }, { name = "alt", type = "bool" }, { name = "meta", type = "bool" } } }
+M.soil.present.input.types.PointerButton = { LEFT = "left", RIGHT = "right", MIDDLE = "middle" }
+M.soil.present.input.types.PointerMove = { fields = { { name = "x", type = "f32" }, { name = "y", type = "f32" } } }
+M.soil.present.input.types.PointerPress = { fields = { { name = "x", type = "f32" }, { name = "y", type = "f32" }, { name = "button", type = "pointer-button" }, { name = "pressed", type = "bool" } } }
+M.soil.present.input.types.PointerScroll = { fields = { { name = "x", type = "f32" }, { name = "y", type = "f32" }, { name = "lines", type = "f32" } } }
+--- True when a live presenter is attached and the guest should keep polling.
+--- A one-shot capture host returns false and the guest exits after one frame.
+-- WIT: interactive -> bool
+function M.soil.present.input.interactive(args)
+  return dispatch("soil:present@0.1.0/input", "interactive", args)
+end
+--- Wait up to `timeout-ms` for the next event. Zero polls without waiting.
+-- WIT: poll -> option<event>
+function M.soil.present.input.poll(args)
+  return dispatch("soil:present@0.1.0/input", "poll", args)
+end
+M.soil.present.surface = M.soil.present.surface or {}
+--- The surface a Spore presents into. The host owns the window, the z-order and
+--- the display; the Spore owns its layout and its rasterizer.
+M.soil.present.surface.types = M.soil.present.surface.types or {}
+M.soil.present.surface.types.DeliveryKind = { type = "delivery-kind" }
+M.soil.present.surface.types.GpuTexture = { type = "gpu-texture" }
+M.soil.present.surface.types.RgbaFrame = { type = "rgba-frame" }
+--- Which deliveries this host accepts. A host with no GPU says `rgba` only,
+--- which is what lets a Spore run on a device without a graphics stack.
+-- WIT: delivery -> list<delivery-kind>
+function M.soil.present.surface.delivery(args)
+  return dispatch("soil:present@0.1.0/surface", "delivery", args)
+end
+--- Copy one guest-rendered texture into the compositor's next frame.
+-- WIT: present -> result<_, string>
+function M.soil.present.surface.present(args)
+  return dispatch("soil:present@0.1.0/surface", "present", args)
+end
+--- Copy one guest-rendered RGBA8 frame into the compositor's next frame.
+---
+--- This is the arm for a Spore with its own rasterizer -- Slint's software
+--- renderer, egui, Skia -- which needs no GPU, no `wasi:webgpu` and no
+--- texture readback. The host validates extent and opacity, then presents it
+--- in the space it granted.
+-- WIT: present-rgba -> result<_, string>
+function M.soil.present.surface.present_rgba(args)
+  return dispatch("soil:present@0.1.0/surface", "present-rgba", args)
+end
+--- Device pixels per layout pixel. A Spore that renders its own texture asks
+--- before it opens a framebuffer, so the frame it presents is at the
+--- resolution the window will actually blit rather than a fixed guess.
+-- WIT: scale -> f64
+function M.soil.present.surface.scale(args)
+  return dispatch("soil:present@0.1.0/surface", "scale", args)
+end
+--- The surface extent in the Spore's layout space. A Spore lays out against
+--- these numbers and the presenter blits whatever resolution it renders at,
+--- so the same layout matches the window on any display scale.
+-- WIT: size -> tuple<u32, u32>
+function M.soil.present.surface.size(args)
+  return dispatch("soil:present@0.1.0/surface", "size", args)
+end
+M.soil.present.types = M.soil.present.types or {}
+M.soil.present.types.types = M.soil.present.types.types or {}
+M.soil.present.types.types.DeliveryKind = { TEXTURE = "texture", RGBA = "rgba" }
+M.soil.present.types.types.RgbaFrame = { fields = { { name = "width", type = "u32" }, { name = "height", type = "u32" }, { name = "pixels", type = "list<u8>" } } }
 M.soil.principal = M.soil.principal or {}
 M.soil.principal.principal = M.soil.principal.principal or {}
 M.soil.principal.principal.types = M.soil.principal.principal.types or {}
 M.soil.principal.principal.types.Error = { DENIED = "denied", NOT_READY = "not-ready", STALE = "stale", INVALID = "invalid", UNAVAILABLE = "unavailable" }
 M.soil.principal.principal.types.Identity = { fields = { { name = "actor", type = "string" }, { name = "kind", type = "kind" }, { name = "display-name", type = "option<string>" }, { name = "device", type = "option<string>" }, { name = "teams", type = "list<string>" }, { name = "roles", type = "list<string>" }, { name = "generation", type = "u64" } } }
 M.soil.principal.principal.types.Kind = { HUMAN = "human", AGENT = "agent", SERVICE = "service" }
+M.soil.principal.principal.types.SigningKeyInfo = { fields = { { name = "algorithm", type = "string" }, { name = "fingerprint", type = "string" }, { name = "reference", type = "string" }, { name = "generation", type = "u64" } } }
 -- WIT: current -> result<identity, error>
 function M.soil.principal.principal.current(args)
   return dispatch("soil:principal@0.1.0/principal", "current", args)
+end
+--- Present only when this principal has a host-managed signing key.
+-- WIT: signing-key -> result<option<signing-key-info>, error>
+function M.soil.principal.principal.signing_key(args)
+  return dispatch("soil:principal@0.1.0/principal", "signing-key", args)
 end
 M.soil.principal = M.soil.principal.principal
 M.soil.records = M.soil.records or {}
@@ -737,7 +1068,7 @@ function M.soil.records.records.changes(args)
   return dispatch("soil:records@0.1.0/records", "changes", args)
 end
 --- Conditional create/replace/delete.
---- 
+---
 --- `expected = none` means create only if there is no live record.
 --- `expected = some(version)` requires the current live record to match
 --- exactly. On a mismatch the host returns `applied = false` and the
@@ -791,7 +1122,7 @@ M.soil.scene = M.soil.scene.payload
 M.soil.search = M.soil.search or {}
 M.soil.search.mentions = M.soil.search.mentions or {}
 --- Typed mention resolver for `@` autocomplete.
---- 
+---
 --- A candidate is a stable locator, never a copied display name. The caller
 --- inserts `token` into a document/task/record and persists it as a
 --- `mentions` graph link. The host resolves labels and visibility from the
@@ -830,32 +1161,115 @@ end
 M.soil.spore = M.soil.spore or {}
 M.soil.spore.catalog = M.soil.spore.catalog or {}
 M.soil.spore.catalog.types = M.soil.spore.catalog.types or {}
-M.soil.spore.catalog.types.Entry = { fields = { { name = "id", type = "string" }, { name = "name", type = "string" }, { name = "version", type = "string" }, { name = "summary", type = "string" }, { name = "workspace", type = "option<string>" }, { name = "default-surface", type = "string" }, { name = "surfaces", type = "list<surface>" } } }
+M.soil.spore.catalog.types.Entry = { fields = { { name = "id", type = "string" }, { name = "name", type = "string" }, { name = "title", type = "string" }, { name = "version", type = "string" }, { name = "summary", type = "string" }, { name = "workspace", type = "option<string>" }, { name = "default-surface", type = "string" }, { name = "surfaces", type = "list<surface>" }, { name = "mark", type = "option<string>" } } }
 M.soil.spore.catalog.types.Error = { DENIED = "denied", NOT_FOUND = "not-found", INVALID = "invalid", UNSUPPORTED = "unsupported", IO = "io" }
+M.soil.spore.catalog.types.Failure = { fields = { { name = "code", type = "error" }, { name = "detail", type = "string" } } }
+M.soil.spore.catalog.types.Installed = { fields = { { name = "id", type = "string" }, { name = "version", type = "string" }, { name = "digest", type = "string" } } }
 M.soil.spore.catalog.types.Launched = { fields = { { name = "id", type = "string" }, { name = "surface", type = "string" }, { name = "target", type = "string" } } }
 M.soil.spore.catalog.types.Surface = { fields = { { name = "name", type = "string" }, { name = "kind", type = "surface-kind" }, { name = "entry", type = "string" }, { name = "requires", type = "option<string>" } } }
 M.soil.spore.catalog.types.SurfaceKind = { CANVAS = "canvas", WEB = "web" }
 -- WIT: entries -> result<list<entry>, error>
 function M.soil.spore.catalog.entries(args)
-  return dispatch("soil:spore@0.1.0/catalog", "entries", args)
+  return dispatch("soil:spore@0.3.0/catalog", "entries", args)
+end
+--- Install `id` from the store this host is pointed at.
+---
+--- Installing is the host's act, not the window's: the guest names a listing,
+--- and the host fetches, verifies, writes and compiles it. A host with no
+--- store — a machine that is not pointed at one — answers `denied` rather than
+--- pretending, and a package that arrives already installed is `installed`
+--- again rather than a second copy.
+-- WIT: install -> result<installed, failure>
+function M.soil.spore.catalog.install(args)
+  return dispatch("soil:spore@0.3.0/catalog", "install", args)
 end
 --- Launch `surface` of `id`.
---- 
+---
 --- Fails with `unsupported` when this host cannot present the surface's kind
 --- — a host without a browser view refuses a `web` surface rather than
 --- opening something it cannot render. A name the package does not declare
---- is `not-found`.
--- WIT: launch -> result<launched, error>
+--- is `not-found`. A package this host cannot start says so in `detail`.
+-- WIT: launch -> result<launched, failure>
 function M.soil.spore.catalog.launch(args)
-  return dispatch("soil:spore@0.1.0/catalog", "launch", args)
+  return dispatch("soil:spore@0.3.0/catalog", "launch", args)
 end
-M.soil.spore = M.soil.spore.catalog
+--- The ids this host started and has not seen exit, in catalogue order.
+---
+--- A launcher draws its running dot from this rather than from a pid file it
+--- keeps itself: the host is what starts and reaps a Spore, so the host is
+--- the only thing that knows whether one is still up.
+-- WIT: running -> list<string>
+function M.soil.spore.catalog.running(args)
+  return dispatch("soil:spore@0.3.0/catalog", "running", args)
+end
+--- Stop a Spore this host started.
+---
+--- `not-found` when nothing by that id is running. Stopping is the host's
+--- act — the guest names the tile, the host ends the process.
+-- WIT: stop -> result<_, failure>
+function M.soil.spore.catalog.stop(args)
+  return dispatch("soil:spore@0.3.0/catalog", "stop", args)
+end
+M.soil.spore.defaults = M.soil.spore.defaults or {}
+--- Changing what opens by default.
+---
+--- Split from `open` so a surface that offers the picker does not thereby gain
+--- the authority to change the default — the same read/write split as
+--- `soil:agents`' observe and control.
+M.soil.spore.defaults.types = M.soil.spore.defaults.types or {}
+M.soil.spore.defaults.types.Error = { type = "error" }
+--- Drop the preference for one kind, so the default falls back to the most
+--- specific candidate.
+-- WIT: clear -> result<_, error>
+function M.soil.spore.defaults.clear(args)
+  return dispatch("soil:spore@0.3.0/defaults", "clear", args)
+end
+--- `kind` is a media type or an extension glob. `id` must already be a
+--- candidate for it: storing a preference for something that cannot open the
+--- kind would be storing a lie.
+-- WIT: set -> result<_, error>
+function M.soil.spore.defaults.set(args)
+  return dispatch("soil:spore@0.3.0/defaults", "set", args)
+end
+M.soil.spore.open = M.soil.spore.open or {}
+--- Opening a document: which Spore can, and which one was asked for.
+---
+--- Two facts with different owners. What a Spore can open is its own `handles`
+--- declaration in the manifest; what *should* open something is a preference,
+--- and it lives in the desktop's `fungos/desktop/filetypes` book. A preference
+--- may only choose among declarations — an id that no longer handles the kind is
+--- skipped, never obeyed.
+---
+--- Not yet imported by either world: the shape is agreed, the host backend and
+--- the guest bindings land next, and wiring an unbuilt interface into a world
+--- would hand every Spore a function that refuses.
+M.soil.spore.open.types = M.soil.spore.open.types or {}
+M.soil.spore.open.types.Candidate = { fields = { { name = "id", type = "string" }, { name = "name", type = "string" }, { name = "handles", type = "string" }, { name = "exact", type = "bool" } } }
+M.soil.spore.open.types.Error = { NO_CANDIDATES = "no-candidates", NO_DEFAULT = "no-default", DENIED = "denied", INVALID = "invalid", IO = "io" }
+M.soil.spore.open.types.Launched = { fields = { { name = "id", type = "string" }, { name = "name", type = "string" } } }
+--- Everything installed that declares this path's kind, most specific first.
+-- WIT: candidates -> result<list<candidate>, error>
+function M.soil.spore.open.candidates(args)
+  return dispatch("soil:spore@0.3.0/open", "candidates", args)
+end
+--- What this Spore was launched to open — the same job `soil:agents.intent()`
+--- does for a surface. `none` for a Spore started any other way.
+-- WIT: intent -> option<string>
+function M.soil.spore.open.intent(args)
+  return dispatch("soil:spore@0.3.0/open", "intent", args)
+end
+--- Open it with the default. `no-default` when candidates exist but no
+--- preference chose one, so the caller opens a picker instead of guessing.
+-- WIT: open -> result<launched, error>
+function M.soil.spore.open.open(args)
+  return dispatch("soil:spore@0.3.0/open", "open", args)
+end
 M.soil.storage = M.soil.storage or {}
 M.soil.storage.storage = M.soil.storage.storage or {}
 M.soil.storage.storage.types = M.soil.storage.storage.types or {}
 M.soil.storage.storage.types.Error = { DENIED = "denied", NOT_FOUND = "not-found", OVER_BUDGET = "over-budget", INVALID = "invalid", IO = "io" }
 --- Read the bytes named by a CIDv1 content address.
---- 
+---
 --- `max-bytes` bounds the response: an object larger than the limit is
 --- `over-budget`, never a partial payload. `max-bytes == 0` is `invalid`.
 -- WIT: read -> result<list<u8>, error>
@@ -863,7 +1277,7 @@ function M.soil.storage.storage.read(args)
   return dispatch("soil:storage@1.0.0/storage", "read", args)
 end
 --- Commit bytes to the bounded host cache under a CIDv1 address.
---- 
+---
 --- Requires `soil:storage.write`; without it the call is `denied`. The host
 --- may refuse an oversized or over-capacity write with `over-budget`. This
 --- never mutates the published asset store.
@@ -911,6 +1325,62 @@ function M.soil.surface_import.surface.open(args)
   return dispatch("soil:surface-import@0.1.0/surface", "open", args)
 end
 M.soil.surface_import = M.soil.surface_import.surface
+M.soil.terminal_screen = M.soil.terminal_screen or {}
+M.soil.terminal_screen.screen = M.soil.terminal_screen.screen or {}
+--- A live terminal screen: the host owns the PTY and the emulator (soil-vt),
+--- the Spore renders the snapshot and sends keys back.
+M.soil.terminal_screen.screen.types = M.soil.terminal_screen.screen.types or {}
+M.soil.terminal_screen.screen.types.Cell = { fields = { { name = "text", type = "string" }, { name = "fg", type = "option<u32>" }, { name = "bg", type = "option<u32>" }, { name = "bold", type = "bool" }, { name = "italic", type = "bool" }, { name = "underline", type = "bool" }, { name = "faint", type = "bool" }, { name = "inverse", type = "bool" }, { name = "wide-tail", type = "bool" } } }
+M.soil.terminal_screen.screen.types.Grid = { fields = { { name = "cols", type = "u32" }, { name = "rows", type = "u32" }, { name = "cells", type = "list<cell>" }, { name = "cursor-row", type = "option<u32>" }, { name = "cursor-col", type = "option<u32>" }, { name = "title", type = "string" }, { name = "generation", type = "u64" } } }
+M.soil.terminal_screen.screen.types.Session = { fields = { { name = "id", type = "u32" }, { name = "title", type = "string" }, { name = "active", type = "bool" } } }
+-- WIT: close-session -> result<_, string>
+function M.soil.terminal_screen.screen.close_session(args)
+  return dispatch("soil:terminal-screen@0.1.0/screen", "close-session", args)
+end
+--- Start another shell and make it the one `snapshot` and `write` act on.
+--- `command` is a program line, or a login shell when absent.
+-- WIT: open-session -> result<u32, string>
+function M.soil.terminal_screen.screen.open_session(args)
+  return dispatch("soil:terminal-screen@0.1.0/screen", "open-session", args)
+end
+-- WIT: resize -> result<_, string>
+function M.soil.terminal_screen.screen.resize(args)
+  return dispatch("soil:terminal-screen@0.1.0/screen", "resize", args)
+end
+--- Move the viewport through scrollback. Negative is towards history;
+--- the next snapshot already reflects the move, so a Spore never tracks
+--- an offset of its own.
+-- WIT: scroll -> result<_, string>
+function M.soil.terminal_screen.screen.scroll(args)
+  return dispatch("soil:terminal-screen@0.1.0/screen", "scroll", args)
+end
+--- Point `snapshot`, `write`, `scroll`, `resize` and `wait` at a session.
+-- WIT: select-session -> result<_, string>
+function M.soil.terminal_screen.screen.select_session(args)
+  return dispatch("soil:terminal-screen@0.1.0/screen", "select-session", args)
+end
+--- Every session the host is running, in the order the tabs should show them.
+-- WIT: sessions -> result<list<session>, string>
+function M.soil.terminal_screen.screen.sessions(args)
+  return dispatch("soil:terminal-screen@0.1.0/screen", "sessions", args)
+end
+-- WIT: snapshot -> result<grid, string>
+function M.soil.terminal_screen.screen.snapshot(args)
+  return dispatch("soil:terminal-screen@0.1.0/screen", "snapshot", args)
+end
+--- Block until the grid changes or the timeout expires, and answer the
+--- generation that is current when it returns. A renderer waits on this
+--- instead of polling, so a keystroke's echo is drawn the moment the
+--- emulator publishes it rather than on the next tick.
+-- WIT: wait -> result<u64, string>
+function M.soil.terminal_screen.screen.wait(args)
+  return dispatch("soil:terminal-screen@0.1.0/screen", "wait", args)
+end
+-- WIT: write -> result<_, string>
+function M.soil.terminal_screen.screen.write(args)
+  return dispatch("soil:terminal-screen@0.1.0/screen", "write", args)
+end
+M.soil.terminal_screen = M.soil.terminal_screen.screen
 M.soil.terminal = M.soil.terminal or {}
 M.soil.terminal.surface = M.soil.terminal.surface or {}
 M.soil.terminal.surface.types = M.soil.terminal.surface.types or {}
@@ -951,21 +1421,27 @@ M.soil.terminal = M.soil.terminal.surface
 M.soil.time = M.soil.time or {}
 M.soil.time.time = M.soil.time.time or {}
 M.soil.time.time.types = M.soil.time.time.types or {}
+M.soil.time.time.types.DateTime = { fields = { { name = "unix-ms", type = "u64" }, { name = "offset-minutes", type = "s32" }, { name = "year", type = "u32" }, { name = "month", type = "u8" }, { name = "day", type = "u8" }, { name = "hour", type = "u8" }, { name = "minute", type = "u8" }, { name = "second", type = "u8" }, { name = "weekday", type = "u8" }, { name = "zone", type = "option<string>" } } }
 M.soil.time.time.types.Error = { DENIED = "denied", NOT_READY = "not-ready" }
 --- Monotonic milliseconds from an unspecified host epoch.
---- 
+---
 --- Only useful for measuring elapsed time. Values are not comparable across
 --- processes, host restarts or devices.
 -- WIT: monotonic-ms -> result<u64, error>
 function M.soil.time.time.monotonic_ms(args)
-  return dispatch("soil:time@1.0.0/time", "monotonic-ms", args)
+  return dispatch("soil:time@1.1.0/time", "monotonic-ms", args)
 end
 --- Wait up to `timeout-ms` for the next host tick and return its monotonic
 --- millisecond value. `0` polls without blocking; `none` means the deadline
 --- elapsed. A returned tick may precede the requested deadline.
 -- WIT: tick -> result<option<u64>, error>
 function M.soil.time.time.tick(args)
-  return dispatch("soil:time@1.0.0/time", "tick", args)
+  return dispatch("soil:time@1.1.0/time", "tick", args)
+end
+--- The current wall-clock instant.
+-- WIT: wall-clock -> result<date-time, error>
+function M.soil.time.time.wall_clock(args)
+  return dispatch("soil:time@1.1.0/time", "wall-clock", args)
 end
 M.soil.time = M.soil.time.time
 M.soil.unibus = M.soil.unibus or {}
@@ -988,11 +1464,36 @@ function M.soil.unibus.bus.publish(args)
   return dispatch("soil:unibus@0.1.0/bus", "publish", args)
 end
 M.soil.unibus = M.soil.unibus.bus
+M.soil.vfs_cid = M.soil.vfs_cid or {}
+M.soil.vfs_cid.cid = M.soil.vfs_cid.cid or {}
+M.soil.vfs_cid.cid.types = M.soil.vfs_cid.cid.types or {}
+M.soil.vfs_cid.cid.types.Entry = { type = "entry" }
+M.soil.vfs_cid.cid.types.Error = { DENIED = "denied", OVER_BUDGET = "over-budget", INVALID = "invalid", IO = "io", UNSUPPORTED = "unsupported" }
+M.soil.vfs_cid.cid.types.Page = { fields = { { name = "entries", type = "list<entry>" }, { name = "next", type = "option<u64>" } } }
+--- Entries whose whole-content identity is `content-id`, in path order.
+---
+--- Empty is a real answer: the bytes are not in this workspace. That is not a
+--- deletion — deletion is a tombstone in `soil:records` — and a caller that
+--- conflated the two would make a cache miss look like lost data.
+---
+--- Two paths holding the same bytes both answer. That is the point: the
+--- identity is the bytes, not the name.
+-- WIT: find -> result<page, error>
+function M.soil.vfs_cid.cid.find(args)
+  return dispatch("soil:vfs-cid@0.1.0/cid", "find", args)
+end
+M.soil.vfs_cid = M.soil.vfs_cid.cid
 M.soil.vfs_mut = M.soil.vfs_mut or {}
 M.soil.vfs_mut.vfs_mut = M.soil.vfs_mut.vfs_mut or {}
 M.soil.vfs_mut.vfs_mut.types = M.soil.vfs_mut.vfs_mut.types or {}
 M.soil.vfs_mut.vfs_mut.types.Error = { DENIED = "denied", NOT_FOUND = "not-found", ALREADY_EXISTS = "already-exists", NOT_DIRECTORY = "not-directory", NOT_EMPTY = "not-empty", CONFLICT = "conflict", OVER_BUDGET = "over-budget", INVALID = "invalid", IO = "io", STALE = "stale" }
-M.soil.vfs_mut.vfs_mut.types.WriteResult = { fields = { { name = "path", type = "string" }, { name = "version", type = "u64" }, { name = "content-id", type = "string" }, { name = "size", type = "u64" } } }
+M.soil.vfs_mut.vfs_mut.types.WriteResult = { fields = { { name = "path", type = "string" }, { name = "version", type = "u64" }, { name = "content-id", type = "string" }, { name = "size", type = "u64" }, { name = "mode", type = "u32" } } }
+--- Change permission bits without touching content. A mode belongs to the
+--- entry, not to a version of the bytes, so this adds no version.
+-- WIT: chmod -> result<write-result, error>
+function M.soil.vfs_mut.vfs_mut.chmod(args)
+  return dispatch("soil:vfs-mut@0.1.0/vfs-mut", "chmod", args)
+end
 -- WIT: mkdir -> result<_, error>
 function M.soil.vfs_mut.vfs_mut.mkdir(args)
   return dispatch("soil:vfs-mut@0.1.0/vfs-mut", "mkdir", args)
@@ -1012,7 +1513,10 @@ function M.soil.vfs_mut.vfs_mut.rmdir(args)
   return dispatch("soil:vfs-mut@0.1.0/vfs-mut", "rmdir", args)
 end
 --- Create or replace one file. `expected-version` is the optimistic
---- concurrency check; `none` means create/replace unconditionally.
+--- concurrency check; `none` means create/replace unconditionally. `mode`
+--- names the permission bits for a caller that has a real file to describe
+--- (the overlay applying a build); `none` keeps the current mode, or `0o644`
+--- for a path that did not exist.
 -- WIT: write -> result<write-result, error>
 function M.soil.vfs_mut.vfs_mut.write(args)
   return dispatch("soil:vfs-mut@0.1.0/vfs-mut", "write", args)
@@ -1022,7 +1526,7 @@ M.soil.vfs = M.soil.vfs or {}
 M.soil.vfs.vfs = M.soil.vfs.vfs or {}
 M.soil.vfs.vfs.types = M.soil.vfs.vfs.types or {}
 M.soil.vfs.vfs.types.Chunk = { fields = { { name = "offset", type = "u64" }, { name = "data", type = "list<u8>" }, { name = "eof", type = "bool" }, { name = "content-id", type = "string" } } }
-M.soil.vfs.vfs.types.Entry = { fields = { { name = "path", type = "string" }, { name = "name", type = "string" }, { name = "kind", type = "kind" }, { name = "size", type = "u64" }, { name = "content-id", type = "string" }, { name = "media-type", type = "string" }, { name = "version", type = "u64" }, { name = "hydration", type = "hydration" }, { name = "pinned", type = "bool" }, { name = "updated-at-ms", type = "u64" }, { name = "child-count", type = "u64" } } }
+M.soil.vfs.vfs.types.Entry = { fields = { { name = "path", type = "string" }, { name = "name", type = "string" }, { name = "kind", type = "kind" }, { name = "size", type = "u64" }, { name = "content-id", type = "string" }, { name = "media-type", type = "string" }, { name = "version", type = "u64" }, { name = "hydration", type = "hydration" }, { name = "pinned", type = "bool" }, { name = "updated-at-ms", type = "u64" }, { name = "mode", type = "u32" }, { name = "child-count", type = "u64" } } }
 M.soil.vfs.vfs.types.Error = { DENIED = "denied", NOT_FOUND = "not-found", NOT_DIRECTORY = "not-directory", IS_DIRECTORY = "is-directory", NOT_HYDRATED = "not-hydrated", OVER_BUDGET = "over-budget", INVALID = "invalid", IO = "io", STALE = "stale" }
 M.soil.vfs.vfs.types.Hydration = { PRESENT = "present", PLACEHOLDER = "placeholder" }
 M.soil.vfs.vfs.types.Kind = { FILE = "file", DIRECTORY = "directory" }
@@ -1077,6 +1581,17 @@ function M.soil.view.viewer.open(args)
   return dispatch("soil:view@1.0.0/viewer", "open", args)
 end
 M.soil.view = M.soil.view.viewer
+M.soil.worktrees = M.soil.worktrees or {}
+M.soil.worktrees.worktrees = M.soil.worktrees.worktrees or {}
+M.soil.worktrees.worktrees.types = M.soil.worktrees.worktrees.types or {}
+M.soil.worktrees.worktrees.types.Role = { PRIMARY = "primary", WORKTREE = "worktree", NONE = "none" }
+M.soil.worktrees.worktrees.types.Worktree = { fields = { { name = "project", type = "string" }, { name = "path", type = "string" }, { name = "branch", type = "option<string>" }, { name = "commit", type = "option<string>" }, { name = "base", type = "option<string>" }, { name = "role", type = "role" } } }
+--- Every checkout this Desktop knows, in path order.
+-- WIT: checkouts -> list<worktree>
+function M.soil.worktrees.worktrees.checkouts(args)
+  return dispatch("soil:worktrees@0.1.0/worktrees", "checkouts", args)
+end
+M.soil.worktrees = M.soil.worktrees.worktrees
 M.wasi = M.wasi or {}
 M.wasi.audio = M.wasi.audio or {}
 M.wasi.audio.playback = M.wasi.audio.playback or {}
@@ -1114,5 +1629,1125 @@ function M.wasi.audio.playback.open(args)
   return dispatch("wasi:audio@0.1.0/playback", "open", args)
 end
 M.wasi.audio = M.wasi.audio.playback
+M.wasi.webgpu = M.wasi.webgpu or {}
+M.wasi.webgpu.webgpu = M.wasi.webgpu.webgpu or {}
+M.wasi.webgpu.webgpu.types = M.wasi.webgpu.webgpu.types or {}
+M.wasi.webgpu.webgpu.types.CreatePipelineError = { fields = { { name = "kind", type = "create-pipeline-error-kind" }, { name = "message", type = "string" } } }
+M.wasi.webgpu.webgpu.types.CreatePipelineErrorKind = { GPU_PIPELINE_ERROR = "gpu-pipeline-error" }
+M.wasi.webgpu.webgpu.types.CreateQuerySetError = { fields = { { name = "kind", type = "create-query-set-error-kind" }, { name = "message", type = "string" } } }
+M.wasi.webgpu.webgpu.types.CreateQuerySetErrorKind = { TYPE_ERROR = "type-error" }
+M.wasi.webgpu.webgpu.types.GetMappedRangeError = { fields = { { name = "kind", type = "get-mapped-range-error-kind" }, { name = "message", type = "string" } } }
+M.wasi.webgpu.webgpu.types.GetMappedRangeErrorKind = { OPERATION_ERROR = "operation-error", RANGE_ERROR = "range-error", TYPE_ERROR = "type-error" }
+M.wasi.webgpu.webgpu.types.Gpu = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuAdapter = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuAdapterInfo = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuAddressMode = { CLAMP_TO_EDGE = "clamp-to-edge", REPEAT = "repeat", MIRROR_REPEAT = "mirror-repeat" }
+M.wasi.webgpu.webgpu.types.GpuBindGroup = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuBindGroupDescriptor = { fields = { { name = "layout", type = "borrow<gpu-bind-group-layout>" }, { name = "entries", type = "list<gpu-bind-group-entry>" }, { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuBindGroupEntry = { fields = { { name = "binding", type = "gpu-index32" }, { name = "resource", type = "gpu-binding-resource" } } }
+M.wasi.webgpu.webgpu.types.GpuBindGroupLayout = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuBindGroupLayoutDescriptor = { fields = { { name = "entries", type = "list<gpu-bind-group-layout-entry>" }, { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuBindGroupLayoutEntry = { fields = { { name = "binding", type = "gpu-index32" }, { name = "visibility", type = "gpu-shader-stage" }, { name = "buffer", type = "option<gpu-buffer-binding-layout>" }, { name = "sampler", type = "option<gpu-sampler-binding-layout>" }, { name = "texture", type = "option<gpu-texture-binding-layout>" }, { name = "storage-texture", type = "option<gpu-storage-texture-binding-layout>" } } }
+M.wasi.webgpu.webgpu.types.GpuBindingResource = { GPU_BUFFER = "gpu-buffer", GPU_BUFFER_BINDING = "gpu-buffer-binding", GPU_SAMPLER = "gpu-sampler", GPU_TEXTURE = "gpu-texture", GPU_TEXTURE_VIEW = "gpu-texture-view" }
+M.wasi.webgpu.webgpu.types.GpuBlendComponent = { fields = { { name = "operation", type = "option<gpu-blend-operation>" }, { name = "src-factor", type = "option<gpu-blend-factor>" }, { name = "dst-factor", type = "option<gpu-blend-factor>" } } }
+M.wasi.webgpu.webgpu.types.GpuBlendFactor = { ZERO = "zero", ONE = "one", SRC = "src", ONE_MINUS_SRC = "one-minus-src", SRC_ALPHA = "src-alpha", ONE_MINUS_SRC_ALPHA = "one-minus-src-alpha", DST = "dst", ONE_MINUS_DST = "one-minus-dst", DST_ALPHA = "dst-alpha", ONE_MINUS_DST_ALPHA = "one-minus-dst-alpha", SRC_ALPHA_SATURATED = "src-alpha-saturated", CONSTANT = "constant", ONE_MINUS_CONSTANT = "one-minus-constant", SRC1 = "src1", ONE_MINUS_SRC1 = "one-minus-src1", SRC1_ALPHA = "src1-alpha", ONE_MINUS_SRC1_ALPHA = "one-minus-src1-alpha" }
+M.wasi.webgpu.webgpu.types.GpuBlendOperation = { ADD = "add", SUBTRACT = "subtract", REVERSE_SUBTRACT = "reverse-subtract", MIN = "min", MAX = "max" }
+M.wasi.webgpu.webgpu.types.GpuBlendState = { fields = { { name = "color", type = "gpu-blend-component" }, { name = "alpha", type = "gpu-blend-component" } } }
+M.wasi.webgpu.webgpu.types.GpuBuffer = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuBufferBinding = { fields = { { name = "buffer", type = "borrow<gpu-buffer>" }, { name = "offset", type = "option<gpu-size64>" }, { name = "size", type = "option<gpu-size64>" } } }
+M.wasi.webgpu.webgpu.types.GpuBufferBindingLayout = { fields = { { name = "type", type = "option<gpu-buffer-binding-type>" }, { name = "has-dynamic-offset", type = "option<bool>" }, { name = "min-binding-size", type = "option<gpu-size64>" } } }
+M.wasi.webgpu.webgpu.types.GpuBufferBindingType = { UNIFORM = "uniform", STORAGE = "storage", READ_ONLY_STORAGE = "read-only-storage" }
+M.wasi.webgpu.webgpu.types.GpuBufferDescriptor = { fields = { { name = "size", type = "gpu-size64" }, { name = "usage", type = "gpu-buffer-usage" }, { name = "mapped-at-creation", type = "option<bool>" }, { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuBufferDynamicOffset = { type = "u32" }
+M.wasi.webgpu.webgpu.types.GpuBufferMapState = { UNMAPPED = "unmapped", PENDING = "pending", MAPPED = "mapped" }
+M.wasi.webgpu.webgpu.types.GpuBufferUsage = { MAP_READ = "map-read", MAP_WRITE = "map-write", COPY_SRC = "copy-src", COPY_DST = "copy-dst", INDEX = "index", VERTEX = "vertex", UNIFORM = "uniform", STORAGE = "storage", INDIRECT = "indirect", QUERY_RESOLVE = "query-resolve" }
+M.wasi.webgpu.webgpu.types.GpuCanvasAlphaMode = { OPAQUE = "opaque", PREMULTIPLIED = "premultiplied" }
+M.wasi.webgpu.webgpu.types.GpuCanvasConfiguration = { fields = { { name = "device", type = "borrow<gpu-device>" }, { name = "format", type = "gpu-texture-format" }, { name = "usage", type = "option<gpu-texture-usage>" }, { name = "view-formats", type = "option<list<gpu-texture-format>>" }, { name = "color-space", type = "option<predefined-color-space>" }, { name = "tone-mapping", type = "option<gpu-canvas-tone-mapping>" }, { name = "alpha-mode", type = "option<gpu-canvas-alpha-mode>" } } }
+M.wasi.webgpu.webgpu.types.GpuCanvasConfigurationOwned = { fields = { { name = "device", type = "own<gpu-device>" }, { name = "format", type = "gpu-texture-format" }, { name = "usage", type = "option<gpu-texture-usage>" }, { name = "view-formats", type = "option<list<gpu-texture-format>>" }, { name = "color-space", type = "option<predefined-color-space>" }, { name = "tone-mapping", type = "option<gpu-canvas-tone-mapping>" }, { name = "alpha-mode", type = "option<gpu-canvas-alpha-mode>" } } }
+M.wasi.webgpu.webgpu.types.GpuCanvasContext = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuCanvasToneMapping = { fields = { { name = "mode", type = "option<gpu-canvas-tone-mapping-mode>" } } }
+M.wasi.webgpu.webgpu.types.GpuCanvasToneMappingMode = { STANDARD = "standard", EXTENDED = "extended" }
+M.wasi.webgpu.webgpu.types.GpuColor = { fields = { { name = "r", type = "f64" }, { name = "g", type = "f64" }, { name = "b", type = "f64" }, { name = "a", type = "f64" } } }
+M.wasi.webgpu.webgpu.types.GpuColorTargetState = { fields = { { name = "format", type = "gpu-texture-format" }, { name = "blend", type = "option<gpu-blend-state>" }, { name = "write-mask", type = "option<gpu-color-write>" } } }
+M.wasi.webgpu.webgpu.types.GpuColorWrite = { RED = "red", GREEN = "green", BLUE = "blue", ALPHA = "alpha", ALL = "all" }
+M.wasi.webgpu.webgpu.types.GpuCommandBuffer = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuCommandBufferDescriptor = { fields = { { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuCommandEncoder = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuCommandEncoderDescriptor = { fields = { { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuCompareFunction = { NEVER = "never", LESS = "less", EQUAL = "equal", LESS_EQUAL = "less-equal", GREATER = "greater", NOT_EQUAL = "not-equal", GREATER_EQUAL = "greater-equal", ALWAYS = "always" }
+M.wasi.webgpu.webgpu.types.GpuCompilationInfo = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuCompilationMessage = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuCompilationMessageType = { ERROR = "error", WARNING = "warning", INFO = "info" }
+M.wasi.webgpu.webgpu.types.GpuComputePassDescriptor = { fields = { { name = "timestamp-writes", type = "option<gpu-compute-pass-timestamp-writes>" }, { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuComputePassEncoder = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuComputePassTimestampWrites = { fields = { { name = "query-set", type = "borrow<gpu-query-set>" }, { name = "beginning-of-pass-write-index", type = "option<gpu-size32>" }, { name = "end-of-pass-write-index", type = "option<gpu-size32>" } } }
+M.wasi.webgpu.webgpu.types.GpuComputePipeline = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuComputePipelineDescriptor = { fields = { { name = "compute", type = "gpu-programmable-stage" }, { name = "layout", type = "gpu-layout-mode" }, { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuCullMode = { NONE = "none", FRONT = "front", BACK = "back" }
+M.wasi.webgpu.webgpu.types.GpuDepthBias = { type = "s32" }
+M.wasi.webgpu.webgpu.types.GpuDepthStencilState = { fields = { { name = "format", type = "gpu-texture-format" }, { name = "depth-write-enabled", type = "option<bool>" }, { name = "depth-compare", type = "option<gpu-compare-function>" }, { name = "stencil-front", type = "option<gpu-stencil-face-state>" }, { name = "stencil-back", type = "option<gpu-stencil-face-state>" }, { name = "stencil-read-mask", type = "option<gpu-stencil-value>" }, { name = "stencil-write-mask", type = "option<gpu-stencil-value>" }, { name = "depth-bias", type = "option<gpu-depth-bias>" }, { name = "depth-bias-slope-scale", type = "option<f32>" }, { name = "depth-bias-clamp", type = "option<f32>" } } }
+M.wasi.webgpu.webgpu.types.GpuDevice = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuDeviceDescriptor = { fields = { { name = "required-features", type = "option<list<gpu-feature-name>>" }, { name = "required-limits", type = "option<own<record-option-gpu-size64>>" }, { name = "default-queue", type = "option<gpu-queue-descriptor>" }, { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuDeviceLostInfo = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuDeviceLostReason = { UNKNOWN = "unknown", DESTROYED = "destroyed" }
+M.wasi.webgpu.webgpu.types.GpuError = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuErrorFilter = { VALIDATION = "validation", OUT_OF_MEMORY = "out-of-memory", INTERNAL = "internal" }
+M.wasi.webgpu.webgpu.types.GpuErrorKind = { VALIDATION_ERROR = "validation-error", OUT_OF_MEMORY_ERROR = "out-of-memory-error", INTERNAL_ERROR = "internal-error" }
+M.wasi.webgpu.webgpu.types.GpuExtent3D = { fields = { { name = "width", type = "gpu-integer-coordinate" }, { name = "height", type = "option<gpu-integer-coordinate>" }, { name = "depth-or-array-layers", type = "option<gpu-integer-coordinate>" } } }
+M.wasi.webgpu.webgpu.types.GpuFeatureName = { CORE_FEATURES_AND_LIMITS = "core-features-and-limits", DEPTH_CLIP_CONTROL = "depth-clip-control", DEPTH32FLOAT_STENCIL8 = "depth32float-stencil8", TEXTURE_COMPRESSION_BC = "texture-compression-bc", TEXTURE_COMPRESSION_BC_SLICED3D = "texture-compression-bc-sliced3d", TEXTURE_COMPRESSION_ETC2 = "texture-compression-etc2", TEXTURE_COMPRESSION_ASTC = "texture-compression-astc", TEXTURE_COMPRESSION_ASTC_SLICED3D = "texture-compression-astc-sliced3d", TIMESTAMP_QUERY = "timestamp-query", INDIRECT_FIRST_INSTANCE = "indirect-first-instance", SHADER_F16 = "shader-f16", RG11B10UFLOAT_RENDERABLE = "rg11b10ufloat-renderable", BGRA8UNORM_STORAGE = "bgra8unorm-storage", FLOAT32_FILTERABLE = "float32-filterable", FLOAT32_BLENDABLE = "float32-blendable", CLIP_DISTANCES = "clip-distances", DUAL_SOURCE_BLENDING = "dual-source-blending", SUBGROUPS = "subgroups", TEXTURE_FORMATS_TIER1 = "texture-formats-tier1", TEXTURE_FORMATS_TIER2 = "texture-formats-tier2", PRIMITIVE_INDEX = "primitive-index", TEXTURE_COMPONENT_SWIZZLE = "texture-component-swizzle" }
+M.wasi.webgpu.webgpu.types.GpuFilterMode = { NEAREST = "nearest", LINEAR = "linear" }
+M.wasi.webgpu.webgpu.types.GpuFragmentState = { fields = { { name = "targets", type = "list<option<gpu-color-target-state>>" }, { name = "module", type = "borrow<gpu-shader-module>" }, { name = "entry-point", type = "option<string>" }, { name = "constants", type = "option<own<record-gpu-pipeline-constant-value>>" } } }
+M.wasi.webgpu.webgpu.types.GpuFrontFace = { CCW = "ccw", CW = "cw" }
+M.wasi.webgpu.webgpu.types.GpuIndexFormat = { UINT16 = "uint16", UINT32 = "uint32" }
+M.wasi.webgpu.webgpu.types.GpuIndex32 = { type = "u32" }
+M.wasi.webgpu.webgpu.types.GpuIntegerCoordinate = { type = "u32" }
+M.wasi.webgpu.webgpu.types.GpuIntegerCoordinateOut = { type = "u32" }
+M.wasi.webgpu.webgpu.types.GpuLayoutMode = { SPECIFIC = "specific", AUTO = "auto" }
+M.wasi.webgpu.webgpu.types.GpuLoadOp = { LOAD = "load", CLEAR = "clear" }
+M.wasi.webgpu.webgpu.types.GpuMapMode = { READ = "read", WRITE = "write" }
+M.wasi.webgpu.webgpu.types.GpuMipmapFilterMode = { NEAREST = "nearest", LINEAR = "linear" }
+M.wasi.webgpu.webgpu.types.GpuMultisampleState = { fields = { { name = "count", type = "option<gpu-size32>" }, { name = "mask", type = "option<gpu-sample-mask>" }, { name = "alpha-to-coverage-enabled", type = "option<bool>" } } }
+M.wasi.webgpu.webgpu.types.GpuOrigin3D = { fields = { { name = "x", type = "option<gpu-integer-coordinate>" }, { name = "y", type = "option<gpu-integer-coordinate>" }, { name = "z", type = "option<gpu-integer-coordinate>" } } }
+M.wasi.webgpu.webgpu.types.GpuPipelineConstantValue = { type = "f64" }
+M.wasi.webgpu.webgpu.types.GpuPipelineErrorReason = { VALIDATION = "validation", INTERNAL = "internal" }
+M.wasi.webgpu.webgpu.types.GpuPipelineLayout = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuPipelineLayoutDescriptor = { fields = { { name = "bind-group-layouts", type = "list<option<borrow<gpu-bind-group-layout>>>" }, { name = "immediate-size", type = "option<gpu-size32>" }, { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuPowerPreference = { LOW_POWER = "low-power", HIGH_PERFORMANCE = "high-performance" }
+M.wasi.webgpu.webgpu.types.GpuPrimitiveState = { fields = { { name = "topology", type = "option<gpu-primitive-topology>" }, { name = "strip-index-format", type = "option<gpu-index-format>" }, { name = "front-face", type = "option<gpu-front-face>" }, { name = "cull-mode", type = "option<gpu-cull-mode>" }, { name = "unclipped-depth", type = "option<bool>" } } }
+M.wasi.webgpu.webgpu.types.GpuPrimitiveTopology = { POINT_LIST = "point-list", LINE_LIST = "line-list", LINE_STRIP = "line-strip", TRIANGLE_LIST = "triangle-list", TRIANGLE_STRIP = "triangle-strip" }
+M.wasi.webgpu.webgpu.types.GpuProgrammableStage = { fields = { { name = "module", type = "borrow<gpu-shader-module>" }, { name = "entry-point", type = "option<string>" }, { name = "constants", type = "option<own<record-gpu-pipeline-constant-value>>" } } }
+M.wasi.webgpu.webgpu.types.GpuQuerySet = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuQuerySetDescriptor = { fields = { { name = "type", type = "gpu-query-type" }, { name = "count", type = "gpu-size32" }, { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuQueryType = { OCCLUSION = "occlusion", TIMESTAMP = "timestamp" }
+M.wasi.webgpu.webgpu.types.GpuQueue = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuQueueDescriptor = { fields = { { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuRenderBundle = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuRenderBundleDescriptor = { fields = { { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuRenderBundleEncoder = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuRenderBundleEncoderDescriptor = { fields = { { name = "depth-read-only", type = "option<bool>" }, { name = "stencil-read-only", type = "option<bool>" }, { name = "color-formats", type = "list<option<gpu-texture-format>>" }, { name = "depth-stencil-format", type = "option<gpu-texture-format>" }, { name = "sample-count", type = "option<gpu-size32>" }, { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuRenderPassColorAttachment = { fields = { { name = "view", type = "borrow<gpu-texture-view>" }, { name = "depth-slice", type = "option<gpu-integer-coordinate>" }, { name = "resolve-target", type = "option<borrow<gpu-texture-view>>" }, { name = "clear-value", type = "option<gpu-color>" }, { name = "load-op", type = "gpu-load-op" }, { name = "store-op", type = "gpu-store-op" } } }
+M.wasi.webgpu.webgpu.types.GpuRenderPassDepthStencilAttachment = { fields = { { name = "view", type = "borrow<gpu-texture-view>" }, { name = "depth-clear-value", type = "option<f32>" }, { name = "depth-load-op", type = "option<gpu-load-op>" }, { name = "depth-store-op", type = "option<gpu-store-op>" }, { name = "depth-read-only", type = "option<bool>" }, { name = "stencil-clear-value", type = "option<gpu-stencil-value>" }, { name = "stencil-load-op", type = "option<gpu-load-op>" }, { name = "stencil-store-op", type = "option<gpu-store-op>" }, { name = "stencil-read-only", type = "option<bool>" } } }
+M.wasi.webgpu.webgpu.types.GpuRenderPassDescriptor = { fields = { { name = "color-attachments", type = "list<option<gpu-render-pass-color-attachment>>" }, { name = "depth-stencil-attachment", type = "option<gpu-render-pass-depth-stencil-attachment>" }, { name = "occlusion-query-set", type = "option<borrow<gpu-query-set>>" }, { name = "timestamp-writes", type = "option<gpu-render-pass-timestamp-writes>" }, { name = "max-draw-count", type = "option<gpu-size64>" }, { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuRenderPassEncoder = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuRenderPassTimestampWrites = { fields = { { name = "query-set", type = "borrow<gpu-query-set>" }, { name = "beginning-of-pass-write-index", type = "option<gpu-size32>" }, { name = "end-of-pass-write-index", type = "option<gpu-size32>" } } }
+M.wasi.webgpu.webgpu.types.GpuRenderPipeline = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuRenderPipelineDescriptor = { fields = { { name = "vertex", type = "gpu-vertex-state" }, { name = "primitive", type = "option<gpu-primitive-state>" }, { name = "depth-stencil", type = "option<gpu-depth-stencil-state>" }, { name = "multisample", type = "option<gpu-multisample-state>" }, { name = "fragment", type = "option<gpu-fragment-state>" }, { name = "layout", type = "gpu-layout-mode" }, { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuRequestAdapterOptions = { fields = { { name = "feature-level", type = "option<string>" }, { name = "power-preference", type = "option<gpu-power-preference>" }, { name = "force-fallback-adapter", type = "option<bool>" }, { name = "xr-compatible", type = "option<bool>" } } }
+M.wasi.webgpu.webgpu.types.GpuSampleMask = { type = "u32" }
+M.wasi.webgpu.webgpu.types.GpuSampler = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuSamplerBindingLayout = { fields = { { name = "type", type = "option<gpu-sampler-binding-type>" } } }
+M.wasi.webgpu.webgpu.types.GpuSamplerBindingType = { FILTERING = "filtering", NON_FILTERING = "non-filtering", COMPARISON = "comparison" }
+M.wasi.webgpu.webgpu.types.GpuSamplerDescriptor = { fields = { { name = "address-mode-u", type = "option<gpu-address-mode>" }, { name = "address-mode-v", type = "option<gpu-address-mode>" }, { name = "address-mode-w", type = "option<gpu-address-mode>" }, { name = "mag-filter", type = "option<gpu-filter-mode>" }, { name = "min-filter", type = "option<gpu-filter-mode>" }, { name = "mipmap-filter", type = "option<gpu-mipmap-filter-mode>" }, { name = "lod-min-clamp", type = "option<f32>" }, { name = "lod-max-clamp", type = "option<f32>" }, { name = "compare", type = "option<gpu-compare-function>" }, { name = "max-anisotropy", type = "option<u16>" }, { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuShaderModule = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuShaderModuleCompilationHint = { fields = { { name = "entry-point", type = "string" }, { name = "layout", type = "option<gpu-layout-mode>" } } }
+M.wasi.webgpu.webgpu.types.GpuShaderModuleDescriptor = { fields = { { name = "code", type = "string" }, { name = "compilation-hints", type = "option<list<gpu-shader-module-compilation-hint>>" }, { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuShaderStage = { VERTEX = "vertex", FRAGMENT = "fragment", COMPUTE = "compute" }
+M.wasi.webgpu.webgpu.types.GpuSignedOffset32 = { type = "s32" }
+M.wasi.webgpu.webgpu.types.GpuSize32 = { type = "u32" }
+M.wasi.webgpu.webgpu.types.GpuSize32Out = { type = "u32" }
+M.wasi.webgpu.webgpu.types.GpuSize64 = { type = "u64" }
+M.wasi.webgpu.webgpu.types.GpuSize64Out = { type = "u64" }
+M.wasi.webgpu.webgpu.types.GpuStencilFaceState = { fields = { { name = "compare", type = "option<gpu-compare-function>" }, { name = "fail-op", type = "option<gpu-stencil-operation>" }, { name = "depth-fail-op", type = "option<gpu-stencil-operation>" }, { name = "pass-op", type = "option<gpu-stencil-operation>" } } }
+M.wasi.webgpu.webgpu.types.GpuStencilOperation = { KEEP = "keep", ZERO = "zero", REPLACE = "replace", INVERT = "invert", INCREMENT_CLAMP = "increment-clamp", DECREMENT_CLAMP = "decrement-clamp", INCREMENT_WRAP = "increment-wrap", DECREMENT_WRAP = "decrement-wrap" }
+M.wasi.webgpu.webgpu.types.GpuStencilValue = { type = "u32" }
+M.wasi.webgpu.webgpu.types.GpuStorageTextureAccess = { WRITE_ONLY = "write-only", READ_ONLY = "read-only", READ_WRITE = "read-write" }
+M.wasi.webgpu.webgpu.types.GpuStorageTextureBindingLayout = { fields = { { name = "access", type = "option<gpu-storage-texture-access>" }, { name = "format", type = "gpu-texture-format" }, { name = "view-dimension", type = "option<gpu-texture-view-dimension>" } } }
+M.wasi.webgpu.webgpu.types.GpuStoreOp = { STORE = "store", DISCARD = "discard" }
+M.wasi.webgpu.webgpu.types.GpuSupportedFeatures = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuSupportedLimits = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuTexelCopyBufferInfo = { fields = { { name = "buffer", type = "borrow<gpu-buffer>" }, { name = "offset", type = "option<gpu-size64>" }, { name = "bytes-per-row", type = "option<gpu-size32>" }, { name = "rows-per-image", type = "option<gpu-size32>" } } }
+M.wasi.webgpu.webgpu.types.GpuTexelCopyBufferLayout = { fields = { { name = "offset", type = "option<gpu-size64>" }, { name = "bytes-per-row", type = "option<gpu-size32>" }, { name = "rows-per-image", type = "option<gpu-size32>" } } }
+M.wasi.webgpu.webgpu.types.GpuTexelCopyTextureInfo = { fields = { { name = "texture", type = "borrow<gpu-texture>" }, { name = "mip-level", type = "option<gpu-integer-coordinate>" }, { name = "origin", type = "option<gpu-origin3-d>" }, { name = "aspect", type = "option<gpu-texture-aspect>" } } }
+M.wasi.webgpu.webgpu.types.GpuTexture = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuTextureAspect = { ALL = "all", STENCIL_ONLY = "stencil-only", DEPTH_ONLY = "depth-only" }
+M.wasi.webgpu.webgpu.types.GpuTextureBindingLayout = { fields = { { name = "sample-type", type = "option<gpu-texture-sample-type>" }, { name = "view-dimension", type = "option<gpu-texture-view-dimension>" }, { name = "multisampled", type = "option<bool>" } } }
+M.wasi.webgpu.webgpu.types.GpuTextureDescriptor = { fields = { { name = "size", type = "gpu-extent3-d" }, { name = "mip-level-count", type = "option<gpu-integer-coordinate>" }, { name = "sample-count", type = "option<gpu-size32>" }, { name = "dimension", type = "option<gpu-texture-dimension>" }, { name = "format", type = "gpu-texture-format" }, { name = "usage", type = "gpu-texture-usage" }, { name = "view-formats", type = "option<list<gpu-texture-format>>" }, { name = "texture-binding-view-dimension", type = "option<gpu-texture-view-dimension>" }, { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuTextureDimension = { D1 = "d1", D2 = "d2", D3 = "d3" }
+M.wasi.webgpu.webgpu.types.GpuTextureFormat = { R8UNORM = "r8unorm", R8SNORM = "r8snorm", R8UINT = "r8uint", R8SINT = "r8sint", R16UNORM = "r16unorm", R16SNORM = "r16snorm", R16UINT = "r16uint", R16SINT = "r16sint", R16FLOAT = "r16float", RG8UNORM = "rg8unorm", RG8SNORM = "rg8snorm", RG8UINT = "rg8uint", RG8SINT = "rg8sint", R32UINT = "r32uint", R32SINT = "r32sint", R32FLOAT = "r32float", RG16UNORM = "rg16unorm", RG16SNORM = "rg16snorm", RG16UINT = "rg16uint", RG16SINT = "rg16sint", RG16FLOAT = "rg16float", RGBA8UNORM = "rgba8unorm", RGBA8UNORM_SRGB = "rgba8unorm-srgb", RGBA8SNORM = "rgba8snorm", RGBA8UINT = "rgba8uint", RGBA8SINT = "rgba8sint", BGRA8UNORM = "bgra8unorm", BGRA8UNORM_SRGB = "bgra8unorm-srgb", RGB9E5UFLOAT = "rgb9e5ufloat", RGB10A2UINT = "rgb10a2uint", RGB10A2UNORM = "rgb10a2unorm", RG11B10UFLOAT = "rg11b10ufloat", RG32UINT = "rg32uint", RG32SINT = "rg32sint", RG32FLOAT = "rg32float", RGBA16UNORM = "rgba16unorm", RGBA16SNORM = "rgba16snorm", RGBA16UINT = "rgba16uint", RGBA16SINT = "rgba16sint", RGBA16FLOAT = "rgba16float", RGBA32UINT = "rgba32uint", RGBA32SINT = "rgba32sint", RGBA32FLOAT = "rgba32float", STENCIL8 = "stencil8", DEPTH16UNORM = "depth16unorm", DEPTH24PLUS = "depth24plus", DEPTH24PLUS_STENCIL8 = "depth24plus-stencil8", DEPTH32FLOAT = "depth32float", DEPTH32FLOAT_STENCIL8 = "depth32float-stencil8", BC1_RGBA_UNORM = "bc1-rgba-unorm", BC1_RGBA_UNORM_SRGB = "bc1-rgba-unorm-srgb", BC2_RGBA_UNORM = "bc2-rgba-unorm", BC2_RGBA_UNORM_SRGB = "bc2-rgba-unorm-srgb", BC3_RGBA_UNORM = "bc3-rgba-unorm", BC3_RGBA_UNORM_SRGB = "bc3-rgba-unorm-srgb", BC4_R_UNORM = "bc4-r-unorm", BC4_R_SNORM = "bc4-r-snorm", BC5_RG_UNORM = "bc5-rg-unorm", BC5_RG_SNORM = "bc5-rg-snorm", BC6H_RGB_UFLOAT = "bc6h-rgb-ufloat", BC6H_RGB_FLOAT = "bc6h-rgb-float", BC7_RGBA_UNORM = "bc7-rgba-unorm", BC7_RGBA_UNORM_SRGB = "bc7-rgba-unorm-srgb", ETC2_RGB8UNORM = "etc2-rgb8unorm", ETC2_RGB8UNORM_SRGB = "etc2-rgb8unorm-srgb", ETC2_RGB8A1UNORM = "etc2-rgb8a1unorm", ETC2_RGB8A1UNORM_SRGB = "etc2-rgb8a1unorm-srgb", ETC2_RGBA8UNORM = "etc2-rgba8unorm", ETC2_RGBA8UNORM_SRGB = "etc2-rgba8unorm-srgb", EAC_R11UNORM = "eac-r11unorm", EAC_R11SNORM = "eac-r11snorm", EAC_RG11UNORM = "eac-rg11unorm", EAC_RG11SNORM = "eac-rg11snorm", ASTC4X4_UNORM = "astc4x4-unorm", ASTC4X4_UNORM_SRGB = "astc4x4-unorm-srgb", ASTC5X4_UNORM = "astc5x4-unorm", ASTC5X4_UNORM_SRGB = "astc5x4-unorm-srgb", ASTC5X5_UNORM = "astc5x5-unorm", ASTC5X5_UNORM_SRGB = "astc5x5-unorm-srgb", ASTC6X5_UNORM = "astc6x5-unorm", ASTC6X5_UNORM_SRGB = "astc6x5-unorm-srgb", ASTC6X6_UNORM = "astc6x6-unorm", ASTC6X6_UNORM_SRGB = "astc6x6-unorm-srgb", ASTC8X5_UNORM = "astc8x5-unorm", ASTC8X5_UNORM_SRGB = "astc8x5-unorm-srgb", ASTC8X6_UNORM = "astc8x6-unorm", ASTC8X6_UNORM_SRGB = "astc8x6-unorm-srgb", ASTC8X8_UNORM = "astc8x8-unorm", ASTC8X8_UNORM_SRGB = "astc8x8-unorm-srgb", ASTC10X5_UNORM = "astc10x5-unorm", ASTC10X5_UNORM_SRGB = "astc10x5-unorm-srgb", ASTC10X6_UNORM = "astc10x6-unorm", ASTC10X6_UNORM_SRGB = "astc10x6-unorm-srgb", ASTC10X8_UNORM = "astc10x8-unorm", ASTC10X8_UNORM_SRGB = "astc10x8-unorm-srgb", ASTC10X10_UNORM = "astc10x10-unorm", ASTC10X10_UNORM_SRGB = "astc10x10-unorm-srgb", ASTC12X10_UNORM = "astc12x10-unorm", ASTC12X10_UNORM_SRGB = "astc12x10-unorm-srgb", ASTC12X12_UNORM = "astc12x12-unorm", ASTC12X12_UNORM_SRGB = "astc12x12-unorm-srgb" }
+M.wasi.webgpu.webgpu.types.GpuTextureSampleType = { FLOAT = "float", UNFILTERABLE_FLOAT = "unfilterable-float", DEPTH = "depth", SINT = "sint", UINT = "uint" }
+M.wasi.webgpu.webgpu.types.GpuTextureUsage = { COPY_SRC = "copy-src", COPY_DST = "copy-dst", TEXTURE_BINDING = "texture-binding", STORAGE_BINDING = "storage-binding", RENDER_ATTACHMENT = "render-attachment", TRANSIENT_ATTACHMENT = "transient-attachment" }
+M.wasi.webgpu.webgpu.types.GpuTextureView = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuTextureViewDescriptor = { fields = { { name = "format", type = "option<gpu-texture-format>" }, { name = "dimension", type = "option<gpu-texture-view-dimension>" }, { name = "usage", type = "option<gpu-texture-usage>" }, { name = "aspect", type = "option<gpu-texture-aspect>" }, { name = "base-mip-level", type = "option<gpu-integer-coordinate>" }, { name = "mip-level-count", type = "option<gpu-integer-coordinate>" }, { name = "base-array-layer", type = "option<gpu-integer-coordinate>" }, { name = "array-layer-count", type = "option<gpu-integer-coordinate>" }, { name = "swizzle", type = "option<string>" }, { name = "label", type = "option<string>" } } }
+M.wasi.webgpu.webgpu.types.GpuTextureViewDimension = { D1 = "d1", D2 = "d2", D2_ARRAY = "d2-array", CUBE = "cube", CUBE_ARRAY = "cube-array", D3 = "d3" }
+M.wasi.webgpu.webgpu.types.GpuUncapturedErrorEvent = { resource = true }
+M.wasi.webgpu.webgpu.types.GpuVertexAttribute = { fields = { { name = "format", type = "gpu-vertex-format" }, { name = "offset", type = "gpu-size64" }, { name = "shader-location", type = "gpu-index32" } } }
+M.wasi.webgpu.webgpu.types.GpuVertexBufferLayout = { fields = { { name = "array-stride", type = "gpu-size64" }, { name = "step-mode", type = "option<gpu-vertex-step-mode>" }, { name = "attributes", type = "list<gpu-vertex-attribute>" } } }
+M.wasi.webgpu.webgpu.types.GpuVertexFormat = { UINT8 = "uint8", UINT8X2 = "uint8x2", UINT8X4 = "uint8x4", SINT8 = "sint8", SINT8X2 = "sint8x2", SINT8X4 = "sint8x4", UNORM8 = "unorm8", UNORM8X2 = "unorm8x2", UNORM8X4 = "unorm8x4", SNORM8 = "snorm8", SNORM8X2 = "snorm8x2", SNORM8X4 = "snorm8x4", UINT16 = "uint16", UINT16X2 = "uint16x2", UINT16X4 = "uint16x4", SINT16 = "sint16", SINT16X2 = "sint16x2", SINT16X4 = "sint16x4", UNORM16 = "unorm16", UNORM16X2 = "unorm16x2", UNORM16X4 = "unorm16x4", SNORM16 = "snorm16", SNORM16X2 = "snorm16x2", SNORM16X4 = "snorm16x4", FLOAT16 = "float16", FLOAT16X2 = "float16x2", FLOAT16X4 = "float16x4", FLOAT32 = "float32", FLOAT32X2 = "float32x2", FLOAT32X3 = "float32x3", FLOAT32X4 = "float32x4", UINT32 = "uint32", UINT32X2 = "uint32x2", UINT32X3 = "uint32x3", UINT32X4 = "uint32x4", SINT32 = "sint32", SINT32X2 = "sint32x2", SINT32X3 = "sint32x3", SINT32X4 = "sint32x4", UNORM1010102 = "unorm1010102", UNORM8X4_BGRA = "unorm8x4-bgra" }
+M.wasi.webgpu.webgpu.types.GpuVertexState = { fields = { { name = "buffers", type = "option<list<option<gpu-vertex-buffer-layout>>>" }, { name = "module", type = "borrow<gpu-shader-module>" }, { name = "entry-point", type = "option<string>" }, { name = "constants", type = "option<own<record-gpu-pipeline-constant-value>>" } } }
+M.wasi.webgpu.webgpu.types.GpuVertexStepMode = { VERTEX = "vertex", INSTANCE = "instance" }
+M.wasi.webgpu.webgpu.types.MapAsyncError = { fields = { { name = "kind", type = "map-async-error-kind" }, { name = "message", type = "string" } } }
+M.wasi.webgpu.webgpu.types.MapAsyncErrorKind = { OPERATION_ERROR = "operation-error", RANGE_ERROR = "range-error", ABORT_ERROR = "abort-error" }
+M.wasi.webgpu.webgpu.types.PopErrorScopeError = { fields = { { name = "kind", type = "pop-error-scope-error-kind" }, { name = "message", type = "string" } } }
+M.wasi.webgpu.webgpu.types.PopErrorScopeErrorKind = { OPERATION_ERROR = "operation-error" }
+M.wasi.webgpu.webgpu.types.PredefinedColorSpace = { SRGB = "srgb", DISPLAY_P3 = "display-p3" }
+M.wasi.webgpu.webgpu.types.RecordGpuPipelineConstantValue = { resource = true }
+M.wasi.webgpu.webgpu.types.RecordOptionGpuSize64 = { resource = true }
+M.wasi.webgpu.webgpu.types.RequestDeviceError = { fields = { { name = "kind", type = "request-device-error-kind" }, { name = "message", type = "string" } } }
+M.wasi.webgpu.webgpu.types.RequestDeviceErrorKind = { TYPE_ERROR = "type-error", OPERATION_ERROR = "operation-error" }
+M.wasi.webgpu.webgpu.types.SetBindGroupError = { fields = { { name = "kind", type = "set-bind-group-error-kind" }, { name = "message", type = "string" } } }
+M.wasi.webgpu.webgpu.types.SetBindGroupErrorKind = { RANGE_ERROR = "range-error" }
+M.wasi.webgpu.webgpu.types.UnmapError = { fields = { { name = "kind", type = "unmap-error-kind" }, { name = "message", type = "string" } } }
+M.wasi.webgpu.webgpu.types.UnmapErrorKind = { ABORT_ERROR = "abort-error" }
+M.wasi.webgpu.webgpu.types.WgslLanguageFeatures = { resource = true }
+M.wasi.webgpu.webgpu.types.WriteBufferError = { fields = { { name = "kind", type = "write-buffer-error-kind" }, { name = "message", type = "string" } } }
+M.wasi.webgpu.webgpu.types.WriteBufferErrorKind = { OPERATION_ERROR = "operation-error" }
+M.wasi.webgpu.webgpu.GpuAdapter = M.wasi.webgpu.webgpu.GpuAdapter or {}
+-- WIT: [async method]gpu-adapter.request-device -> result<own<gpu-device>, request-device-error>
+-- async: the host returns a future handle
+function M.wasi.webgpu.webgpu.GpuAdapter:request_device(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-adapter.request-device", args, self)
+end
+M.wasi.webgpu.webgpu.GpuBuffer = M.wasi.webgpu.webgpu.GpuBuffer or {}
+-- WIT: [async method]gpu-buffer.map-async -> result<_, map-async-error>
+-- async: the host returns a future handle
+function M.wasi.webgpu.webgpu.GpuBuffer:map_async(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-buffer.map-async", args, self)
+end
+M.wasi.webgpu.webgpu.GpuDevice = M.wasi.webgpu.webgpu.GpuDevice or {}
+-- WIT: [async method]gpu-device.create-compute-pipeline-async -> result<own<gpu-compute-pipeline>, create-pipeline-error>
+-- async: the host returns a future handle
+function M.wasi.webgpu.webgpu.GpuDevice:create_compute_pipeline_async(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.create-compute-pipeline-async", args, self)
+end
+-- WIT: [async method]gpu-device.create-render-pipeline-async -> result<own<gpu-render-pipeline>, create-pipeline-error>
+-- async: the host returns a future handle
+function M.wasi.webgpu.webgpu.GpuDevice:create_render_pipeline_async(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.create-render-pipeline-async", args, self)
+end
+-- WIT: [async method]gpu-device.pop-error-scope -> result<option<own<gpu-error>>, pop-error-scope-error>
+-- async: the host returns a future handle
+function M.wasi.webgpu.webgpu.GpuDevice:pop_error_scope(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.pop-error-scope", args, self)
+end
+M.wasi.webgpu.webgpu.GpuQueue = M.wasi.webgpu.webgpu.GpuQueue or {}
+-- WIT: [async method]gpu-queue.on-submitted-work-done
+-- async: the host returns a future handle
+function M.wasi.webgpu.webgpu.GpuQueue:on_submitted_work_done(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-queue.on-submitted-work-done", args, self)
+end
+M.wasi.webgpu.webgpu.GpuShaderModule = M.wasi.webgpu.webgpu.GpuShaderModule or {}
+-- WIT: [async method]gpu-shader-module.get-compilation-info -> own<gpu-compilation-info>
+-- async: the host returns a future handle
+function M.wasi.webgpu.webgpu.GpuShaderModule:get_compilation_info(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-shader-module.get-compilation-info", args, self)
+end
+M.wasi.webgpu.webgpu.Gpu = M.wasi.webgpu.webgpu.Gpu or {}
+-- WIT: [async method]gpu.request-adapter -> option<own<gpu-adapter>>
+-- async: the host returns a future handle
+function M.wasi.webgpu.webgpu.Gpu:request_adapter(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu.request-adapter", args, self)
+end
+M.wasi.webgpu.webgpu.RecordGpuPipelineConstantValue = M.wasi.webgpu.webgpu.RecordGpuPipelineConstantValue or {}
+-- WIT: [constructor]record-gpu-pipeline-constant-value -> own<record-gpu-pipeline-constant-value>
+function M.wasi.webgpu.webgpu.RecordGpuPipelineConstantValue.new(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "record-gpu-pipeline-constant-value.new", args)
+end
+M.wasi.webgpu.webgpu.RecordOptionGpuSize64 = M.wasi.webgpu.webgpu.RecordOptionGpuSize64 or {}
+-- WIT: [constructor]record-option-gpu-size64 -> own<record-option-gpu-size64>
+function M.wasi.webgpu.webgpu.RecordOptionGpuSize64.new(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "record-option-gpu-size64.new", args)
+end
+M.wasi.webgpu.webgpu.GpuAdapterInfo = M.wasi.webgpu.webgpu.GpuAdapterInfo or {}
+-- WIT: [method]gpu-adapter-info.architecture -> string
+function M.wasi.webgpu.webgpu.GpuAdapterInfo:architecture(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-adapter-info.architecture", args, self)
+end
+-- WIT: [method]gpu-adapter-info.description -> string
+function M.wasi.webgpu.webgpu.GpuAdapterInfo:description(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-adapter-info.description", args, self)
+end
+-- WIT: [method]gpu-adapter-info.device -> string
+function M.wasi.webgpu.webgpu.GpuAdapterInfo:device(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-adapter-info.device", args, self)
+end
+-- WIT: [method]gpu-adapter-info.is-fallback-adapter -> bool
+function M.wasi.webgpu.webgpu.GpuAdapterInfo:is_fallback_adapter(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-adapter-info.is-fallback-adapter", args, self)
+end
+-- WIT: [method]gpu-adapter-info.subgroup-max-size -> u32
+function M.wasi.webgpu.webgpu.GpuAdapterInfo:subgroup_max_size(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-adapter-info.subgroup-max-size", args, self)
+end
+-- WIT: [method]gpu-adapter-info.subgroup-min-size -> u32
+function M.wasi.webgpu.webgpu.GpuAdapterInfo:subgroup_min_size(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-adapter-info.subgroup-min-size", args, self)
+end
+-- WIT: [method]gpu-adapter-info.vendor -> string
+function M.wasi.webgpu.webgpu.GpuAdapterInfo:vendor(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-adapter-info.vendor", args, self)
+end
+-- WIT: [method]gpu-adapter.features -> own<gpu-supported-features>
+function M.wasi.webgpu.webgpu.GpuAdapter:features(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-adapter.features", args, self)
+end
+-- WIT: [method]gpu-adapter.info -> own<gpu-adapter-info>
+function M.wasi.webgpu.webgpu.GpuAdapter:info(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-adapter.info", args, self)
+end
+-- WIT: [method]gpu-adapter.limits -> own<gpu-supported-limits>
+function M.wasi.webgpu.webgpu.GpuAdapter:limits(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-adapter.limits", args, self)
+end
+M.wasi.webgpu.webgpu.GpuBindGroupLayout = M.wasi.webgpu.webgpu.GpuBindGroupLayout or {}
+-- WIT: [method]gpu-bind-group-layout.label -> string
+function M.wasi.webgpu.webgpu.GpuBindGroupLayout:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-bind-group-layout.label", args, self)
+end
+-- WIT: [method]gpu-bind-group-layout.set-label
+function M.wasi.webgpu.webgpu.GpuBindGroupLayout:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-bind-group-layout.set-label", args, self)
+end
+M.wasi.webgpu.webgpu.GpuBindGroup = M.wasi.webgpu.webgpu.GpuBindGroup or {}
+-- WIT: [method]gpu-bind-group.label -> string
+function M.wasi.webgpu.webgpu.GpuBindGroup:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-bind-group.label", args, self)
+end
+-- WIT: [method]gpu-bind-group.set-label
+function M.wasi.webgpu.webgpu.GpuBindGroup:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-bind-group.set-label", args, self)
+end
+-- WIT: [method]gpu-buffer.destroy
+function M.wasi.webgpu.webgpu.GpuBuffer:destroy(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-buffer.destroy", args, self)
+end
+-- WIT: [method]gpu-buffer.get-mapped-range-get-with-copy -> result<list<u8>, get-mapped-range-error>
+function M.wasi.webgpu.webgpu.GpuBuffer:get_mapped_range_get_with_copy(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-buffer.get-mapped-range-get-with-copy", args, self)
+end
+-- WIT: [method]gpu-buffer.get-mapped-range-set-with-copy -> result<_, get-mapped-range-error>
+function M.wasi.webgpu.webgpu.GpuBuffer:get_mapped_range_set_with_copy(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-buffer.get-mapped-range-set-with-copy", args, self)
+end
+-- WIT: [method]gpu-buffer.label -> string
+function M.wasi.webgpu.webgpu.GpuBuffer:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-buffer.label", args, self)
+end
+-- WIT: [method]gpu-buffer.map-state -> gpu-buffer-map-state
+function M.wasi.webgpu.webgpu.GpuBuffer:map_state(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-buffer.map-state", args, self)
+end
+-- WIT: [method]gpu-buffer.set-label
+function M.wasi.webgpu.webgpu.GpuBuffer:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-buffer.set-label", args, self)
+end
+-- WIT: [method]gpu-buffer.size -> gpu-size64-out
+function M.wasi.webgpu.webgpu.GpuBuffer:size(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-buffer.size", args, self)
+end
+-- WIT: [method]gpu-buffer.unmap -> result<_, unmap-error>
+function M.wasi.webgpu.webgpu.GpuBuffer:unmap(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-buffer.unmap", args, self)
+end
+-- WIT: [method]gpu-buffer.usage -> gpu-buffer-usage
+function M.wasi.webgpu.webgpu.GpuBuffer:usage(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-buffer.usage", args, self)
+end
+M.wasi.webgpu.webgpu.GpuCanvasContext = M.wasi.webgpu.webgpu.GpuCanvasContext or {}
+-- WIT: [method]gpu-canvas-context.configure
+function M.wasi.webgpu.webgpu.GpuCanvasContext:configure(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-canvas-context.configure", args, self)
+end
+-- WIT: [method]gpu-canvas-context.get-configuration -> option<gpu-canvas-configuration-owned>
+function M.wasi.webgpu.webgpu.GpuCanvasContext:get_configuration(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-canvas-context.get-configuration", args, self)
+end
+-- WIT: [method]gpu-canvas-context.get-current-texture -> own<gpu-texture>
+function M.wasi.webgpu.webgpu.GpuCanvasContext:get_current_texture(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-canvas-context.get-current-texture", args, self)
+end
+-- WIT: [method]gpu-canvas-context.unconfigure
+function M.wasi.webgpu.webgpu.GpuCanvasContext:unconfigure(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-canvas-context.unconfigure", args, self)
+end
+M.wasi.webgpu.webgpu.GpuCommandBuffer = M.wasi.webgpu.webgpu.GpuCommandBuffer or {}
+-- WIT: [method]gpu-command-buffer.label -> string
+function M.wasi.webgpu.webgpu.GpuCommandBuffer:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-command-buffer.label", args, self)
+end
+-- WIT: [method]gpu-command-buffer.set-label
+function M.wasi.webgpu.webgpu.GpuCommandBuffer:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-command-buffer.set-label", args, self)
+end
+M.wasi.webgpu.webgpu.GpuCommandEncoder = M.wasi.webgpu.webgpu.GpuCommandEncoder or {}
+-- WIT: [method]gpu-command-encoder.begin-compute-pass -> own<gpu-compute-pass-encoder>
+function M.wasi.webgpu.webgpu.GpuCommandEncoder:begin_compute_pass(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-command-encoder.begin-compute-pass", args, self)
+end
+-- WIT: [method]gpu-command-encoder.begin-render-pass -> own<gpu-render-pass-encoder>
+function M.wasi.webgpu.webgpu.GpuCommandEncoder:begin_render_pass(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-command-encoder.begin-render-pass", args, self)
+end
+-- WIT: [method]gpu-command-encoder.clear-buffer
+function M.wasi.webgpu.webgpu.GpuCommandEncoder:clear_buffer(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-command-encoder.clear-buffer", args, self)
+end
+-- WIT: [method]gpu-command-encoder.copy-buffer-to-buffer
+function M.wasi.webgpu.webgpu.GpuCommandEncoder:copy_buffer_to_buffer(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-command-encoder.copy-buffer-to-buffer", args, self)
+end
+-- WIT: [method]gpu-command-encoder.copy-buffer-to-texture
+function M.wasi.webgpu.webgpu.GpuCommandEncoder:copy_buffer_to_texture(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-command-encoder.copy-buffer-to-texture", args, self)
+end
+-- WIT: [method]gpu-command-encoder.copy-texture-to-buffer
+function M.wasi.webgpu.webgpu.GpuCommandEncoder:copy_texture_to_buffer(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-command-encoder.copy-texture-to-buffer", args, self)
+end
+-- WIT: [method]gpu-command-encoder.copy-texture-to-texture
+function M.wasi.webgpu.webgpu.GpuCommandEncoder:copy_texture_to_texture(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-command-encoder.copy-texture-to-texture", args, self)
+end
+-- WIT: [method]gpu-command-encoder.finish -> own<gpu-command-buffer>
+function M.wasi.webgpu.webgpu.GpuCommandEncoder:finish(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-command-encoder.finish", args, self)
+end
+-- WIT: [method]gpu-command-encoder.insert-debug-marker
+function M.wasi.webgpu.webgpu.GpuCommandEncoder:insert_debug_marker(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-command-encoder.insert-debug-marker", args, self)
+end
+-- WIT: [method]gpu-command-encoder.label -> string
+function M.wasi.webgpu.webgpu.GpuCommandEncoder:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-command-encoder.label", args, self)
+end
+-- WIT: [method]gpu-command-encoder.pop-debug-group
+function M.wasi.webgpu.webgpu.GpuCommandEncoder:pop_debug_group(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-command-encoder.pop-debug-group", args, self)
+end
+-- WIT: [method]gpu-command-encoder.push-debug-group
+function M.wasi.webgpu.webgpu.GpuCommandEncoder:push_debug_group(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-command-encoder.push-debug-group", args, self)
+end
+-- WIT: [method]gpu-command-encoder.resolve-query-set
+function M.wasi.webgpu.webgpu.GpuCommandEncoder:resolve_query_set(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-command-encoder.resolve-query-set", args, self)
+end
+-- WIT: [method]gpu-command-encoder.set-label
+function M.wasi.webgpu.webgpu.GpuCommandEncoder:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-command-encoder.set-label", args, self)
+end
+M.wasi.webgpu.webgpu.GpuCompilationInfo = M.wasi.webgpu.webgpu.GpuCompilationInfo or {}
+-- WIT: [method]gpu-compilation-info.messages -> list<own<gpu-compilation-message>>
+function M.wasi.webgpu.webgpu.GpuCompilationInfo:messages(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compilation-info.messages", args, self)
+end
+M.wasi.webgpu.webgpu.GpuCompilationMessage = M.wasi.webgpu.webgpu.GpuCompilationMessage or {}
+-- WIT: [method]gpu-compilation-message.length -> u64
+function M.wasi.webgpu.webgpu.GpuCompilationMessage:length(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compilation-message.length", args, self)
+end
+-- WIT: [method]gpu-compilation-message.line-num -> u64
+function M.wasi.webgpu.webgpu.GpuCompilationMessage:line_num(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compilation-message.line-num", args, self)
+end
+-- WIT: [method]gpu-compilation-message.line-pos -> u64
+function M.wasi.webgpu.webgpu.GpuCompilationMessage:line_pos(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compilation-message.line-pos", args, self)
+end
+-- WIT: [method]gpu-compilation-message.message -> string
+function M.wasi.webgpu.webgpu.GpuCompilationMessage:message(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compilation-message.message", args, self)
+end
+-- WIT: [method]gpu-compilation-message.offset -> u64
+function M.wasi.webgpu.webgpu.GpuCompilationMessage:offset(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compilation-message.offset", args, self)
+end
+-- WIT: [method]gpu-compilation-message.type -> gpu-compilation-message-type
+function M.wasi.webgpu.webgpu.GpuCompilationMessage:type(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compilation-message.type", args, self)
+end
+M.wasi.webgpu.webgpu.GpuComputePassEncoder = M.wasi.webgpu.webgpu.GpuComputePassEncoder or {}
+-- WIT: [method]gpu-compute-pass-encoder.dispatch-workgroups
+function M.wasi.webgpu.webgpu.GpuComputePassEncoder:dispatch_workgroups(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compute-pass-encoder.dispatch-workgroups", args, self)
+end
+-- WIT: [method]gpu-compute-pass-encoder.dispatch-workgroups-indirect
+function M.wasi.webgpu.webgpu.GpuComputePassEncoder:dispatch_workgroups_indirect(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compute-pass-encoder.dispatch-workgroups-indirect", args, self)
+end
+-- WIT: [method]gpu-compute-pass-encoder.end
+function M.wasi.webgpu.webgpu.GpuComputePassEncoder:_end(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compute-pass-encoder.end", args, self)
+end
+-- WIT: [method]gpu-compute-pass-encoder.insert-debug-marker
+function M.wasi.webgpu.webgpu.GpuComputePassEncoder:insert_debug_marker(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compute-pass-encoder.insert-debug-marker", args, self)
+end
+-- WIT: [method]gpu-compute-pass-encoder.label -> string
+function M.wasi.webgpu.webgpu.GpuComputePassEncoder:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compute-pass-encoder.label", args, self)
+end
+-- WIT: [method]gpu-compute-pass-encoder.pop-debug-group
+function M.wasi.webgpu.webgpu.GpuComputePassEncoder:pop_debug_group(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compute-pass-encoder.pop-debug-group", args, self)
+end
+-- WIT: [method]gpu-compute-pass-encoder.push-debug-group
+function M.wasi.webgpu.webgpu.GpuComputePassEncoder:push_debug_group(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compute-pass-encoder.push-debug-group", args, self)
+end
+-- WIT: [method]gpu-compute-pass-encoder.set-bind-group -> result<_, set-bind-group-error>
+function M.wasi.webgpu.webgpu.GpuComputePassEncoder:set_bind_group(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compute-pass-encoder.set-bind-group", args, self)
+end
+-- WIT: [method]gpu-compute-pass-encoder.set-immediates
+function M.wasi.webgpu.webgpu.GpuComputePassEncoder:set_immediates(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compute-pass-encoder.set-immediates", args, self)
+end
+-- WIT: [method]gpu-compute-pass-encoder.set-label
+function M.wasi.webgpu.webgpu.GpuComputePassEncoder:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compute-pass-encoder.set-label", args, self)
+end
+-- WIT: [method]gpu-compute-pass-encoder.set-pipeline
+function M.wasi.webgpu.webgpu.GpuComputePassEncoder:set_pipeline(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compute-pass-encoder.set-pipeline", args, self)
+end
+M.wasi.webgpu.webgpu.GpuComputePipeline = M.wasi.webgpu.webgpu.GpuComputePipeline or {}
+-- WIT: [method]gpu-compute-pipeline.get-bind-group-layout -> own<gpu-bind-group-layout>
+function M.wasi.webgpu.webgpu.GpuComputePipeline:get_bind_group_layout(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compute-pipeline.get-bind-group-layout", args, self)
+end
+-- WIT: [method]gpu-compute-pipeline.label -> string
+function M.wasi.webgpu.webgpu.GpuComputePipeline:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compute-pipeline.label", args, self)
+end
+-- WIT: [method]gpu-compute-pipeline.set-label
+function M.wasi.webgpu.webgpu.GpuComputePipeline:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-compute-pipeline.set-label", args, self)
+end
+M.wasi.webgpu.webgpu.GpuDeviceLostInfo = M.wasi.webgpu.webgpu.GpuDeviceLostInfo or {}
+-- WIT: [method]gpu-device-lost-info.message -> string
+function M.wasi.webgpu.webgpu.GpuDeviceLostInfo:message(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device-lost-info.message", args, self)
+end
+-- WIT: [method]gpu-device-lost-info.reason -> gpu-device-lost-reason
+function M.wasi.webgpu.webgpu.GpuDeviceLostInfo:reason(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device-lost-info.reason", args, self)
+end
+-- WIT: [method]gpu-device.adapter-info -> own<gpu-adapter-info>
+function M.wasi.webgpu.webgpu.GpuDevice:adapter_info(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.adapter-info", args, self)
+end
+-- WIT: [method]gpu-device.create-bind-group -> own<gpu-bind-group>
+function M.wasi.webgpu.webgpu.GpuDevice:create_bind_group(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.create-bind-group", args, self)
+end
+-- WIT: [method]gpu-device.create-bind-group-layout -> own<gpu-bind-group-layout>
+function M.wasi.webgpu.webgpu.GpuDevice:create_bind_group_layout(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.create-bind-group-layout", args, self)
+end
+-- WIT: [method]gpu-device.create-buffer -> own<gpu-buffer>
+function M.wasi.webgpu.webgpu.GpuDevice:create_buffer(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.create-buffer", args, self)
+end
+-- WIT: [method]gpu-device.create-command-encoder -> own<gpu-command-encoder>
+function M.wasi.webgpu.webgpu.GpuDevice:create_command_encoder(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.create-command-encoder", args, self)
+end
+-- WIT: [method]gpu-device.create-compute-pipeline -> own<gpu-compute-pipeline>
+function M.wasi.webgpu.webgpu.GpuDevice:create_compute_pipeline(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.create-compute-pipeline", args, self)
+end
+-- WIT: [method]gpu-device.create-pipeline-layout -> own<gpu-pipeline-layout>
+function M.wasi.webgpu.webgpu.GpuDevice:create_pipeline_layout(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.create-pipeline-layout", args, self)
+end
+-- WIT: [method]gpu-device.create-query-set -> result<own<gpu-query-set>, create-query-set-error>
+function M.wasi.webgpu.webgpu.GpuDevice:create_query_set(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.create-query-set", args, self)
+end
+-- WIT: [method]gpu-device.create-render-bundle-encoder -> own<gpu-render-bundle-encoder>
+function M.wasi.webgpu.webgpu.GpuDevice:create_render_bundle_encoder(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.create-render-bundle-encoder", args, self)
+end
+-- WIT: [method]gpu-device.create-render-pipeline -> own<gpu-render-pipeline>
+function M.wasi.webgpu.webgpu.GpuDevice:create_render_pipeline(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.create-render-pipeline", args, self)
+end
+-- WIT: [method]gpu-device.create-sampler -> own<gpu-sampler>
+function M.wasi.webgpu.webgpu.GpuDevice:create_sampler(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.create-sampler", args, self)
+end
+-- WIT: [method]gpu-device.create-shader-module -> own<gpu-shader-module>
+function M.wasi.webgpu.webgpu.GpuDevice:create_shader_module(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.create-shader-module", args, self)
+end
+-- WIT: [method]gpu-device.create-texture -> own<gpu-texture>
+function M.wasi.webgpu.webgpu.GpuDevice:create_texture(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.create-texture", args, self)
+end
+-- WIT: [method]gpu-device.destroy
+function M.wasi.webgpu.webgpu.GpuDevice:destroy(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.destroy", args, self)
+end
+-- WIT: [method]gpu-device.features -> own<gpu-supported-features>
+function M.wasi.webgpu.webgpu.GpuDevice:features(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.features", args, self)
+end
+-- WIT: [method]gpu-device.label -> string
+function M.wasi.webgpu.webgpu.GpuDevice:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.label", args, self)
+end
+-- WIT: [method]gpu-device.limits -> own<gpu-supported-limits>
+function M.wasi.webgpu.webgpu.GpuDevice:limits(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.limits", args, self)
+end
+-- WIT: [method]gpu-device.lost -> future<own<gpu-device-lost-info>>
+function M.wasi.webgpu.webgpu.GpuDevice:lost(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.lost", args, self)
+end
+-- WIT: [method]gpu-device.on-uncaptured-error -> stream<own<gpu-error>>
+function M.wasi.webgpu.webgpu.GpuDevice:on_uncaptured_error(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.on-uncaptured-error", args, self)
+end
+-- WIT: [method]gpu-device.push-error-scope
+function M.wasi.webgpu.webgpu.GpuDevice:push_error_scope(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.push-error-scope", args, self)
+end
+-- WIT: [method]gpu-device.queue -> own<gpu-queue>
+function M.wasi.webgpu.webgpu.GpuDevice:queue(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.queue", args, self)
+end
+-- WIT: [method]gpu-device.set-label
+function M.wasi.webgpu.webgpu.GpuDevice:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-device.set-label", args, self)
+end
+M.wasi.webgpu.webgpu.GpuError = M.wasi.webgpu.webgpu.GpuError or {}
+-- WIT: [method]gpu-error.kind -> gpu-error-kind
+function M.wasi.webgpu.webgpu.GpuError:kind(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-error.kind", args, self)
+end
+-- WIT: [method]gpu-error.message -> string
+function M.wasi.webgpu.webgpu.GpuError:message(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-error.message", args, self)
+end
+M.wasi.webgpu.webgpu.GpuPipelineLayout = M.wasi.webgpu.webgpu.GpuPipelineLayout or {}
+-- WIT: [method]gpu-pipeline-layout.label -> string
+function M.wasi.webgpu.webgpu.GpuPipelineLayout:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-pipeline-layout.label", args, self)
+end
+-- WIT: [method]gpu-pipeline-layout.set-label
+function M.wasi.webgpu.webgpu.GpuPipelineLayout:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-pipeline-layout.set-label", args, self)
+end
+M.wasi.webgpu.webgpu.GpuQuerySet = M.wasi.webgpu.webgpu.GpuQuerySet or {}
+-- WIT: [method]gpu-query-set.count -> gpu-size32-out
+function M.wasi.webgpu.webgpu.GpuQuerySet:count(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-query-set.count", args, self)
+end
+-- WIT: [method]gpu-query-set.destroy
+function M.wasi.webgpu.webgpu.GpuQuerySet:destroy(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-query-set.destroy", args, self)
+end
+-- WIT: [method]gpu-query-set.label -> string
+function M.wasi.webgpu.webgpu.GpuQuerySet:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-query-set.label", args, self)
+end
+-- WIT: [method]gpu-query-set.set-label
+function M.wasi.webgpu.webgpu.GpuQuerySet:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-query-set.set-label", args, self)
+end
+-- WIT: [method]gpu-query-set.type -> gpu-query-type
+function M.wasi.webgpu.webgpu.GpuQuerySet:type(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-query-set.type", args, self)
+end
+-- WIT: [method]gpu-queue.label -> string
+function M.wasi.webgpu.webgpu.GpuQueue:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-queue.label", args, self)
+end
+-- WIT: [method]gpu-queue.set-label
+function M.wasi.webgpu.webgpu.GpuQueue:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-queue.set-label", args, self)
+end
+-- WIT: [method]gpu-queue.submit
+function M.wasi.webgpu.webgpu.GpuQueue:submit(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-queue.submit", args, self)
+end
+-- WIT: [method]gpu-queue.write-buffer-with-copy -> result<_, write-buffer-error>
+function M.wasi.webgpu.webgpu.GpuQueue:write_buffer_with_copy(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-queue.write-buffer-with-copy", args, self)
+end
+-- WIT: [method]gpu-queue.write-texture-with-copy
+function M.wasi.webgpu.webgpu.GpuQueue:write_texture_with_copy(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-queue.write-texture-with-copy", args, self)
+end
+M.wasi.webgpu.webgpu.GpuRenderBundleEncoder = M.wasi.webgpu.webgpu.GpuRenderBundleEncoder or {}
+-- WIT: [method]gpu-render-bundle-encoder.draw
+function M.wasi.webgpu.webgpu.GpuRenderBundleEncoder:draw(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-bundle-encoder.draw", args, self)
+end
+-- WIT: [method]gpu-render-bundle-encoder.draw-indexed
+function M.wasi.webgpu.webgpu.GpuRenderBundleEncoder:draw_indexed(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-bundle-encoder.draw-indexed", args, self)
+end
+-- WIT: [method]gpu-render-bundle-encoder.draw-indexed-indirect
+function M.wasi.webgpu.webgpu.GpuRenderBundleEncoder:draw_indexed_indirect(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-bundle-encoder.draw-indexed-indirect", args, self)
+end
+-- WIT: [method]gpu-render-bundle-encoder.draw-indirect
+function M.wasi.webgpu.webgpu.GpuRenderBundleEncoder:draw_indirect(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-bundle-encoder.draw-indirect", args, self)
+end
+-- WIT: [method]gpu-render-bundle-encoder.finish -> own<gpu-render-bundle>
+function M.wasi.webgpu.webgpu.GpuRenderBundleEncoder:finish(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-bundle-encoder.finish", args, self)
+end
+-- WIT: [method]gpu-render-bundle-encoder.insert-debug-marker
+function M.wasi.webgpu.webgpu.GpuRenderBundleEncoder:insert_debug_marker(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-bundle-encoder.insert-debug-marker", args, self)
+end
+-- WIT: [method]gpu-render-bundle-encoder.label -> string
+function M.wasi.webgpu.webgpu.GpuRenderBundleEncoder:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-bundle-encoder.label", args, self)
+end
+-- WIT: [method]gpu-render-bundle-encoder.pop-debug-group
+function M.wasi.webgpu.webgpu.GpuRenderBundleEncoder:pop_debug_group(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-bundle-encoder.pop-debug-group", args, self)
+end
+-- WIT: [method]gpu-render-bundle-encoder.push-debug-group
+function M.wasi.webgpu.webgpu.GpuRenderBundleEncoder:push_debug_group(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-bundle-encoder.push-debug-group", args, self)
+end
+-- WIT: [method]gpu-render-bundle-encoder.set-bind-group -> result<_, set-bind-group-error>
+function M.wasi.webgpu.webgpu.GpuRenderBundleEncoder:set_bind_group(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-bundle-encoder.set-bind-group", args, self)
+end
+-- WIT: [method]gpu-render-bundle-encoder.set-immediates
+function M.wasi.webgpu.webgpu.GpuRenderBundleEncoder:set_immediates(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-bundle-encoder.set-immediates", args, self)
+end
+-- WIT: [method]gpu-render-bundle-encoder.set-index-buffer
+function M.wasi.webgpu.webgpu.GpuRenderBundleEncoder:set_index_buffer(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-bundle-encoder.set-index-buffer", args, self)
+end
+-- WIT: [method]gpu-render-bundle-encoder.set-label
+function M.wasi.webgpu.webgpu.GpuRenderBundleEncoder:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-bundle-encoder.set-label", args, self)
+end
+-- WIT: [method]gpu-render-bundle-encoder.set-pipeline
+function M.wasi.webgpu.webgpu.GpuRenderBundleEncoder:set_pipeline(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-bundle-encoder.set-pipeline", args, self)
+end
+-- WIT: [method]gpu-render-bundle-encoder.set-vertex-buffer
+function M.wasi.webgpu.webgpu.GpuRenderBundleEncoder:set_vertex_buffer(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-bundle-encoder.set-vertex-buffer", args, self)
+end
+M.wasi.webgpu.webgpu.GpuRenderBundle = M.wasi.webgpu.webgpu.GpuRenderBundle or {}
+-- WIT: [method]gpu-render-bundle.label -> string
+function M.wasi.webgpu.webgpu.GpuRenderBundle:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-bundle.label", args, self)
+end
+-- WIT: [method]gpu-render-bundle.set-label
+function M.wasi.webgpu.webgpu.GpuRenderBundle:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-bundle.set-label", args, self)
+end
+M.wasi.webgpu.webgpu.GpuRenderPassEncoder = M.wasi.webgpu.webgpu.GpuRenderPassEncoder or {}
+-- WIT: [method]gpu-render-pass-encoder.begin-occlusion-query
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:begin_occlusion_query(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.begin-occlusion-query", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.draw
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:draw(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.draw", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.draw-indexed
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:draw_indexed(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.draw-indexed", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.draw-indexed-indirect
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:draw_indexed_indirect(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.draw-indexed-indirect", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.draw-indirect
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:draw_indirect(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.draw-indirect", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.end
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:_end(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.end", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.end-occlusion-query
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:end_occlusion_query(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.end-occlusion-query", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.execute-bundles
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:execute_bundles(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.execute-bundles", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.insert-debug-marker
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:insert_debug_marker(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.insert-debug-marker", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.label -> string
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.label", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.pop-debug-group
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:pop_debug_group(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.pop-debug-group", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.push-debug-group
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:push_debug_group(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.push-debug-group", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.set-bind-group -> result<_, set-bind-group-error>
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:set_bind_group(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.set-bind-group", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.set-blend-constant
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:set_blend_constant(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.set-blend-constant", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.set-immediates
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:set_immediates(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.set-immediates", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.set-index-buffer
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:set_index_buffer(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.set-index-buffer", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.set-label
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.set-label", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.set-pipeline
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:set_pipeline(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.set-pipeline", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.set-scissor-rect
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:set_scissor_rect(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.set-scissor-rect", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.set-stencil-reference
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:set_stencil_reference(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.set-stencil-reference", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.set-vertex-buffer
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:set_vertex_buffer(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.set-vertex-buffer", args, self)
+end
+-- WIT: [method]gpu-render-pass-encoder.set-viewport
+function M.wasi.webgpu.webgpu.GpuRenderPassEncoder:set_viewport(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pass-encoder.set-viewport", args, self)
+end
+M.wasi.webgpu.webgpu.GpuRenderPipeline = M.wasi.webgpu.webgpu.GpuRenderPipeline or {}
+-- WIT: [method]gpu-render-pipeline.get-bind-group-layout -> own<gpu-bind-group-layout>
+function M.wasi.webgpu.webgpu.GpuRenderPipeline:get_bind_group_layout(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pipeline.get-bind-group-layout", args, self)
+end
+-- WIT: [method]gpu-render-pipeline.label -> string
+function M.wasi.webgpu.webgpu.GpuRenderPipeline:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pipeline.label", args, self)
+end
+-- WIT: [method]gpu-render-pipeline.set-label
+function M.wasi.webgpu.webgpu.GpuRenderPipeline:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-render-pipeline.set-label", args, self)
+end
+M.wasi.webgpu.webgpu.GpuSampler = M.wasi.webgpu.webgpu.GpuSampler or {}
+-- WIT: [method]gpu-sampler.label -> string
+function M.wasi.webgpu.webgpu.GpuSampler:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-sampler.label", args, self)
+end
+-- WIT: [method]gpu-sampler.set-label
+function M.wasi.webgpu.webgpu.GpuSampler:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-sampler.set-label", args, self)
+end
+-- WIT: [method]gpu-shader-module.label -> string
+function M.wasi.webgpu.webgpu.GpuShaderModule:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-shader-module.label", args, self)
+end
+-- WIT: [method]gpu-shader-module.set-label
+function M.wasi.webgpu.webgpu.GpuShaderModule:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-shader-module.set-label", args, self)
+end
+M.wasi.webgpu.webgpu.GpuSupportedFeatures = M.wasi.webgpu.webgpu.GpuSupportedFeatures or {}
+-- WIT: [method]gpu-supported-features.has -> bool
+function M.wasi.webgpu.webgpu.GpuSupportedFeatures:has(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-features.has", args, self)
+end
+M.wasi.webgpu.webgpu.GpuSupportedLimits = M.wasi.webgpu.webgpu.GpuSupportedLimits or {}
+-- WIT: [method]gpu-supported-limits.max-bind-groups -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_bind_groups(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-bind-groups", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-bind-groups-plus-vertex-buffers -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_bind_groups_plus_vertex_buffers(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-bind-groups-plus-vertex-buffers", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-bindings-per-bind-group -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_bindings_per_bind_group(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-bindings-per-bind-group", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-buffer-size -> u64
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_buffer_size(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-buffer-size", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-color-attachment-bytes-per-sample -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_color_attachment_bytes_per_sample(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-color-attachment-bytes-per-sample", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-color-attachments -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_color_attachments(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-color-attachments", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-compute-invocations-per-workgroup -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_compute_invocations_per_workgroup(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-compute-invocations-per-workgroup", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-compute-workgroup-size-x -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_compute_workgroup_size_x(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-compute-workgroup-size-x", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-compute-workgroup-size-y -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_compute_workgroup_size_y(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-compute-workgroup-size-y", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-compute-workgroup-size-z -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_compute_workgroup_size_z(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-compute-workgroup-size-z", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-compute-workgroup-storage-size -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_compute_workgroup_storage_size(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-compute-workgroup-storage-size", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-compute-workgroups-per-dimension -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_compute_workgroups_per_dimension(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-compute-workgroups-per-dimension", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-dynamic-storage-buffers-per-pipeline-layout -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_dynamic_storage_buffers_per_pipeline_layout(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-dynamic-storage-buffers-per-pipeline-layout", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-dynamic-uniform-buffers-per-pipeline-layout -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_dynamic_uniform_buffers_per_pipeline_layout(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-dynamic-uniform-buffers-per-pipeline-layout", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-immediate-size -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_immediate_size(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-immediate-size", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-inter-stage-shader-variables -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_inter_stage_shader_variables(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-inter-stage-shader-variables", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-sampled-textures-per-shader-stage -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_sampled_textures_per_shader_stage(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-sampled-textures-per-shader-stage", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-samplers-per-shader-stage -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_samplers_per_shader_stage(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-samplers-per-shader-stage", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-storage-buffer-binding-size -> u64
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_storage_buffer_binding_size(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-storage-buffer-binding-size", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-storage-buffers-in-fragment-stage -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_storage_buffers_in_fragment_stage(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-storage-buffers-in-fragment-stage", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-storage-buffers-in-vertex-stage -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_storage_buffers_in_vertex_stage(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-storage-buffers-in-vertex-stage", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-storage-buffers-per-shader-stage -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_storage_buffers_per_shader_stage(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-storage-buffers-per-shader-stage", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-storage-textures-in-fragment-stage -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_storage_textures_in_fragment_stage(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-storage-textures-in-fragment-stage", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-storage-textures-in-vertex-stage -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_storage_textures_in_vertex_stage(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-storage-textures-in-vertex-stage", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-storage-textures-per-shader-stage -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_storage_textures_per_shader_stage(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-storage-textures-per-shader-stage", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-texture-array-layers -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_texture_array_layers(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-texture-array-layers", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-texture-dimension1-d -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_texture_dimension1_d(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-texture-dimension1-d", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-texture-dimension2-d -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_texture_dimension2_d(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-texture-dimension2-d", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-texture-dimension3-d -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_texture_dimension3_d(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-texture-dimension3-d", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-uniform-buffer-binding-size -> u64
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_uniform_buffer_binding_size(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-uniform-buffer-binding-size", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-uniform-buffers-per-shader-stage -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_uniform_buffers_per_shader_stage(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-uniform-buffers-per-shader-stage", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-vertex-attributes -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_vertex_attributes(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-vertex-attributes", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-vertex-buffer-array-stride -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_vertex_buffer_array_stride(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-vertex-buffer-array-stride", args, self)
+end
+-- WIT: [method]gpu-supported-limits.max-vertex-buffers -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:max_vertex_buffers(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.max-vertex-buffers", args, self)
+end
+-- WIT: [method]gpu-supported-limits.min-storage-buffer-offset-alignment -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:min_storage_buffer_offset_alignment(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.min-storage-buffer-offset-alignment", args, self)
+end
+-- WIT: [method]gpu-supported-limits.min-uniform-buffer-offset-alignment -> u32
+function M.wasi.webgpu.webgpu.GpuSupportedLimits:min_uniform_buffer_offset_alignment(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-supported-limits.min-uniform-buffer-offset-alignment", args, self)
+end
+M.wasi.webgpu.webgpu.GpuTextureView = M.wasi.webgpu.webgpu.GpuTextureView or {}
+-- WIT: [method]gpu-texture-view.label -> string
+function M.wasi.webgpu.webgpu.GpuTextureView:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-texture-view.label", args, self)
+end
+-- WIT: [method]gpu-texture-view.set-label
+function M.wasi.webgpu.webgpu.GpuTextureView:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-texture-view.set-label", args, self)
+end
+M.wasi.webgpu.webgpu.GpuTexture = M.wasi.webgpu.webgpu.GpuTexture or {}
+-- WIT: [method]gpu-texture.create-view -> own<gpu-texture-view>
+function M.wasi.webgpu.webgpu.GpuTexture:create_view(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-texture.create-view", args, self)
+end
+-- WIT: [method]gpu-texture.depth-or-array-layers -> gpu-integer-coordinate-out
+function M.wasi.webgpu.webgpu.GpuTexture:depth_or_array_layers(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-texture.depth-or-array-layers", args, self)
+end
+-- WIT: [method]gpu-texture.destroy
+function M.wasi.webgpu.webgpu.GpuTexture:destroy(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-texture.destroy", args, self)
+end
+-- WIT: [method]gpu-texture.dimension -> gpu-texture-dimension
+function M.wasi.webgpu.webgpu.GpuTexture:dimension(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-texture.dimension", args, self)
+end
+-- WIT: [method]gpu-texture.format -> gpu-texture-format
+function M.wasi.webgpu.webgpu.GpuTexture:format(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-texture.format", args, self)
+end
+-- WIT: [method]gpu-texture.height -> gpu-integer-coordinate-out
+function M.wasi.webgpu.webgpu.GpuTexture:height(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-texture.height", args, self)
+end
+-- WIT: [method]gpu-texture.label -> string
+function M.wasi.webgpu.webgpu.GpuTexture:label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-texture.label", args, self)
+end
+-- WIT: [method]gpu-texture.mip-level-count -> gpu-integer-coordinate-out
+function M.wasi.webgpu.webgpu.GpuTexture:mip_level_count(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-texture.mip-level-count", args, self)
+end
+-- WIT: [method]gpu-texture.sample-count -> gpu-size32-out
+function M.wasi.webgpu.webgpu.GpuTexture:sample_count(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-texture.sample-count", args, self)
+end
+-- WIT: [method]gpu-texture.set-label
+function M.wasi.webgpu.webgpu.GpuTexture:set_label(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-texture.set-label", args, self)
+end
+-- WIT: [method]gpu-texture.texture-binding-view-dimension -> option<gpu-texture-view-dimension>
+function M.wasi.webgpu.webgpu.GpuTexture:texture_binding_view_dimension(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-texture.texture-binding-view-dimension", args, self)
+end
+-- WIT: [method]gpu-texture.usage -> gpu-texture-usage
+function M.wasi.webgpu.webgpu.GpuTexture:usage(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-texture.usage", args, self)
+end
+-- WIT: [method]gpu-texture.width -> gpu-integer-coordinate-out
+function M.wasi.webgpu.webgpu.GpuTexture:width(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-texture.width", args, self)
+end
+M.wasi.webgpu.webgpu.GpuUncapturedErrorEvent = M.wasi.webgpu.webgpu.GpuUncapturedErrorEvent or {}
+-- WIT: [method]gpu-uncaptured-error-event.error -> own<gpu-error>
+function M.wasi.webgpu.webgpu.GpuUncapturedErrorEvent:error(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu-uncaptured-error-event.error", args, self)
+end
+-- WIT: [method]gpu.get-preferred-canvas-format -> gpu-texture-format
+function M.wasi.webgpu.webgpu.Gpu:get_preferred_canvas_format(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu.get-preferred-canvas-format", args, self)
+end
+-- WIT: [method]gpu.wgsl-language-features -> own<wgsl-language-features>
+function M.wasi.webgpu.webgpu.Gpu:wgsl_language_features(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "gpu.wgsl-language-features", args, self)
+end
+-- WIT: [method]record-gpu-pipeline-constant-value.add
+function M.wasi.webgpu.webgpu.RecordGpuPipelineConstantValue:add(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "record-gpu-pipeline-constant-value.add", args, self)
+end
+-- WIT: [method]record-gpu-pipeline-constant-value.entries -> list<tuple<string, gpu-pipeline-constant-value>>
+function M.wasi.webgpu.webgpu.RecordGpuPipelineConstantValue:entries(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "record-gpu-pipeline-constant-value.entries", args, self)
+end
+-- WIT: [method]record-gpu-pipeline-constant-value.get -> option<gpu-pipeline-constant-value>
+function M.wasi.webgpu.webgpu.RecordGpuPipelineConstantValue:get(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "record-gpu-pipeline-constant-value.get", args, self)
+end
+-- WIT: [method]record-gpu-pipeline-constant-value.has -> bool
+function M.wasi.webgpu.webgpu.RecordGpuPipelineConstantValue:has(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "record-gpu-pipeline-constant-value.has", args, self)
+end
+-- WIT: [method]record-gpu-pipeline-constant-value.keys -> list<string>
+function M.wasi.webgpu.webgpu.RecordGpuPipelineConstantValue:keys(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "record-gpu-pipeline-constant-value.keys", args, self)
+end
+-- WIT: [method]record-gpu-pipeline-constant-value.remove
+function M.wasi.webgpu.webgpu.RecordGpuPipelineConstantValue:remove(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "record-gpu-pipeline-constant-value.remove", args, self)
+end
+-- WIT: [method]record-gpu-pipeline-constant-value.values -> list<gpu-pipeline-constant-value>
+function M.wasi.webgpu.webgpu.RecordGpuPipelineConstantValue:values(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "record-gpu-pipeline-constant-value.values", args, self)
+end
+-- WIT: [method]record-option-gpu-size64.add
+function M.wasi.webgpu.webgpu.RecordOptionGpuSize64:add(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "record-option-gpu-size64.add", args, self)
+end
+-- WIT: [method]record-option-gpu-size64.entries -> list<tuple<string, option<gpu-size64>>>
+function M.wasi.webgpu.webgpu.RecordOptionGpuSize64:entries(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "record-option-gpu-size64.entries", args, self)
+end
+-- WIT: [method]record-option-gpu-size64.get -> option<option<gpu-size64>>
+function M.wasi.webgpu.webgpu.RecordOptionGpuSize64:get(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "record-option-gpu-size64.get", args, self)
+end
+-- WIT: [method]record-option-gpu-size64.has -> bool
+function M.wasi.webgpu.webgpu.RecordOptionGpuSize64:has(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "record-option-gpu-size64.has", args, self)
+end
+-- WIT: [method]record-option-gpu-size64.keys -> list<string>
+function M.wasi.webgpu.webgpu.RecordOptionGpuSize64:keys(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "record-option-gpu-size64.keys", args, self)
+end
+-- WIT: [method]record-option-gpu-size64.remove
+function M.wasi.webgpu.webgpu.RecordOptionGpuSize64:remove(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "record-option-gpu-size64.remove", args, self)
+end
+-- WIT: [method]record-option-gpu-size64.values -> list<option<gpu-size64>>
+function M.wasi.webgpu.webgpu.RecordOptionGpuSize64:values(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "record-option-gpu-size64.values", args, self)
+end
+M.wasi.webgpu.webgpu.WgslLanguageFeatures = M.wasi.webgpu.webgpu.WgslLanguageFeatures or {}
+-- WIT: [method]wgsl-language-features.has -> bool
+function M.wasi.webgpu.webgpu.WgslLanguageFeatures:has(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "wgsl-language-features.has", args, self)
+end
+-- WIT: get-gpu -> own<gpu>
+function M.wasi.webgpu.webgpu.get_gpu(args)
+  return dispatch("wasi:webgpu@0.3.0-rc.2/webgpu", "get-gpu", args)
+end
+M.wasi.webgpu = M.wasi.webgpu.webgpu
 
 return M

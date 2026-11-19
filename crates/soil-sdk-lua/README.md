@@ -4,6 +4,10 @@ Generate a Lua API from the canonical Soil WIT contracts. The generator does not
 implement any capability; it emits bindings to one host dispatcher so the same
 WIT and the same host implementations remain the source of truth.
 
+The loader reads every `.wit` file under `wit/`, including vendored packages in
+`wit/deps/`. That is how a canonical contract that imports an upstream package
+(for example `soil:present` importing `wasi:webgpu`) resolves as one graph.
+
 ```sh
 cargo run -p soil-sdk-lua -- --wit wit --out crates/soil-sdk-lua/generated
 ```
