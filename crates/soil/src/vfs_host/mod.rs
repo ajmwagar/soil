@@ -997,9 +997,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut host = VfsHost::open(dir.path()).unwrap();
         {
-            let mut vfs = Vfs::open(dir.path()).unwrap();
-            vfs.put("later.txt", b"from ingest", "text/plain", Expect::Any)
+            // A second host updates the shared index too, which is the case
+            // that exposed the stale in-memory cache.
+            let other = VfsHost::open(dir.path()).unwrap();
+            let mut writer = other
+                .begin_writer(
+                    "later.txt".into(),
+                    "text/plain".into(),
+                    None,
+                    None,
+                    None,
+                )
                 .unwrap();
+            writer.write(b"from ingest").unwrap();
+            writer.finish().unwrap();
         }
         let page = host.ls("".into(), 0, 10).unwrap();
         assert!(page.entries.iter().any(|entry| entry.path == "later.txt"));
