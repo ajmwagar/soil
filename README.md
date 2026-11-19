@@ -63,7 +63,7 @@ Principles:
 | [`soil:unibus@0.1.0`](wit/soil-unibus.wit) | `soil:unibus` observe/publish | bounded poll/publish over the host-owned bus |
 | [`soil:media@0.1.0`](wit/soil-media.wit) | `soil:media`, optional `soil:media-encoded` | host playback, encoded chunks, bounded image readback |
 | [`soil:surface-import@0.1.0`](wit/soil-surface-import.wit) | `soil:surface-import` | host-owned imported surfaces, damage events, normalized input |
-| [`soil:inference@0.2.0`](wit/soil-inference.wit) | `soil:inference` | WIT + models, tools, completion, SSE stream resource |
+| [`soil:inference@0.3.0`](wit/soil-inference.wit) | `soil:inference` | WIT + models, tools, completion, embeddings, SSE stream resource |
 | [`soil:search@0.6.0`](wit/soil-search.wit) | `soil:search` | WIT + files/records/graph host composition + host-local application inventory + typed `@` mention resolver |
 | [`soil:spore@0.3.0`](wit/soil-spore.wit) | `soil:spore.catalog`, `soil:spore.launch` | installed-Spore catalog and host-owned launch; listing, running and install are separate intents |
 | [`soil:graph@0.1.0`](wit/soil-graph.wit) | `soil:graph` | read-only edge/reference queries over records |

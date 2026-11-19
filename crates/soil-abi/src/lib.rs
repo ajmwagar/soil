@@ -108,8 +108,8 @@ pub const CONTRACTS: &[Contract] = &[
     Contract {
         file: "wit/soil-inference.wit",
         source: include_str!("../../../wit/soil-inference.wit"),
-        package: "soil:inference@0.2.0",
-        interfaces: &[("inference", &["models", "complete", "open-stream", "state"])],
+        package: "soil:inference@0.3.0",
+        interfaces: &[("inference", &["models", "complete", "embed", "open-stream", "state"])],
     },
     Contract {
         file: "wit/soil-spore.wit",
