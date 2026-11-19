@@ -7707,6 +7707,7 @@ dependencies = [
  "serde_json",
  "soil",
  "soil-agent-records",
+ "soil-command",
  "soil-install",
  "soil-spore",
  "soil-web-bridge",
