@@ -25,7 +25,6 @@ pub mod api {
     pub use crate::soil::inference::inference::*;
 }
 
-
 const MAX_CHUNK: usize = 16 * 1024;
 const BASE64_STANDARD: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::STANDARD;
@@ -228,6 +227,92 @@ impl InferenceHost {
     }
 }
 
+impl InferenceHost {
+    fn voice_embed(
+        &mut self,
+        request: api::VoiceEmbeddingRequest,
+    ) -> Result<api::VoiceEmbeddingResponse, api::Error> {
+        if request.pcm16.is_empty()
+            || request.pcm16.len() > 2 * 1024 * 1024
+            || !(8_000..=192_000).contains(&request.sample_rate)
+        {
+            return Err(api::Error::Invalid);
+        }
+        let model = request.model.clone();
+        let boundary = format!(
+            "soil-voice-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let mut body = Vec::with_capacity(request.pcm16.len() + 1024);
+        let mut field = |name: &str, value: &str| {
+            body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            body.extend_from_slice(
+                format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+            );
+            body.extend_from_slice(value.as_bytes());
+            body.extend_from_slice(b"\r\n");
+        };
+        field("model", &request.model);
+        field("checkpoint", &request.checkpoint);
+        field("sample_rate", &request.sample_rate.to_string());
+        if let Some(dimensions) = request.dimensions {
+            field("dimensions", &dimensions.to_string());
+        }
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"file\"; filename=\"utterance.pcm\"\r\n",
+        );
+        body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+        body.extend_from_slice(&request.pcm16);
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+        let response = self
+            .request("POST", &self.url("/v1/audio/embeddings"))
+            .set(
+                "content-type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            )
+            .send_bytes(&body)
+            .map_err(Self::error)?;
+        let value: Value = response.into_json().map_err(|_| api::Error::Io)?;
+        let embedding = value
+            .get("embedding")
+            .and_then(Value::as_array)
+            .ok_or(api::Error::Io)?
+            .iter()
+            .map(|value| value.as_f64().map(|value| value as f32))
+            .collect::<Option<Vec<f32>>>()
+            .ok_or(api::Error::Io)?;
+        if embedding.is_empty()
+            || request
+                .dimensions
+                .is_some_and(|dimensions| embedding.len() != dimensions as usize)
+        {
+            return Err(api::Error::Invalid);
+        }
+        let usage = value.get("usage").and_then(|usage| {
+            Some(api::EmbedUsage {
+                prompt_tokens: u32::try_from(usage.get("prompt_tokens")?.as_u64()?).ok()?,
+                total_tokens: u32::try_from(usage.get("total_tokens")?.as_u64()?).ok()?,
+            })
+        });
+        Ok(api::VoiceEmbeddingResponse {
+            model: value
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or(&model)
+                .to_string(),
+            embedding,
+            usage,
+        })
+    }
+}
+
 impl api::Host for InferenceHost {
     fn models(&mut self) -> Result<Vec<api::Model>, api::Error> {
         let response = self
@@ -275,7 +360,8 @@ impl api::Host for InferenceHost {
         Ok(models)
     }
 
-    fn complete(&mut self, request: api::Request) -> Result<api::Response, api::Error> {        let body = self.body(&request, false)?;
+    fn complete(&mut self, request: api::Request) -> Result<api::Response, api::Error> {
+        let body = self.body(&request, false)?;
         let response = self
             .request("POST", &self.url("/v1/chat/completions"))
             .set("content-type", "application/json")
@@ -419,6 +505,13 @@ impl api::Host for InferenceHost {
         })
     }
 
+    fn voice_embed(
+        &mut self,
+        request: api::VoiceEmbeddingRequest,
+    ) -> Result<api::VoiceEmbeddingResponse, api::Error> {
+        InferenceHost::voice_embed(self, request)
+    }
+
     fn open_stream(
         &mut self,
         request: api::Request,
@@ -551,6 +644,48 @@ where
 mod tests {
     use super::*;
     use std::thread;
+
+    #[test]
+    fn voice_embed_sends_multipart_pcm_to_the_audio_route() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        let worker = thread::spawn(move || {
+            let mut request = server.recv().unwrap();
+            assert!(request.url().ends_with("/audio/embeddings"));
+            let mut body = Vec::new();
+            request.as_reader().read_to_end(&mut body).unwrap();
+            let body = String::from_utf8_lossy(&body);
+            assert!(body.contains("name=\"model\""));
+            assert!(body.contains("fpl/spkrec-ecapa-voxceleb"));
+            assert!(body.contains("name=\"checkpoint\""));
+            assert!(body.contains("name=\"file\"; filename=\"utterance.pcm\""));
+            request
+                .respond(
+                    tiny_http::Response::from_string(
+                        r#"{"model":"fpl/spkrec-ecapa-voxceleb","embedding":[0.1,0.2],"usage":{"prompt_tokens":4,"total_tokens":4}}"#,
+                    )
+                    .with_header(
+                        tiny_http::Header::from_bytes("content-type", "application/json").unwrap(),
+                    ),
+                )
+                .unwrap();
+        });
+        let mut host = InferenceHost::new(format!("http://{address}"), None, "soil", "default");
+        let response = api::Host::voice_embed(
+            &mut host,
+            api::VoiceEmbeddingRequest {
+                model: "fpl/spkrec-ecapa-voxceleb".into(),
+                checkpoint: "sha256:test".into(),
+                sample_rate: 16_000,
+                dimensions: Some(2),
+                pcm16: vec![0, 0, 1, 0],
+            },
+        )
+        .unwrap();
+        assert_eq!(response.embedding, vec![0.1, 0.2]);
+        assert_eq!(response.usage.unwrap().total_tokens, 4);
+        worker.join().unwrap();
+    }
 
     #[test]
     fn lists_models_and_completes_through_an_upstream() {
