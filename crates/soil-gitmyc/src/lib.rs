@@ -1,0 +1,29 @@
+//! git.myc — the forge as a VFS namespace, not as a control-plane feature.
+//!
+//! A repository at a commit is *a tree of content-addressed files*. That is the
+//! VFS's own model, so the projection belongs here: `fungos-vfs` owns the
+//! namespace, the hydration rule and the content identity (`blake3:`), and this
+//! crate is the pull-through source behind it.
+//!
+//! Three pieces, in dependency order:
+//!
+//! * [`capability`] — an ed25519 capability that authorizes one repository for a
+//!   bounded time, verifiable offline. No credential is copied to a caller, a
+//!   build, or a shell.
+//! * [`project`] — the forge client: resolve a ref once, pin it to a commit, list
+//!   a tree as placeholders, fetch one blob. [`project::ForgeHydrator`] implements
+//!   `fungos_vfs::Hydrator`, so a placeholder hydrates exactly like any other
+//!   VFS node and is verified by the VFS's own content id.
+//! * [`serve`] — the network edge: git smart-HTTP with the ref advertisement
+//!   filtered by the capability, plus `/mint`, `/tree`, `/blob`.
+//!
+//! Deliberate limits: no pack computation (git does that), no write path yet
+//! (refs go through an explicit CAS update, not `receive-pack`), and no refs
+//! database of our own — the forge we already run stays the authority.
+
+pub mod capability;
+pub mod project;
+pub mod serve;
+
+pub use capability::{CapError, Claims, MAX_READ_TTL_SECS, MAX_WRITE_TTL_SECS};
+pub use project::{Forge, Resolved};
