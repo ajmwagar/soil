@@ -318,6 +318,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "audiopus"
+version = "0.3.0-rc.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab55eb0e56d7c6de3d59f544e5db122d7725ec33be6a276ee8241f3be6473955"
+dependencies = [
+ "audiopus_sys",
+]
+
+[[package]]
+name = "audiopus_sys"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62314a1546a2064e033665d658e88c620a62904be945f8147e6b16c3db9f8651"
+dependencies = [
+ "cmake",
+ "log",
+ "pkg-config",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -860,6 +880,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "052af7878466feccda12ba7a6a67d019d712f296809559b47c12c8cc196d3a9a"
 dependencies = [
  "error-code",
+]
+
+[[package]]
+name = "cmake"
+version = "0.1.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -7130,6 +7159,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "soil-agent-host",
+ "soil-codec",
  "soil-inference-host",
  "soil-marbles",
  "tempfile",
@@ -7221,6 +7251,7 @@ dependencies = [
  "anyhow",
  "btleplug",
  "futures-util",
+ "libc",
  "libdbus-sys",
  "serde",
  "serde_json",
@@ -7264,6 +7295,15 @@ dependencies = [
 [[package]]
 name = "soil-canvas-input"
 version = "0.1.0"
+
+[[package]]
+name = "soil-codec"
+version = "0.1.0"
+dependencies = [
+ "audiopus",
+ "hound",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "soil-command"
@@ -7432,6 +7472,7 @@ dependencies = [
  "base64 0.22.1",
  "serde",
  "serde_json",
+ "soil-codec",
  "soil-inference",
  "soil-scrub",
  "tempfile",
@@ -7743,6 +7784,7 @@ dependencies = [
  "soil",
  "soil-agent-records",
  "soil-command",
+ "soil-dev-host",
  "soil-install",
  "soil-spore",
  "soil-web-bridge",
