@@ -143,7 +143,7 @@ impl CommandHost {
     ) -> Result<Self> {
         Ok(Self {
             roots,
-            runner: CommandRunner::new(records)?,
+            runner: CommandRunner::new(records, None)?,
             env: command_identity(principal),
         })
     }
@@ -425,6 +425,20 @@ impl command_abi::Host for Host {
 }
 
 impl vfs_mut::Host for Host {
+    /// Streaming writes are a WIT slice the host has not implemented: soil
+    /// refuses them too, and a denial the guest can read is better than a
+    /// missing interface it cannot link against.
+    fn begin_write(
+        &mut self,
+        _path: String,
+        _media_type: String,
+        _expected_size: Option<u64>,
+        _expected_version: Option<u64>,
+        _mode: Option<u32>,
+    ) -> Result<wasmtime::component::Resource<::soil::vfs_host::VfsWriter>, vfs_mut::Error> {
+        Err(vfs_mut::Error::Denied)
+    }
+
     fn write(
         &mut self,
         path: String,
@@ -459,6 +473,50 @@ impl vfs_mut::Host for Host {
         target: String,
     ) -> Result<vfs_mut::WriteResult, vfs_mut::Error> {
         self.vfs.rename(source, target)
+    }
+}
+
+impl vfs_mut::HostWriter for Host {
+    fn write(
+        &mut self,
+        _writer: wasmtime::component::Resource<::soil::vfs_host::VfsWriter>,
+        _data: Vec<u8>,
+    ) -> Result<u64, vfs_mut::Error> {
+        Err(vfs_mut::Error::Denied)
+    }
+
+    fn finish(
+        &mut self,
+        _writer: wasmtime::component::Resource<::soil::vfs_host::VfsWriter>,
+    ) -> Result<vfs_mut::WriteResult, vfs_mut::Error> {
+        Err(vfs_mut::Error::Denied)
+    }
+
+    fn abort(
+        &mut self,
+        _writer: wasmtime::component::Resource<::soil::vfs_host::VfsWriter>,
+    ) -> Result<(), vfs_mut::Error> {
+        Err(vfs_mut::Error::Denied)
+    }
+
+    fn drop(
+        &mut self,
+        _writer: wasmtime::component::Resource<::soil::vfs_host::VfsWriter>,
+    ) -> Result<(), wasmtime::Error> {
+        Ok(())
+    }
+}
+
+/// Asking by content id is the same question as asking by path, so it is the same
+/// host: `VfsHost` already owns the index and the visibility rule.
+impl ::soil::vfs_host::cid::Host for Host {
+    fn find(
+        &mut self,
+        content_id: String,
+        offset: u64,
+        limit: u32,
+    ) -> Result<::soil::vfs_host::cid::Page, ::soil::vfs_host::cid::Error> {
+        self.vfs.find(content_id, offset, limit)
     }
 }
 

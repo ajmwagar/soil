@@ -109,9 +109,17 @@ pub fn wire_git(command: &mut std::process::Command) {
     command.env("GIT_TERMINAL_PROMPT", "0");
     command.env("GIT_CONFIG_NOSYSTEM", "1");
     command.env("GIT_MYC_CAP_FILE", &capability);
-    // Separate binary, because git runs GIT_ASKPASS as a command with the
-    // prompt as its only argument.
-    let helper = std::env::var_os("GIT_MYC_ASKPASS").unwrap_or_else(|| "gitmyc-askpass".into());
+    // Separate binary, because git runs GIT_ASKPASS as a command with the prompt
+    // as its only argument. Look for it beside this executable first: the two
+    // ship together, and the child's PATH is the seed list, which need not
+    // contain the directory mush was installed into.
+    let helper = std::env::var_os("GIT_MYC_ASKPASS")
+        .or_else(|| {
+            let exe = std::env::current_exe().ok()?;
+            let sibling = exe.parent()?.join("gitmyc-askpass");
+            sibling.is_file().then(|| sibling.into_os_string())
+        })
+        .unwrap_or_else(|| "gitmyc-askpass".into());
     command.env("GIT_ASKPASS", helper);
     // Askpass is only consulted when git wants a credential: keep it from
     // prompting on a terminal that the agent cannot answer.
