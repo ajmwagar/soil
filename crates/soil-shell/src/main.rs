@@ -19,6 +19,7 @@ use fungos_vfs::Vfs;
 mod evdev;
 mod present;
 mod spore;
+mod wss;
 
 fn main() {
     if let Err(error) = run() {
@@ -30,10 +31,12 @@ fn main() {
 fn usage() -> &'static str {
     "usage: soil --root ROOT <command>\n\
      commands:\n\
-       spore run <dir|package.spore> [--listen ADDR] [--hub ADDR]... [--unibus-config FILE]\n\
+       spore run <dir|package.spore> [--mode command|http|ui|web|bridge] [--listen ADDR]...\n\
                                     [--bridge ADDR] [--bridge-wait SECS] [--allow-origin URL]...\n\
                                     [--credential-env NAME] [--appdata-root DIR] [--hue-bridge URL] [--surface window|web|frame|fb]...\n\
                                     [--announce-endpoint URI]... [--announce-unsigned-dev]\n\
+       spore exec <dir|package.spore> [--vfs-root DIR] [--records-root DIR] [--book NAME]\n\
+                                    [--unibus-config FILE] [--hub ADDR]... -- <args...>\n\
        spore warm <dir|package.spore>   compile it into the window host's cache\n\
        install --id SPORE [--json] [--root DIR] [--index FILE] [--packages DIR] [--origin URL]\n\
        command [--root DIR]... [--list] run NAME [ARGS...]\n\

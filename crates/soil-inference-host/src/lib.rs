@@ -21,7 +21,9 @@ wasmtime::component::bindgen!({
     },
 });
 
-use soil::inference::inference as api;
+pub mod api {
+    pub use crate::soil::inference::inference::*;
+}
 
 const MAX_CHUNK: usize = 16 * 1024;
 const BASE64_STANDARD: base64::engine::general_purpose::GeneralPurpose =
@@ -31,9 +33,11 @@ pub struct InferenceHost {
     table: ResourceTable,
     agent: ureq::Agent,
     base_url: String,
+    voice_url: Option<String>,
     api_key: Option<String>,
     provider: String,
     model: String,
+    session_id: Option<String>,
     scrubber: Scrubber,
 }
 
@@ -84,9 +88,11 @@ impl InferenceHost {
             table: ResourceTable::new(),
             agent: ureq::AgentBuilder::new().build(),
             base_url: base_url.into(),
+            voice_url: None,
             api_key,
             provider: provider.into(),
             model: model.into(),
+            session_id: None,
             scrubber: Scrubber::new(),
         }
     }
@@ -101,10 +107,37 @@ impl InferenceHost {
         }
     }
 
+    /// Set the session identifier used by providers that route a conversation
+    /// across requests, such as OpenCode Go (`x-opencode-session`).
+    pub fn with_session(mut self, session: impl Into<String>) -> Self {
+        self.session_id = Some(session.into());
+        self
+    }
+
+    /// Use a dedicated speaker-embedding service. Text inference and voice
+    /// inference can have different hosts and model runtimes.
+    pub fn with_voice_url(mut self, url: impl Into<String>) -> Self {
+        self.voice_url = Some(url.into());
+        self
+    }
+
+    fn url_at(base: &str, path: &str) -> String {
+        let base = base.trim_end_matches('/');
+        let path = path.trim_start_matches('/');
+        if base.ends_with("/v1") {
+            format!("{base}/{}", path.strip_prefix("v1/").unwrap_or(path))
+        } else {
+            format!("{base}/{path}")
+        }
+    }
+
     fn request(&self, method: &str, url: &str) -> ureq::Request {
         let mut request = self.agent.request(method, url);
         if let Some(key) = &self.api_key {
             request = request.set("authorization", &format!("Bearer {key}"));
+        }
+        if let Some(session) = &self.session_id {
+            request = request.set("x-opencode-session", session);
         }
         request
     }
@@ -225,6 +258,93 @@ impl InferenceHost {
     }
 }
 
+impl InferenceHost {
+    fn voice_embed(
+        &mut self,
+        request: api::VoiceEmbeddingRequest,
+    ) -> Result<api::VoiceEmbeddingResponse, api::Error> {
+        if request.pcm16.is_empty()
+            || request.pcm16.len() > 2 * 1024 * 1024
+            || !(8_000..=192_000).contains(&request.sample_rate)
+        {
+            return Err(api::Error::Invalid);
+        }
+        let model = request.model.clone();
+        let boundary = format!(
+            "soil-voice-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let mut body = Vec::with_capacity(request.pcm16.len() + 1024);
+        let mut field = |name: &str, value: &str| {
+            body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            body.extend_from_slice(
+                format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+            );
+            body.extend_from_slice(value.as_bytes());
+            body.extend_from_slice(b"\r\n");
+        };
+        field("model", &request.model);
+        field("checkpoint", &request.checkpoint);
+        field("sample_rate", &request.sample_rate.to_string());
+        if let Some(dimensions) = request.dimensions {
+            field("dimensions", &dimensions.to_string());
+        }
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"file\"; filename=\"utterance.pcm\"\r\n",
+        );
+        body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+        body.extend_from_slice(&request.pcm16);
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+        let voice_base = self.voice_url.as_deref().unwrap_or(&self.base_url);
+        let response = self
+            .request("POST", &Self::url_at(voice_base, "/v1/audio/embeddings"))
+            .set(
+                "content-type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            )
+            .send_bytes(&body)
+            .map_err(Self::error)?;
+        let value: Value = response.into_json().map_err(|_| api::Error::Io)?;
+        let embedding = value
+            .get("embedding")
+            .and_then(Value::as_array)
+            .ok_or(api::Error::Io)?
+            .iter()
+            .map(|value| value.as_f64().map(|value| value as f32))
+            .collect::<Option<Vec<f32>>>()
+            .ok_or(api::Error::Io)?;
+        if embedding.is_empty()
+            || request
+                .dimensions
+                .is_some_and(|dimensions| embedding.len() != dimensions as usize)
+        {
+            return Err(api::Error::Invalid);
+        }
+        let usage = value.get("usage").and_then(|usage| {
+            Some(api::EmbedUsage {
+                prompt_tokens: u32::try_from(usage.get("prompt_tokens")?.as_u64()?).ok()?,
+                total_tokens: u32::try_from(usage.get("total_tokens")?.as_u64()?).ok()?,
+            })
+        });
+        Ok(api::VoiceEmbeddingResponse {
+            model: value
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or(&model)
+                .to_string(),
+            embedding,
+            usage,
+        })
+    }
+}
+
 impl api::Host for InferenceHost {
     fn models(&mut self) -> Result<Vec<api::Model>, api::Error> {
         let response = self
@@ -245,10 +365,25 @@ impl api::Host for InferenceHost {
                             .or_else(|| model.get("context_length"))
                             .and_then(Value::as_u64)
                             .and_then(|value| u32::try_from(value).ok());
+                        let tier = model
+                            .get("tier")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                            .or_else(|| id.strip_prefix("tier/").map(str::to_string));
+                        let capabilities = capabilities(model, &id, tier.as_deref());
+                        let embedding_dimensions = model
+                            .get("embedding_dimensions")
+                            .or_else(|| model.get("embedding-dimensions"))
+                            .or_else(|| model.get("dimensions"))
+                            .and_then(Value::as_u64)
+                            .and_then(|value| u32::try_from(value).ok());
                         Some(api::Model {
                             id,
                             provider: self.provider.clone(),
                             context_window: context,
+                            tier,
+                            capabilities,
+                            embedding_dimensions,
                         })
                     })
                     .collect()
@@ -336,6 +471,77 @@ impl api::Host for InferenceHost {
             finish_reason,
             usage,
         })
+    }
+
+    fn embed(&mut self, request: api::EmbedRequest) -> Result<api::EmbedResponse, api::Error> {
+        let model = request.model.clone();
+        let expected = request.inputs.len();
+        let inputs: Vec<String> = request
+            .inputs
+            .iter()
+            .map(|input| self.scrubber.scrub(input))
+            .collect();
+        let mut body = json!({"model": model, "input": inputs});
+        if let Some(dimensions) = request.dimensions {
+            body["dimensions"] = json!(dimensions);
+        }
+        if let Some(hint) = &request.prompt_cache_key {
+            body["prompt_cache_key"] = json!(hint);
+        }
+        let response = self
+            .request("POST", &self.url("/v1/embeddings"))
+            .set("content-type", "application/json")
+            .send_json(body)
+            .map_err(Self::error)?;
+        let value: Value = response.into_json().map_err(|_| api::Error::Io)?;
+        let mut rows: Vec<(usize, Vec<f32>)> = value
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or(api::Error::Io)?
+            .iter()
+            .enumerate()
+            .filter_map(|(position, row)| {
+                let index = row
+                    .get("index")
+                    .and_then(Value::as_u64)
+                    .map(|index| index as usize)
+                    .unwrap_or(position);
+                let vector = row
+                    .get("embedding")?
+                    .as_array()?
+                    .iter()
+                    .map(|value| value.as_f64().map(|value| value as f32))
+                    .collect::<Option<Vec<f32>>>()?;
+                Some((index, vector))
+            })
+            .collect();
+        rows.sort_by_key(|(index, _)| *index);
+        let vectors: Vec<Vec<f32>> = rows.into_iter().map(|(_, vector)| vector).collect();
+        if vectors.len() != expected {
+            return Err(api::Error::Invalid);
+        }
+        let usage = value.get("usage").and_then(|usage| {
+            Some(api::EmbedUsage {
+                prompt_tokens: u32::try_from(usage.get("prompt_tokens")?.as_u64()?).ok()?,
+                total_tokens: u32::try_from(usage.get("total_tokens")?.as_u64()?).ok()?,
+            })
+        });
+        Ok(api::EmbedResponse {
+            model: value
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or(&model)
+                .to_string(),
+            vectors,
+            usage,
+        })
+    }
+
+    fn voice_embed(
+        &mut self,
+        request: api::VoiceEmbeddingRequest,
+    ) -> Result<api::VoiceEmbeddingResponse, api::Error> {
+        InferenceHost::voice_embed(self, request)
     }
 
     fn open_stream(
@@ -429,6 +635,35 @@ fn role_name(role: api::Role) -> &'static str {
     }
 }
 
+fn capabilities(model: &Value, id: &str, tier: Option<&str>) -> Vec<api::Capability> {
+    let mut capabilities: Vec<api::Capability> = model
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .filter_map(|value| match value {
+                    "chat" => Some(api::Capability::Chat),
+                    "tools" => Some(api::Capability::Tools),
+                    "vision" => Some(api::Capability::Vision),
+                    "embeddings" => Some(api::Capability::Embeddings),
+                    "rerank" => Some(api::Capability::Rerank),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if capabilities.is_empty() {
+        if id.contains("embed") || tier == Some("embed") {
+            capabilities.push(api::Capability::Embeddings);
+        } else {
+            capabilities.push(api::Capability::Chat);
+        }
+    }
+    capabilities
+}
+
 pub fn add_to_linker<T>(linker: &mut Linker<T>) -> anyhow::Result<()>
 where
     T: api::Host + 'static,
@@ -441,6 +676,48 @@ where
 mod tests {
     use super::*;
     use std::thread;
+
+    #[test]
+    fn voice_embed_sends_multipart_pcm_to_the_audio_route() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        let worker = thread::spawn(move || {
+            let mut request = server.recv().unwrap();
+            assert!(request.url().ends_with("/audio/embeddings"));
+            let mut body = Vec::new();
+            request.as_reader().read_to_end(&mut body).unwrap();
+            let body = String::from_utf8_lossy(&body);
+            assert!(body.contains("name=\"model\""));
+            assert!(body.contains("fpl/spkrec-ecapa-voxceleb"));
+            assert!(body.contains("name=\"checkpoint\""));
+            assert!(body.contains("name=\"file\"; filename=\"utterance.pcm\""));
+            request
+                .respond(
+                    tiny_http::Response::from_string(
+                        r#"{"model":"fpl/spkrec-ecapa-voxceleb","embedding":[0.1,0.2],"usage":{"prompt_tokens":4,"total_tokens":4}}"#,
+                    )
+                    .with_header(
+                        tiny_http::Header::from_bytes("content-type", "application/json").unwrap(),
+                    ),
+                )
+                .unwrap();
+        });
+        let mut host = InferenceHost::new(format!("http://{address}"), None, "soil", "default");
+        let response = api::Host::voice_embed(
+            &mut host,
+            api::VoiceEmbeddingRequest {
+                model: "fpl/spkrec-ecapa-voxceleb".into(),
+                checkpoint: "sha256:test".into(),
+                sample_rate: 16_000,
+                dimensions: Some(2),
+                pcm16: vec![0, 0, 1, 0],
+            },
+        )
+        .unwrap();
+        assert_eq!(response.embedding, vec![0.1, 0.2]);
+        assert_eq!(response.usage.unwrap().total_tokens, 4);
+        worker.join().unwrap();
+    }
 
     #[test]
     fn lists_models_and_completes_through_an_upstream() {
@@ -612,6 +889,46 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(String::from_utf8_lossy(&chunk.data).contains("data:"));
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn embeds_through_an_upstream() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        let worker = thread::spawn(move || {
+            let mut request = server.recv().unwrap();
+            assert!(request.url().ends_with("/embeddings"));
+            let mut body = String::new();
+            request.as_reader().read_to_string(&mut body).unwrap();
+            let body: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(body["input"].as_array().unwrap().len(), 2);
+            assert_eq!(body["dimensions"], 2);
+            request
+                .respond(
+                    tiny_http::Response::from_string(
+                        r#"{"model":"tier/embed","data":[{"index":1,"embedding":[3.0,4.0]},{"index":0,"embedding":[1.0,2.0]}],"usage":{"prompt_tokens":4,"total_tokens":4}}"#,
+                    )
+                    .with_header(
+                        tiny_http::Header::from_bytes("content-type", "application/json").unwrap(),
+                    ),
+                )
+                .unwrap();
+        });
+        let mut host = InferenceHost::new(format!("http://{address}"), None, "umie", "tier/embed");
+        let response = api::Host::embed(
+            &mut host,
+            api::EmbedRequest {
+                model: "tier/embed".into(),
+                inputs: vec!["first".into(), "second".into()],
+                dimensions: Some(2),
+                prompt_cache_key: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(response.model, "tier/embed");
+        assert_eq!(response.vectors, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+        assert_eq!(response.usage.unwrap().total_tokens, 4);
         worker.join().unwrap();
     }
 }
