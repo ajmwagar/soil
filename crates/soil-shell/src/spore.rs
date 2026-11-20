@@ -980,7 +980,12 @@ fn inference_host() -> Option<::soil::InferenceHost> {
                 .as_nanos()
         )
     });
-    Some(::soil::InferenceHost::new(url, api_key, "soil", model).with_session(session))
+    let host = ::soil::InferenceHost::new(url, api_key, "soil", model).with_session(session);
+    let host = match std::env::var("SOIL_VOICEPRINT_URL") {
+        Ok(url) if !url.trim().is_empty() => host.with_voice_url(url),
+        _ => host,
+    };
+    Some(host)
 }
 
 /// The bus, when the Spore is granted one.

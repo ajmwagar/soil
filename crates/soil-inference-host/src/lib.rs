@@ -33,6 +33,7 @@ pub struct InferenceHost {
     table: ResourceTable,
     agent: ureq::Agent,
     base_url: String,
+    voice_url: Option<String>,
     api_key: Option<String>,
     provider: String,
     model: String,
@@ -87,6 +88,7 @@ impl InferenceHost {
             table: ResourceTable::new(),
             agent: ureq::AgentBuilder::new().build(),
             base_url: base_url.into(),
+            voice_url: None,
             api_key,
             provider: provider.into(),
             model: model.into(),
@@ -110,6 +112,23 @@ impl InferenceHost {
     pub fn with_session(mut self, session: impl Into<String>) -> Self {
         self.session_id = Some(session.into());
         self
+    }
+
+    /// Use a dedicated speaker-embedding service. Text inference and voice
+    /// inference can have different hosts and model runtimes.
+    pub fn with_voice_url(mut self, url: impl Into<String>) -> Self {
+        self.voice_url = Some(url.into());
+        self
+    }
+
+    fn url_at(base: &str, path: &str) -> String {
+        let base = base.trim_end_matches('/');
+        let path = path.trim_start_matches('/');
+        if base.ends_with("/v1") {
+            format!("{base}/{}", path.strip_prefix("v1/").unwrap_or(path))
+        } else {
+            format!("{base}/{path}")
+        }
     }
 
     fn request(&self, method: &str, url: &str) -> ureq::Request {
@@ -283,8 +302,9 @@ impl InferenceHost {
         body.extend_from_slice(b"\r\n");
         body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
 
+        let voice_base = self.voice_url.as_deref().unwrap_or(&self.base_url);
         let response = self
-            .request("POST", &self.url("/v1/audio/embeddings"))
+            .request("POST", &Self::url_at(voice_base, "/v1/audio/embeddings"))
             .set(
                 "content-type",
                 &format!("multipart/form-data; boundary={boundary}"),
