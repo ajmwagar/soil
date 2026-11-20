@@ -89,6 +89,21 @@ enum Command {
         #[arg(long, env = "GITMYC_ADMIN_TOKEN")]
         admin_token: Option<String>,
     },
+    /// Answer git's credential prompt with a capability.
+    ///
+    /// git calls an askpass helper twice — once for the username, once for the
+    /// password — with a prompt string as the only argument. The capability is
+    /// the password; the username is decoration. This is how a host program (a
+    /// shell, a build) authenticates without the caller holding any durable
+    /// credential: the capability is already in a file with a short TTL.
+    Askpass {
+        /// File holding the capability. `GIT_MYC_CAP_FILE` when omitted.
+        #[arg(long, env = "GIT_MYC_CAP_FILE")]
+        cap_file: Option<PathBuf>,
+        /// git's prompt ("Username for ..." or "Password for ...").
+        #[arg(default_value = "")]
+        prompt: String,
+    },
     /// Materialize a commit into a VFS namespace, as content.
     Mount {
         /// VFS root, or a name under `$XDG_DATA_HOME/soil/vfs`.
@@ -192,6 +207,14 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("bind {addr}"))?;
             println!("gitmycd listening on http://{addr}");
             axum::serve(listener, soil_gitmyc::serve::router(state)).await?;
+            Ok(())
+        }
+        Command::Askpass { cap_file, prompt } => {
+            let path: Option<PathBuf> = cap_file.as_ref().map(|path| expand_path(path));
+            println!(
+                "{}",
+                soil_gitmyc::askpass::answer(path.as_deref(), &prompt)?
+            );
             Ok(())
         }
         Command::Mount {

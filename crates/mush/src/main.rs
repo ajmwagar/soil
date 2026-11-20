@@ -2360,16 +2360,23 @@ fn run_host_status(root: &Path, mut args: Vec<String>, store: Option<&Path>) -> 
         anyhow::bail!("mush run host: --cwd {} is not a directory", cwd);
     }
 
-    let mut command = Command::new(
-        build_program
-            .as_deref()
-            .unwrap_or_else(|| Path::new(&cmd[0])),
-    );
+    let program_path = build_program
+        .as_deref()
+        .unwrap_or_else(|| Path::new(&cmd[0]))
+        .to_path_buf();
+    let is_git = program_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "git");
+    let mut command = Command::new(&program_path);
     command.args(&cmd[1..]).current_dir(&dir);
     // Start empty: a host build needs its toolchain, not the agent's tokens.
     // The list lives with the shell's overlay bridge so both paths answer the
     // same question; anything beyond it is opt-in via --allow-env.
     crate::shell::clear_and_seed(&mut command, &[]);
+    if is_git {
+        crate::shell::wire_git(&mut command);
+    }
     for var in &extra_env {
         if let Ok(value) = std::env::var(var) {
             command.env(var, value);

@@ -17,6 +17,8 @@
 //! * [`refs`] — the refs authority: one sqlite file, one compare-and-swap per
 //!   update, every attempt audited. The forge we run exposes only `GET /git/refs`
 //!   and cannot move one, so refs are ours while objects stay its.
+//! * [`askpass`] — the credential helper git runs, so a host program
+//!   authenticates with a capability file instead of an agent or a keychain.
 //! * [`serve`] — the network edge: git smart-HTTP with the ref advertisement
 //!   filtered by the capability and overlaid with our refs, plus `/mint`,
 //!   `/tree`, `/blob`, `/refs/update` and `/audit`.
@@ -25,6 +27,7 @@
 //! stays refused — a push is not an update, and the one verb that moves a ref is
 //! an explicit compare-and-swap.
 
+pub mod askpass;
 pub mod capability;
 pub mod project;
 pub mod refs;

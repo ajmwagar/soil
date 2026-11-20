@@ -20,11 +20,14 @@ use crate::{Runtime, overlay::Overlay};
 /// Bare program names that may run as host processes.
 ///
 /// Compilers, version control, and text tools: they see the overlay and nothing
-/// of the VFS. `gh` is here by decision, not by default -- it carries the
-/// user's credentials and network access, so a run can push a branch and open a
-/// PR. It cannot merge: `fab` owns checks and the landing decision, and an
-/// allowlisted `gh` is the shortest path from a prompt to something reviewable
-/// without putting a merge button behind a tool call.
+/// of the VFS.
+///
+/// `gh` used to be here "by decision, not by default" — it carries the user's
+/// credentials and network access, which is exactly why it is gone now. A host
+/// child authenticates to a forge with a capability (`gitmycd askpass`, see
+/// [`wire_git`]): repository-scoped, branch-scoped, minutes long, and verifiable
+/// offline. Pushing a branch and opening a pull request are `git` and an HTTP
+/// call; neither needs a CLI that can also read `$HOME`.
 ///
 /// This is the only copy of the policy: the daemon, the interactive shell and
 /// `mush run host` all read it from here.
@@ -53,7 +56,10 @@ pub const HOST_ENV: &[&str] = &[
     "FPL_BOB_LINUX_HOST",
     "FPL_BOB_LINUX_POOL",
     "FPL_BOB_MAC_HOST",
-    "SSH_AUTH_SOCK",
+    // `SSH_AUTH_SOCK` is deliberately absent: a forwarded agent is a durable
+    // credential that can authenticate to anything the user can, which is the
+    // thing a capability replaces. `GIT_MYC_CAP_FILE` below is not in this list
+    // either — it is wired only for `git`, below.
 ];
 
 /// Start a child from an empty environment and seed the allowlist.
@@ -81,6 +87,37 @@ pub fn clear_and_seed(command: &mut std::process::Command, granted: &[String]) {
     // in its manifest, which a reviewer reads and the lock digests.
 }
 
+/// Wire a host `git` to the forge without a credential.
+///
+/// `GIT_MYC_CAP_FILE` names a file holding a short-lived, repository-scoped
+/// capability; `git` asks the helper for a username and password and gets
+/// `gitmyc` and the capability. Nothing durable is exported, and a `git` that was
+/// not given a capability fails loudly instead of falling back to the user's
+/// agent, a keychain, or an interactive prompt.
+///
+/// The capability is not in [`HOST_ENV`] because it is not a general-purpose
+/// variable: only the program that speaks git's credential protocol receives it.
+pub fn wire_git(command: &mut std::process::Command) {
+    let Some(capability) = std::env::var_os("GIT_MYC_CAP_FILE") else {
+        // No capability: still refuse to silently use whatever the caller had
+        // configured. A failure here is a missing grant, and it should read as
+        // one.
+        command.env("GIT_TERMINAL_PROMPT", "0");
+        command.env("GIT_CONFIG_NOSYSTEM", "1");
+        return;
+    };
+    command.env("GIT_TERMINAL_PROMPT", "0");
+    command.env("GIT_CONFIG_NOSYSTEM", "1");
+    command.env("GIT_MYC_CAP_FILE", &capability);
+    // Separate binary, because git runs GIT_ASKPASS as a command with the
+    // prompt as its only argument.
+    let helper = std::env::var_os("GIT_MYC_ASKPASS").unwrap_or_else(|| "gitmyc-askpass".into());
+    command.env("GIT_ASKPASS", helper);
+    // Askpass is only consulted when git wants a credential: keep it from
+    // prompting on a terminal that the agent cannot answer.
+    command.env("SSH_ASKPASS_REQUIRE", "never");
+}
+
 pub const HOST_ALLOWLIST: &[&str] = &[
     "cargo",
     // bob is the build plane: `fpl bob` inspects and drives it, `bob-cargo` is
@@ -95,7 +132,6 @@ pub const HOST_ALLOWLIST: &[&str] = &[
     "clang++",
     "c++",
     "git",
-    "gh",
     "make",
     "cmake",
     "ninja",
@@ -399,6 +435,9 @@ fn run_host(
     // gets the allowlist, plus the identity below and whatever the build plane
     // needs — never the caller's tokens.
     clear_and_seed(&mut command, granted);
+    if program == "git" {
+        wire_git(&mut command);
+    }
     command.args(args);
     // `cwd` is the Spore's directory; fall back to the overlay root when it does
     // not name a directory there (a stale session, or a directory the overlay
