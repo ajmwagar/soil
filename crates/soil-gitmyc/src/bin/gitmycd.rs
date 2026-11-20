@@ -138,16 +138,30 @@ enum Command {
     /// contain this" from a 44 KB catalog, so a cold node hydrates a handful
     /// instead of a tree.
     Find {
-        /// A VFS root holding a mounted subtree.
+        /// A manifest with a shipped index: answers from paths and content ids alone.
+        #[arg(long, conflicts_with = "vfs")]
+        manifest: Option<PathBuf>,
+        /// Or a VFS root holding a mounted subtree (scans; placeholders cost a fetch).
         #[arg(long)]
-        vfs: String,
-        /// Namespace prefix to search under, e.g. `fpl/edgerunner@<commit>`.
+        vfs: Option<String>,
+        /// Namespace prefix to search under, for `--vfs`.
         #[arg(long)]
-        prefix: String,
+        prefix: Option<String>,
         #[arg(long)]
         pattern: String,
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// With `--manifest`: hydrate the hits to print snippets (one fetch each).
+        #[arg(long)]
+        snippets: bool,
+        #[arg(long, default_value = "https://git.fpl.dev/api/v1")]
+        api: String,
+        #[arg(long, env = "GITMYC_UPSTREAM_USER", default_value = "")]
+        upstream_user: String,
+        #[arg(long, env = "GITMYC_UPSTREAM_TOKEN", default_value = "")]
+        upstream_token: String,
+        #[arg(long, env = "GITMYC_UPSTREAM_TOKEN_FILE")]
+        upstream_token_file: Option<PathBuf>,
     },
     /// Register a manifest into a VFS without fetching a byte, then optionally
     /// hydrate one path to prove the pull-through works.
@@ -319,11 +333,66 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Find {
+            manifest,
             vfs,
             prefix,
             pattern,
             limit,
+            snippets,
+            api,
+            upstream_user,
+            upstream_token,
+            upstream_token_file,
         } => {
+            if let Some(manifest) = manifest {
+                let manifest = soil_gitmyc::Manifest::read(&expand_path(&manifest))?;
+                let hits = manifest.search(&pattern);
+                println!(
+                    "{} documents match {:?} (index, 0 bytes fetched, {} indexed)",
+                    hits.len(),
+                    pattern,
+                    manifest.entries.len()
+                );
+                let hydrator = snippets.then(|| {
+                    let token = read_upstream_token(
+                        upstream_token.clone(),
+                        upstream_token_file.clone(),
+                    );
+                    token.map(|token| {
+                        soil_gitmyc::ForgeHydrator::new(
+                            api.clone(),
+                            upstream_user.clone(),
+                            token,
+                            manifest.repo.clone(),
+                            manifest.commit.clone(),
+                            manifest.prefix.clone(),
+                        )
+                    })
+                });
+                let hydrator = hydrator.transpose()?;
+                for (path, content_id) in hits.iter().take(limit) {
+                    match &hydrator {
+                        None => println!("{path}  {content_id}"),
+                        Some(hydrator) => {
+                            let id = fungos_vfs::ContentId::parse(content_id)
+                                .map_err(|_| anyhow::anyhow!("bad content id {content_id}"))?;
+                            let full = format!("{}/{}", manifest.prefix, path);
+                            match hydrator.fetch(&full, &id, 0) {
+                                Ok(bytes) => match soil_gitmyc::scan(path, &bytes, &pattern, 1).first()
+                                {
+                                    Some(hit) => println!("{path}:{}: {}", hit.line, hit.text.trim()),
+                                    None => println!("{path}  (candidate, no literal match)"),
+                                },
+                                Err(failure) => println!("{path}  (hydrate failed: {failure})"),
+                            }
+                        }
+                    }
+                }
+                return Ok(());
+            }
+            let (Some(vfs), Some(prefix)) = (vfs, prefix) else {
+                bail!("find needs --manifest, or --vfs with --prefix");
+            };
             let root = vfs_root(&vfs);
             let mut store = fungos_vfs::Vfs::open_with_role(&root, fungos_vfs::NodeRole::Cache)
                 .with_context(|| format!("open vfs {}", root.display()))?;
@@ -344,9 +413,6 @@ async fn main() -> Result<()> {
                             hits += 1;
                         }
                     }
-                    // A placeholder is the cost this scan pays: searching cold
-                    // content means fetching it, which is why a real index is built
-                    // where the bytes already are.
                     Err(fungos_vfs::VfsError::NotHydrated(_)) => cold += 1,
                     Err(failure) => eprintln!("{}: {failure}", entry.path),
                 }

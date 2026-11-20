@@ -16,6 +16,7 @@ base64 = "0.22"
 blake3 = "1"
 clap = { version = "4", features = ["derive", "env"] }
 ed25519-dalek = "2"
+fungos-content = { path = "../fungos-content" }
 fungos-vfs = { git = "https://github.com/mycelium-linux/fungos-vfs.git", rev = "8ad45a7fb1ce01fbbc6f764d10524baf5a24c0af" }
 getrandom = "0.2"
 # Same version the workspace already builds; a second sqlite would be two

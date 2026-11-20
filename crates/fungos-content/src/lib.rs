@@ -17,6 +17,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
+pub mod trigram;
+
+pub use trigram::{Doc, TrigramIndex};
+
 /// A canonical content identity.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ContentId {

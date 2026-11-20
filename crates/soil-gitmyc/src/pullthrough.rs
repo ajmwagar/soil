@@ -23,6 +23,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use fungos_vfs::{ContentId, Hydrator, Hydration, Vfs, VfsError};
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +50,13 @@ pub struct Manifest {
     /// Namespace prefix a mount should use, so a node does not have to guess.
     pub prefix: String,
     pub entries: Vec<ManifestEntry>,
+    /// A trigram index over the same documents, keyed by content id.
+    ///
+    /// It travels with the manifest for the same reason the content ids do: a node
+    /// that has fetched nothing can still answer "which files could contain this"
+    /// exactly, and confirm only the candidates it cares about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<String>,
 }
 
 impl Manifest {
@@ -59,12 +68,19 @@ impl Manifest {
     pub async fn build(forge: &Forge, repo: &str, commit: &str, prefix: &str) -> Result<Self> {
         let entries = forge.tree(repo, commit).await?;
         let mut manifest = Vec::with_capacity(entries.len());
+        let mut trigrams = fungos_content::TrigramIndex::new();
         for entry in entries {
             let bytes = forge.blob(repo, commit, &entry.path).await?;
             let media_type = crate::project::media_type(&entry.path).to_string();
+            let content_id = ContentId::from_bytes(&bytes).to_string();
+            // Text only: an index over a binary is noise, and the publisher is the
+            // one paying for it.
+            if crate::search::is_searchable(&media_type) {
+                trigrams.add(&content_id, &entry.path, &media_type, bytes.len() as u64, &bytes);
+            }
             manifest.push(ManifestEntry {
                 path: entry.path,
-                content_id: ContentId::from_bytes(&bytes).to_string(),
+                content_id,
                 size: bytes.len() as u64,
                 media_type,
             });
@@ -75,6 +91,7 @@ impl Manifest {
             commit: commit.to_string(),
             prefix: prefix.to_string(),
             entries: manifest,
+            index: Some(STANDARD.encode(trigrams.encode())),
         })
     }
 
@@ -129,6 +146,35 @@ impl Manifest {
             written += 1;
         }
         Ok(written)
+    }
+
+    /// Documents whose text contains every trigram of `pattern`, from the shipped
+    /// index. No bytes are fetched.
+    ///
+    /// Exact negative: anything not returned does not contain the pattern. A
+    /// returned document is a candidate, confirmed by reading it.
+    #[must_use]
+    pub fn search(&self, pattern: &str) -> Vec<(String, String)> {
+        let Some(encoded) = &self.index else {
+            return Vec::new();
+        };
+        let Some(index) = STANDARD
+            .decode(encoded)
+            .ok()
+            .and_then(|bytes| fungos_content::TrigramIndex::decode(&bytes))
+        else {
+            return Vec::new();
+        };
+        index
+            .search(pattern.as_bytes())
+            .into_iter()
+            .flat_map(|doc| {
+                doc.paths
+                    .iter()
+                    .map(|path| (path.clone(), doc.content_id.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     /// How much of this commit is actually on this node.
@@ -277,6 +323,7 @@ mod tests {
             repo: "fpl/x".to_string(),
             commit: "a".repeat(40),
             prefix: format!("fpl/x@{}", "a".repeat(40)),
+            index: None,
             entries: vec![
                 ManifestEntry {
                     path: "Cargo.toml".to_string(),
