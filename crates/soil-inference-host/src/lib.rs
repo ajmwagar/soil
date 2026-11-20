@@ -36,6 +36,7 @@ pub struct InferenceHost {
     api_key: Option<String>,
     provider: String,
     model: String,
+    session_id: Option<String>,
     scrubber: Scrubber,
 }
 
@@ -89,6 +90,7 @@ impl InferenceHost {
             api_key,
             provider: provider.into(),
             model: model.into(),
+            session_id: None,
             scrubber: Scrubber::new(),
         }
     }
@@ -103,10 +105,20 @@ impl InferenceHost {
         }
     }
 
+    /// Set the session identifier used by providers that route a conversation
+    /// across requests, such as OpenCode Go (`x-opencode-session`).
+    pub fn with_session(mut self, session: impl Into<String>) -> Self {
+        self.session_id = Some(session.into());
+        self
+    }
+
     fn request(&self, method: &str, url: &str) -> ureq::Request {
         let mut request = self.agent.request(method, url);
         if let Some(key) = &self.api_key {
             request = request.set("authorization", &format!("Bearer {key}"));
+        }
+        if let Some(session) = &self.session_id {
+            request = request.set("x-opencode-session", session);
         }
         request
     }

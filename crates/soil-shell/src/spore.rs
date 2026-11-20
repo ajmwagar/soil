@@ -970,7 +970,17 @@ fn inference_host() -> Option<::soil::InferenceHost> {
                     .map(|value| value.trim().to_string())
             })
     });
-    Some(::soil::InferenceHost::new(url, api_key, "soil", model))
+    let session = std::env::var("SOIL_INFERENCE_SESSION").unwrap_or_else(|_| {
+        format!(
+            "soil-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        )
+    });
+    Some(::soil::InferenceHost::new(url, api_key, "soil", model).with_session(session))
 }
 
 /// The bus, when the Spore is granted one.
