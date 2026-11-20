@@ -615,9 +615,14 @@ same import/grant rule as `soil-spore check`, keeps it at
 previous digest. Projecting that state into `fungos.store.installed@1` is the
 next step. `rollback` reinstalls the previous digest; `apply` reads the index,
 uses the same `soil-store plan`, and applies only `live` and `restart`.
-`consent`, `system` and `hold` are reported and never applied. Fetching by CID
-and granting the store Spore `soil:spore.install` are still separate steps; the
-page remains a report until that capability is wired.
+`consent`, `system` and `hold` are reported and never applied. The host
+capability is `soil:spore/install` in [`wit/soil-spore.wit`](../wit/soil-spore.wit):
+the guest names an id and digest, the host resolves them through a signed index
+and package cache, and `consent` is returned when the grant set grew. A window
+opts in with `--install-root`, `--store-index` and `--store-packages` (plus
+`--install-keyring`, or `--allow-unsigned-install` for development). The Store
+Spore itself is still not granted the capability; wiring its install intent to
+this host is the next step.
 
 Fetched artifacts (icons, screenshots, the rich record) are content-addressed,
 so a browser cache and an IPFS gateway agree about what a listing showed.

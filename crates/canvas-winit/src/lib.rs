@@ -128,6 +128,14 @@ struct LaunchConfig {
     /// Who the Spore acts as, when this host was told. A window that was not
     /// told denies `soil:principal` rather than inventing a name.
     actor: Option<String>,
+    /// Host-owned install authority passed to a child Spore. All three paths
+    /// are required together; a child that was not given them has no installer.
+    install_root: Option<PathBuf>,
+    store_index: Option<PathBuf>,
+    store_packages: Option<PathBuf>,
+    store_origin: Option<String>,
+    install_keyring: Option<PathBuf>,
+    allow_unsigned_install: bool,
 }
 
 /// One book collection a Spore may read and write.
@@ -201,6 +209,27 @@ impl LaunchConfig {
         if let Some(actor) = &self.actor {
             args.push("--actor".into());
             args.push(actor.into());
+        }
+        if let (Some(root), Some(index), Some(packages)) =
+            (&self.install_root, &self.store_index, &self.store_packages)
+        {
+            args.push("--install-root".into());
+            args.push(root.into());
+            args.push("--store-index".into());
+            args.push(index.into());
+            args.push("--store-packages".into());
+            args.push(packages.into());
+            if let Some(origin) = &self.store_origin {
+                args.push("--install-origin".into());
+                args.push(origin.into());
+            }
+            if let Some(keyring) = &self.install_keyring {
+                args.push("--install-keyring".into());
+                args.push(keyring.into());
+            }
+            if self.allow_unsigned_install {
+                args.push("--allow-unsigned-install".into());
+            }
         }
         args
     }
@@ -1185,6 +1214,9 @@ struct App {
     agent_session: Option<String>,
     /// Grants a child Spore inherits when the launcher opens it.
     launch: LaunchConfig,
+    /// The host-owned install authority. `DenyInstall` unless the window was
+    /// given an install root, a signed index and a package cache.
+    install: Box<dyn soil_install::InstallHost>,
     /// What runs on the terminal's pty: a login shell when absent.
     command: Option<String>,
     modifiers: ModifiersState,
@@ -1573,6 +1605,7 @@ fn agent_roles(
         let launch = self.launch.clone();
         let failed = self.failed.clone();
         let finished = self.finished.clone();
+        let install = std::mem::replace(&mut self.install, Box::new(soil_install::DenyInstall));
         thread::spawn(move || {
             let result = (|| -> Result<()> {
                 let bytes =
@@ -1603,6 +1636,7 @@ fn agent_roles(
                         input,
                         interactive: true,
                         catalog: Box::new(catalog),
+                        install,
                         http,
                         appdata,
                         records,
@@ -2701,6 +2735,18 @@ pub struct Options {
     /// store holds. `None` attaches nothing, which is the honest answer for a
     /// window that does not show agents.
     pub agent_session: Option<String>,
+    /// Where `soil:spore/install` may write packages. All three install paths
+    /// are required together; otherwise the capability denies.
+    pub install_root: Option<PathBuf>,
+    pub store_index: Option<PathBuf>,
+    pub store_packages: Option<PathBuf>,
+    /// The one origin a missing digest may be fetched from.
+    pub store_origin: Option<String>,
+    /// PGP keyring used to verify a package sidecar.
+    pub install_keyring: Option<PathBuf>,
+    /// Development only: install unsigned tars. A release window must not set
+    /// this.
+    pub allow_unsigned_install: bool,
 }
 
 impl Default for Options {
@@ -2740,6 +2786,12 @@ impl Default for Options {
             records_collection: None,
             actor: None,
             agent_session: None,
+            install_root: None,
+            store_index: None,
+            store_packages: None,
+            store_origin: None,
+            install_keyring: None,
+            allow_unsigned_install: false,
         }
     }
 }
@@ -2784,6 +2836,12 @@ pub fn parse(args: &[String]) -> Result<Options> {
     let mut records_book: Option<String> = None;
     let mut records_collection: Option<String> = None;
     let mut actor: Option<String> = None;
+    let mut install_root: Option<PathBuf> = None;
+    let mut store_index: Option<PathBuf> = None;
+    let mut store_packages: Option<PathBuf> = None;
+    let mut store_origin: Option<String> = None;
+    let mut install_keyring: Option<PathBuf> = None;
+    let mut allow_unsigned_install = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--capture" => {
@@ -2960,6 +3018,30 @@ pub fn parse(args: &[String]) -> Result<Options> {
                     args.next().context("--records-root needs a directory")?,
                 ));
             }
+            "--install-root" => {
+                install_root = Some(PathBuf::from(
+                    args.next().context("--install-root needs a directory")?,
+                ));
+            }
+            "--store-index" => {
+                store_index = Some(PathBuf::from(
+                    args.next().context("--store-index needs a file")?,
+                ));
+            }
+            "--store-packages" => {
+                store_packages = Some(PathBuf::from(
+                    args.next().context("--store-packages needs a directory")?,
+                ));
+            }
+            "--install-origin" => {
+                store_origin = Some(args.next().context("--install-origin needs a URL")?.clone());
+            }
+            "--install-keyring" => {
+                install_keyring = Some(PathBuf::from(
+                    args.next().context("--install-keyring needs a file")?,
+                ));
+            }
+            "--allow-unsigned-install" => allow_unsigned_install = true,
             value if module.is_none() => module = Some(PathBuf::from(value)),
             _ => anyhow::bail!(
                 "usage: canvas-winit <module.wasm> [--capture FILE.rgba] [--frames N] [--key KEY] [--keys TEXT] [--command LINE] [--pointer X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--after MS] [--spores DIR] [--size WxH] [--allow-origin URL]... [--geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] [--credential-env NAME] [--agents demo] [--hue-bridge URL] [--records-root DIR]"
@@ -3003,6 +3085,12 @@ pub fn parse(args: &[String]) -> Result<Options> {
         // A window started from this binary has no recorded session to show; a
         // host that has one (`soil spore run --agent-session`) passes it in.
         agent_session: None,
+        install_root,
+        store_index,
+        store_packages,
+        store_origin,
+        install_keyring,
+        allow_unsigned_install,
     })
 }
 
@@ -3043,6 +3131,12 @@ pub fn run(options: Options) -> Result<()> {
         appdata_root,
         app_id,
         agent_session,
+        install_root,
+        store_index,
+        store_packages,
+        store_origin,
+        install_keyring,
+        allow_unsigned_install,
     } = options;
     let module = match module {
         Some(module) => module,
@@ -3203,7 +3297,33 @@ pub fn run(options: Options) -> Result<()> {
             collection,
         }),
         actor: actor.clone(),
+        install_root: install_root.clone(),
+        store_index: store_index.clone(),
+        store_packages: store_packages.clone(),
+        store_origin: store_origin.clone(),
+        install_keyring: install_keyring.clone(),
+        allow_unsigned_install,
     };
+    let install: Box<dyn soil_install::InstallHost> =
+        match (&install_root, &store_index, &store_packages) {
+            (Some(root), Some(index), Some(packages)) => {
+                let mut installer = soil_install::SporeInstaller::new(root, index, packages);
+                if let Some(origin) = &store_origin {
+                    installer = installer.with_origin(origin);
+                }
+                if let Some(keyring) = &install_keyring {
+                    installer = installer.with_keyring(keyring);
+                }
+                if allow_unsigned_install {
+                    installer = installer.allow_unsigned_dev();
+                }
+                Box::new(installer)
+            }
+            (None, None, None) => Box::new(soil_install::DenyInstall),
+            _ => anyhow::bail!(
+                "--install-root, --store-index and --store-packages must be given together"
+            ),
+        };
     let http = build_http(&launch)?;
     // A named book replaces the read-only vitals view: a Spore that was given a
     // book to write into reads and writes that collection, not somebody else's.
@@ -3251,6 +3371,7 @@ pub fn run(options: Options) -> Result<()> {
         failed: Arc::new(Mutex::new(None)),
         finished: Arc::new(Mutex::new(false)),
         failure: None,
+        install,
         spores: spores.map(|path| vec![path]).unwrap_or_else(|| {
             let home = std::env::var_os("HOME")
                 .map(PathBuf::from)
