@@ -384,6 +384,43 @@ pub fn filter_ref_advertisement_with(
     Some((header, overlay, out))
 }
 
+/// The header and capability list of an advertisement, without any refs.
+///
+/// A push to a branch that does not exist yet is normal (it is how a branch is
+/// created), so an advertisement with zero visible refs is a valid answer — as long
+/// as it still carries the capabilities. Git's convention for "no refs" is a
+/// zero-id `capabilities^{}` line.
+#[must_use]
+pub fn empty_advertisement(stream: &[u8]) -> Option<Vec<u8>> {
+    let lines = pkt_decode_stream(stream)?;
+    let mut header = None;
+    let mut caps = None;
+    for (index, line) in lines.iter().enumerate() {
+        let Some(payload) = line else { continue };
+        if index == 0 && payload.starts_with(b"# service=") {
+            header = Some(payload.clone());
+            continue;
+        }
+        if let Some(nul) = payload.iter().position(|byte| *byte == 0) {
+            caps = Some(payload[nul + 1..].to_vec());
+            break;
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(header) = header {
+        out.extend_from_slice(&pkt_encode(&header));
+        out.extend_from_slice(b"0000");
+    }
+    let mut line = format!("{} capabilities^{{}}", "0".repeat(40)).into_bytes();
+    if let Some(caps) = caps {
+        line.push(0);
+        line.extend_from_slice(&caps);
+    }
+    out.extend_from_slice(&pkt_encode(&line));
+    out.extend_from_slice(b"0000");
+    Some(out)
+}
+
 /// The common case: filter, with no overlay.
 #[must_use]
 pub fn filter_ref_advertisement(stream: &[u8], claims: &Claims) -> Option<Vec<u8>> {
@@ -603,6 +640,17 @@ mod tests {
         let text = String::from_utf8_lossy(&filtered).to_string();
         assert!(text.contains("HEAD"), "{text}");
         assert!(!text.contains("alfalfa/bead-x7"), "{text}");
+    }
+
+    #[test]
+    fn an_empty_advertisement_still_carries_capabilities() {
+        // Pushing a branch that does not exist yet is how a branch is created.
+        let empty = empty_advertisement(&advertisement()).expect("advertisement");
+        let text = String::from_utf8_lossy(&empty).to_string();
+        assert!(text.contains("# service=git-upload-pack"), "{text}");
+        assert!(text.contains("capabilities^{}"), "{text}");
+        assert!(text.contains("multi_ack side-band-64k"), "{text}");
+        assert!(!text.contains("refs/heads/main"), "{text}");
     }
 
     #[test]

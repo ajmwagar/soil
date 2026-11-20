@@ -247,9 +247,31 @@ async fn info_refs(
         .get("service")
         .cloned()
         .unwrap_or_else(|| "git-upload-pack".to_string());
-    if service != "git-upload-pack" {
-        return error(StatusCode::FORBIDDEN, "only git-upload-pack is served");
+    if service == "git-receive-pack" {
+        // A push advertisement shows exactly what the caller may move: the refs a
+        // read capability can see are not the refs it can update.
+        if claims.write.is_empty() {
+            return error(StatusCode::FORBIDDEN, "this capability is read-only");
+        }
+        let mut push_claims = claims.clone();
+        push_claims.read = claims.write.clone();
+        push_claims.write.clear();
+        return advertise(&state, &repo, &service, &push_claims).await;
     }
+    if service != "git-upload-pack" {
+        return error(StatusCode::FORBIDDEN, "only git-upload-pack and git-receive-pack are served");
+    }
+    advertise(&state, &repo, &service, &claims).await
+}
+
+/// Fetch the forge's advertisement, overlay our refs, filter by `claims` and return
+/// it as the response a git client expects.
+async fn advertise(
+    state: &ForgeState,
+    repo: &str,
+    service: &str,
+    claims: &Claims,
+) -> Response {
     let url = format!(
         "{}/{}.git/info/refs?service={service}",
         state.forge.base.trim_end_matches('/'),
@@ -260,7 +282,14 @@ async fn info_refs(
         .client
         .get(url)
         .basic_auth(&state.forge.user, Some(&state.forge.token))
-        .header(header::ACCEPT, "application/x-git-upload-pack-advertisement")
+        .header(
+            header::ACCEPT,
+            if service == "git-receive-pack" {
+                "application/x-git-receive-pack-advertisement"
+            } else {
+                "application/x-git-upload-pack-advertisement"
+            },
+        )
         .send()
         .await
     {
@@ -301,18 +330,36 @@ async fn info_refs(
             }
         }
     };
-    let Some((_, _, filtered)) =
-        filter_ref_advertisement_with(&advertisement, &claims, &overlay)
-    else {
-        return error(
-            StatusCode::FORBIDDEN,
-            "capability covers none of this repository's refs",
-        );
+    let filtered = match filter_ref_advertisement_with(&advertisement, &claims, &overlay) {
+        Some((_, _, filtered)) => filtered,
+        None if service == "git-receive-pack" => {
+            // Nothing to see is not the same as nothing to do: the caller may be
+            // creating the very branch it cannot see yet.
+            match crate::capability::empty_advertisement(&advertisement) {
+                Some(empty) => empty,
+                None => {
+                    return error(
+                        StatusCode::BAD_GATEWAY,
+                        "upstream advertisement had no capabilities",
+                    );
+                }
+            }
+        }
+        None => {
+            return error(
+                StatusCode::FORBIDDEN,
+                "capability covers none of this repository's refs",
+            );
+        }
     };
     let mut out = Response::new(Body::from(filtered));
     out.headers_mut().insert(
         header::CONTENT_TYPE,
-        header::HeaderValue::from_static("application/x-git-upload-pack-advertisement"),
+        header::HeaderValue::from_static(if service == "git-receive-pack" {
+            "application/x-git-receive-pack-advertisement"
+        } else {
+            "application/x-git-upload-pack-advertisement"
+        }),
     );
     out
 }
@@ -375,10 +422,17 @@ async fn upload_pack(
     out
 }
 
+/// Push: the agent's objects go to the forge, and the ref moves there.
+///
+/// The capability is checked against **each ref the client asks to update**, parsed
+/// out of the request before a byte is forwarded — a push is not one action, it is a
+/// list of ref moves, and a token scoped to one branch must not be able to smuggle a
+/// second one in the same pack.
 async fn receive_pack(
     State(state): State<Arc<ForgeState>>,
     AxumPath((owner, repo)): AxumPath<(String, String)>,
     headers: HeaderMap,
+    body: axum::body::Bytes,
 ) -> Response {
     let repo = repo_name(&owner, &repo);
     let claims = match authorize(&state, &headers, &repo) {
@@ -388,13 +442,146 @@ async fn receive_pack(
     if claims.write.is_empty() {
         return error(
             StatusCode::FORBIDDEN,
-            "this capability is read-only; a write capability is not implemented yet",
+            "this capability is read-only; a push needs a write capability",
         );
     }
-    error(
-        StatusCode::NOT_IMPLEMENTED,
-        "ref updates go through POST /refs/update (compare-and-swap), not git-receive-pack",
-    )
+    let Some(commands) = push_commands(&body) else {
+        return error(StatusCode::BAD_REQUEST, "not a git-receive-pack request");
+    };
+    if commands.is_empty() {
+        return error(StatusCode::BAD_REQUEST, "a push must name at least one ref");
+    }
+    for (old, new, reference) in &commands {
+        if !claims.allows_write(reference) {
+            return error(
+                StatusCode::FORBIDDEN,
+                &format!(
+                    "capability for {} does not cover {reference} (writes: {:?})",
+                    claims.repo, claims.write
+                ),
+            );
+        }
+        // The same policy the refs authority applies to its own moves: an agent may
+        // push a branch, never a protected one.
+        if let Err(detail) = crate::refs::policy(&repo, reference, &claims.sub) {
+            return error(StatusCode::FORBIDDEN, &detail);
+        }
+        let _ = (old, new);
+    }
+
+    let url = format!(
+        "{}/{}.git/git-receive-pack",
+        state.forge.base.trim_end_matches('/'),
+        repo
+    );
+    // Private repos need the forge credential on the way through; the caller's
+    // capability is the only thing we authorized against.
+    let response = match state
+        .forge
+        .client
+        .post(url)
+        .basic_auth(&state.forge.user, Some(&state.forge.token))
+        .header(
+            header::CONTENT_TYPE,
+            "application/x-git-receive-pack-request",
+        )
+        .header(header::ACCEPT, "application/x-git-receive-pack-result")
+        .body(body)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(failure) => {
+            return error(
+                StatusCode::BAD_GATEWAY,
+                &format!("upstream unreachable: {failure}"),
+            );
+        }
+    };
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return error(
+            StatusCode::BAD_GATEWAY,
+            &format!("upstream {status}: {}", body.chars().take(300).collect::<String>()),
+        );
+    }
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/x-git-receive-pack-result")
+        .to_string();
+    let result = response.bytes().await.unwrap_or_default();
+
+    // The forge moved the refs, so our store follows: a recorded tip is an observed
+    // fact, audited as `pushed` rather than `applied`.
+    {
+        let mut refs = state.refs.lock().await;
+        for (_, new, reference) in &commands {
+            if let Err(failure) = refs.record(
+                &repo,
+                reference,
+                new,
+                &claims.sub,
+                &claims.nonce,
+                capability::now_secs(),
+            ) {
+                tracing::warn!(%failure, %reference, "gitmyc: recording a pushed tip failed");
+            }
+        }
+    }
+
+    let mut out = Response::new(Body::from(result));
+    if let Ok(value) = header::HeaderValue::from_str(&content_type) {
+        out.headers_mut().insert(header::CONTENT_TYPE, value);
+    }
+    out
+}
+
+/// The ref updates in a `git-receive-pack` request: `(old, new, ref)` per command.
+///
+/// The commands are pkt-lines up to a flush; the packfile follows, and is not ours to
+/// interpret. A shorter or malformed stream is `None`, never a partial list — a push
+/// authorized against half its refs would be worse than a refused one.
+#[must_use]
+pub fn push_commands(body: &[u8]) -> Option<Vec<(String, String, String)>> {
+    let mut commands = Vec::new();
+    let mut rest = body;
+    loop {
+        if rest.len() < 4 {
+            return None;
+        }
+        let len = usize::from_str_radix(std::str::from_utf8(&rest[..4]).ok()?, 16).ok()?;
+        if len == 0 {
+            // Flush: the command list is complete, the packfile starts here.
+            return Some(commands);
+        }
+        if len < 4 || len > rest.len() {
+            return None;
+        }
+        let payload = &rest[4..len];
+        rest = &rest[len..];
+        let (line, _caps) = match payload.iter().position(|byte| *byte == 0) {
+            Some(nul) => (&payload[..nul], Some(&payload[nul + 1..])),
+            None => (payload, None),
+        };
+        let text = std::str::from_utf8(line).ok()?;
+        let mut fields = text.split(' ');
+        let (Some(old), Some(new), Some(reference), None) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return None;
+        };
+        if !crate::capability::is_plausible_ref(reference) {
+            return None;
+        }
+        commands.push((
+            old.to_string(),
+            new.to_string(),
+            reference.to_string(),
+        ));
+    }
 }
 
 async fn tree(
@@ -1055,4 +1242,49 @@ fn error(status: StatusCode, message: &str) -> Response {
         );
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_push_is_a_list_of_ref_moves() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&crate::capability::pkt_encode(
+            b"1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 refs/heads/alfalfa/b\0report-status side-band-64k",
+        ));
+        body.extend_from_slice(&crate::capability::pkt_encode(
+            b"1111111111111111111111111111111111111111 3333333333333333333333333333333333333333 refs/heads/other",
+        ));
+        body.extend_from_slice(b"0000");
+        body.extend_from_slice(b"PACK\x00\x00\x00\x02");
+
+        let commands = push_commands(&body).expect("parses");
+        assert_eq!(commands.len(), 2, "every command is authorized separately");
+        assert_eq!(commands[0].2, "refs/heads/alfalfa/b");
+        assert_eq!(commands[1].2, "refs/heads/other");
+        assert_eq!(commands[0].1, "2".repeat(40));
+    }
+
+    #[test]
+    fn a_truncated_push_is_refused_whole() {
+        let mut body = crate::capability::pkt_encode(
+            b"1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 refs/heads/alfalfa/b",
+        );
+        assert!(
+            push_commands(&body).is_none(),
+            "no flush means an incomplete command list"
+        );
+        body.truncate(6);
+        assert!(push_commands(&body).is_none());
+        assert!(push_commands(b"").is_none());
+    }
+
+    #[test]
+    fn a_command_that_is_not_three_fields_is_refused() {
+        let mut body = crate::capability::pkt_encode(b"only-one-field");
+        body.extend_from_slice(b"0000");
+        assert!(push_commands(&body).is_none());
+    }
 }

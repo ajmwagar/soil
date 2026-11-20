@@ -260,6 +260,48 @@ impl Refs {
         })
     }
 
+    /// Record a tip the forge already accepted, without a compare-and-swap.
+    ///
+    /// A push moves the ref at the forge, not here: git sent the objects and the
+    /// forge ran its own update. Our store follows reality and says so in the audit
+    /// (`pushed`, not `applied`) so a reader can tell an authorized move by us from
+    /// an observed move by the forge.
+    pub fn record(
+        &mut self,
+        repo: &str,
+        name: &str,
+        sha: &str,
+        subject: &str,
+        nonce: &str,
+        now: i64,
+    ) -> Result<bool> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT sha FROM refs WHERE repo = ?1 AND name = ?2",
+                params![repo, name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if current.as_deref() == Some(sha) {
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO refs(repo,name,sha,updated_at) VALUES(?1,?2,?3,?4)
+             ON CONFLICT(repo,name) DO UPDATE SET sha=excluded.sha, updated_at=excluded.updated_at",
+            params![repo, name, sha, now],
+        )?;
+        tx.execute(
+            "INSERT INTO audit(repo,name,old_sha,new_sha,subject,nonce,at,outcome,detail)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,'pushed','the forge accepted a push')",
+            params![repo, name, current, sha, subject, nonce, now],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// The audit for one repo, oldest first.
     pub fn audit(&self, repo: &str, limit: usize) -> Result<Vec<AuditEntry>> {
         let mut statement = self.conn.prepare(
@@ -413,6 +455,19 @@ mod tests {
         assert!(audit[0].detail.as_deref().unwrap().contains("protected"));
         // No ref was created by the refused attempts.
         assert!(refs.get("fpl/x", "refs/heads/main").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_pushed_tip_is_recorded_and_audited_as_observed() {
+        let mut refs = refs();
+        refs.adopt("fpl/x", "refs/heads/main", "aaaa", 9).unwrap();
+        assert!(refs.record("fpl/x", "refs/heads/main", "bbbb", "agent:s1", "n1", 10).unwrap());
+        // Recording the same tip twice is not a second event.
+        assert!(!refs.record("fpl/x", "refs/heads/main", "bbbb", "agent:s1", "n2", 11).unwrap());
+        assert_eq!(refs.get("fpl/x", "refs/heads/main").unwrap().as_deref(), Some("bbbb"));
+        let audit = refs.audit("fpl/x", 10).unwrap();
+        let outcomes: Vec<&str> = audit.iter().map(|entry| entry.outcome.as_str()).collect();
+        assert_eq!(outcomes, vec!["seeded", "pushed"]);
     }
 
     #[test]
