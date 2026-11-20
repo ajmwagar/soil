@@ -56,7 +56,12 @@ async fn run() -> Result<()> {
             .with_context(|| format!("connect the Unibus hub for {}", path.display()))?;
         builder = builder.bus(Arc::new(bus));
     }
-    let service = Arc::new(HttpService::from_bytes(&bytes, builder)?);
+    let mut service = HttpService::from_bytes(&bytes, builder)?;
+    if options.instances > 0 {
+        service = service.with_pool(options.instances);
+    }
+    service.warm().await?;
+    let service = Arc::new(service);
     let listener = TcpListener::bind(&options.listen)
         .await
         .with_context(|| format!("bind {}", options.listen))?;
@@ -78,6 +83,8 @@ struct Options {
     preopens: Vec<(PathBuf, String, FsPerms)>,
     records: Option<(PathBuf, String, String)>,
     unibus: Option<PathBuf>,
+    /// Reuse this many instantiated Spore instances instead of one per request.
+    instances: usize,
 }
 
 impl Options {
@@ -157,6 +164,11 @@ impl Options {
                 "--unibus" => {
                     let value = next(&mut args, "--unibus")?;
                     options.unibus = Some(PathBuf::from(value));
+                }
+                "--reuse-instances" => {
+                    options.instances = next(&mut args, "--reuse-instances")?
+                        .parse()
+                        .with_context(|| "parse --reuse-instances")?;
                 }
                 "--help" | "-h" => {
                     println!("{USAGE}");
@@ -245,6 +257,9 @@ usage: soil-wasi-http [OPTIONS] COMPONENT.wasm
                               Spore that imports it can store run state. Without
                               this flag the interface is unlinked and such a
                               component fails to instantiate.
+  --reuse-instances N         reuse N warm Spore instances across requests, so
+                              guest statics (including a cache) survive. Only for
+                              a guest that resets per-request state itself.
   --unibus CONFIG.json       connect the Unibus hub named by an unibus-sdk
                               `ClientConfig` and link soil:unibus, so a Spore
                               that imports it can poll and publish frames. The
