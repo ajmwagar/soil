@@ -1848,6 +1848,16 @@ fn agent_owner(owner: soil_agent_host::Owner) -> soil::agents::types::Owner {
     }
 }
 
+fn agent_device(device: soil_agent_host::Device) -> soil::agents::types::Device {
+    soil::agents::types::Device {
+        id: device.id,
+        label: device.label,
+        current: device.current,
+        attached: device.attached,
+        detail: device.detail,
+    }
+}
+
 fn agent_scope(scope: soil_agent_host::Scope) -> soil::agents::types::Scope {
     use crate::soil::agents::types::ScopeKind;
     soil::agents::types::Scope {
@@ -1869,6 +1879,7 @@ fn agent_record(agent: soil_agent_host::Agent) -> soil::agents::types::Agent {
         title: agent.title,
         workspace: agent.workspace,
         model: agent.model,
+        device: agent.device,
         phase: agent_phase(agent.phase),
         goal: agent.goal.map(|goal| soil::agents::types::Goal {
             text: goal.text,
@@ -1976,6 +1987,20 @@ impl soil::agents::observe::Host for WebGpuHost {
     fn current_scope(&mut self) -> soil::agents::types::Scope {
         let scope = self.agents.scope();
         agent_scope(scope)
+    }
+
+    /// The devices the host was told about. Pumped first so a notice that
+    /// arrived with the last tick cannot make the picker disagree with the
+    /// roster it sits beside.
+    fn devices(&mut self) -> Vec<soil::agents::types::Device> {
+        // No pump: placement and a model catalogue come from the handshake, not
+        // from the bus. Pumping here put a bus read (and, when a notice was
+        // waiting, an adapter re-list over the network) inside a render.
+        self.agents.devices().into_iter().map(agent_device).collect()
+    }
+
+    fn models(&mut self) -> Vec<String> {
+        self.agents.models()
     }
 
     fn transcript(

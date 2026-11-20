@@ -492,7 +492,7 @@ pub fn add(config: &crate::config::Config, mut args: Vec<String>) -> Result<()> 
 
 /// `cp -c` is a clonefile on macOS; `--reflink=auto` is the same idea on Linux.
 /// Both fall back to a normal copy rather than failing.
-fn cow_copy(source: &Path, destination: &Path) -> Result<()> {
+pub(crate) fn cow_copy(source: &Path, destination: &Path) -> Result<()> {
     let status = Command::new("cp")
         .arg(cow_flag())
         .arg("-R")

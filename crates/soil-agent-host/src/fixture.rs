@@ -388,6 +388,9 @@ impl FixtureAgents {
             title: title.into(),
             workspace: Some(workspace.into()),
             model: Some(model.into()),
+            // A fixture is a cast, not a machine: it has no device to name, and
+            // borrowing this host's would make the demo look like placement.
+            device: None,
             phase,
             goal,
             owner: Some(Owner {

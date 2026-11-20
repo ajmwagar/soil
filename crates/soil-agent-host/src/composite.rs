@@ -77,6 +77,36 @@ impl AgentBackend for CompositeAgents {
             .unwrap_or_default()
     }
 
+    /// Every device any adapter can name, once each, in the order the adapters
+    /// were composed. A backend that is attached lists its device; one that
+    /// could not attach still lists it, because a person is choosing between
+    /// machines, not between successes.
+    fn devices(&mut self) -> Vec<crate::Device> {
+        let mut devices: Vec<crate::Device> = Vec::new();
+        for backend in &mut self.backends {
+            for device in backend.devices() {
+                if !devices.iter().any(|known| known.id == device.id) {
+                    devices.push(device);
+                }
+            }
+        }
+        devices
+    }
+
+    /// Every model any adapter accepts, once each, in the order the adapters
+    /// were composed. A harness that names none contributes nothing.
+    fn models(&mut self) -> Vec<String> {
+        let mut models: Vec<String> = Vec::new();
+        for backend in &mut self.backends {
+            for model in backend.models() {
+                if !models.contains(&model) {
+                    models.push(model);
+                }
+            }
+        }
+        models
+    }
+
     fn transcript(&mut self, id: &str, before: Option<u64>, limit: u32) -> Result<Page, Error> {
         self.owner(id)
             .ok_or(Error::NotFound)?
@@ -134,6 +164,7 @@ mod tests {
             title: id.into(),
             workspace: None,
             model: None,
+            device: None,
             phase,
             goal: Some(Goal {
                 text: "finish".into(),

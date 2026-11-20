@@ -159,6 +159,10 @@ struct Comment {
 }
 
 struct State {
+    /// The filesystem root this VFS names. Paths in the book are relative to
+    /// it, so a materialized worktree is `<root>/worktrees/<name>` on every
+    /// device that mounts that root.
+    root: PathBuf,
     vfs: Vfs,
     /// The synced book: thread, worktree identity, tree, ref, comment.
     records: RecordsBookHost,
@@ -196,6 +200,7 @@ impl State {
         let local = RecordsBookHost::open(state_root, &local_book, &local_collection)
             .with_context(|| format!("open records {local_book}/{local_collection}"))?;
         let mut state = Self {
+            root: root.to_path_buf(),
             vfs,
             records,
             collection: collection.to_string(),
@@ -441,6 +446,16 @@ impl State {
             Some(path) => normalize_path(path)?,
             None => state.path.clone(),
         };
+        // Read the directory, not only the index: an agent writes files with
+        // `open(2)` and never calls `vfs.put`, so a snapshot that trusts the
+        // index records the tree the agent *started* with. Ingest is
+        // content-addressed, so a file the store already has costs a hash and
+        // nothing else. A root with no directory at that path is an index-only
+        // tree (a test, or a sync node that never materializes): there is
+        // nothing to read, and the index is the whole truth there.
+        if self.root.join(&path).is_dir() {
+            self.ingest(&self.root.join(&path), &path)?;
+        }
         let tree = snapshot_tree(&self.vfs, &path)?;
         self.put(tree_record(&tree.id), TREE_SCHEMA, &tree)?;
         state.path = path;
@@ -459,6 +474,109 @@ impl State {
         let id = id.strip_prefix("worktree/").unwrap_or(id);
         self.get(&worktree_record(id))?
             .with_context(|| format!("worktree {id} not found"))
+    }
+
+    /// Make sure this device has `<root>/worktrees/<name>`, and that the book
+    /// knows it as a worktree.
+    ///
+    /// This is the one call an agent harness needs: "give this session its own
+    /// tree, or tell me where mine is". Idempotent on purpose — a restart, a
+    /// second session on the same tree, and a device that already materialized
+    /// it all take the same path, and the printed directory is the answer.
+    ///
+    /// A copy is a reflink where the filesystem has one and a real copy where it
+    /// does not: `mush project add` already makes the same trade.
+    fn ensure_worktree(
+        &mut self,
+        name: &str,
+        thread: &str,
+        from: Option<&str>,
+    ) -> Result<PathBuf> {
+        validate_worktree_id(name)?;
+        let relative = normalize_path(&format!("worktrees/{name}"))?;
+        let dir = self.root.join(&relative);
+        let known = self.get::<Worktree>(&worktree_record(name))?;
+
+        if known.is_none() {
+            let source = match from {
+                Some(path) => PathBuf::from(path),
+                None => self.root.join("projects").join(name),
+            };
+            if !dir.exists() {
+                if !source.is_dir() {
+                    bail!("no project at {}; pass --from PATH", source.display());
+                }
+                if let Some(parent) = dir.parent() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("create {}", parent.display()))?;
+                }
+                crate::projects::cow_copy(&source, &dir)?;
+            }
+            // The VFS is an index over content, not a filesystem: a copy that
+            // only lands on disk is invisible to `snapshot` and `checkout`
+            // (which is every device that is not this one). Record what is in
+            // the directory, so the tree and the directory agree.
+            let files = self.ingest(&dir, &relative)?;
+            if files == 0 {
+                bail!("nothing to record under {}", dir.display());
+            }
+            self.create_worktree(&relative, thread, Some(name), Some(name))?;
+        } else if !dir.exists() {
+            // The book has it; this device never materialized it. Checkout needs
+            // this device's head, which only a pull fills in — say that instead
+            // of copying the base tree over whatever the book has since said.
+            bail!(
+                "worktree {name} is known but not materialized on this device; \
+                 run `mush worktree pull {name} --from HOST --remote-root PATH` first"
+            );
+        }
+        Ok(dir)
+    }
+
+    /// Put a directory's files into the VFS under `target`.
+    ///
+    /// Content-addressed, so a file the store already has at this path is left
+    /// alone instead of gaining a new version on every call. This is what makes
+    /// `ensure` idempotent on a machine where the mount is present and the copy
+    /// went through it: the second pass writes nothing.
+    fn ingest(&mut self, source: &Path, target: &str) -> Result<usize> {
+        let mut files = 0;
+        let mut stack = vec![source.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir)
+                .with_context(|| format!("read {}", dir.display()))?
+            {
+                let entry = entry?;
+                let path = entry.path();
+                let kind = entry.file_type()?;
+                if kind.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if !kind.is_file() {
+                    continue;
+                }
+                let relative = path
+                    .strip_prefix(source)
+                    .map(|rest| rest.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_default();
+                let vpath = format!("{target}/{relative}");
+                let bytes = std::fs::read(&path)
+                    .with_context(|| format!("read {}", path.display()))?;
+                let id = ContentId::from_bytes(&bytes);
+                if let Some(existing) = self.vfs.file(&vpath)?
+                    && existing.content_id == id
+                {
+                    files += 1;
+                    continue;
+                }
+                self.vfs
+                    .put(&vpath, &bytes, media_type(&path), Expect::Any)
+                    .with_context(|| format!("record {vpath}"))?;
+                files += 1;
+            }
+        }
+        Ok(files)
     }
 
     fn status(&mut self, id: &str) -> Result<WorktreeStatus> {
@@ -571,18 +689,31 @@ pub(crate) fn run(
 ) -> Result<()> {
     let mut state = State::open(root, &state_root, &book, &collection, store)?;
     match command {
-        "worktree" => run_worktree(&mut state, &mut args),
+        "worktree" => run_worktree(&mut state, root, &mut args),
         "tree" => run_tree(&mut state, &mut args),
         other => bail!("unknown command {other:?}"),
     }
 }
 
-fn run_worktree(state: &mut State, args: &mut Vec<String>) -> Result<()> {
+fn run_worktree(state: &mut State, root: &Path, args: &mut Vec<String>) -> Result<()> {
     let Some(subcommand) = args.first().cloned() else {
         return worktree_help();
     };
     args.remove(0);
     match subcommand.as_str() {
+        "ensure" => {
+            let thread = take_option(args, "--thread").ok_or_else(|| {
+                anyhow!("usage: mush worktree ensure <name> --thread <thread> [--from PATH]")
+            })?;
+            let from = take_option(args, "--from");
+            ensure_no_options(args)?;
+            ensure_arity(args, 1)?;
+            let path = state.ensure_worktree(&args[0], &thread, from.as_deref())?;
+            // The path, one line: a caller that cannot see this device's layout
+            // (an agent harness, a script) learns where its files are from here.
+            println!("{}", path.display());
+            Ok(())
+        }
         "create" => {
             let thread = take_option(args, "--thread")
                 .ok_or_else(|| anyhow!("usage: mush worktree create <path> --thread <thread>"))?;
@@ -888,7 +1019,8 @@ fn print_schemas() -> Result<()> {
 
 fn worktree_help() -> Result<()> {
     println!(
-        "mush worktree create <path> --thread <thread> [--id ID] [--name NAME]\n\
+        "mush worktree ensure <name> --thread <thread> [--from PATH]\n\
+         mush worktree create <path> --thread <thread> [--id ID] [--name NAME]\n\
          mush worktree list [--thread <thread>]\n\
          mush worktree show <id>\n\
          mush worktree snapshot <id> [path]\n\
@@ -936,6 +1068,27 @@ fn ref_record(worktree: &str, name: &str) -> String {
 
 fn checkout_record(id: &str) -> String {
     format!("checkout/{id}")
+}
+
+/// A media type for a file the store is recording.
+///
+/// Only the handful the fleet actually reads: everything else is bytes, and
+/// guessing a type from an unknown extension is how a renderer gets told to
+/// draw a font as text.
+fn media_type(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("md") => "text/markdown",
+        Some("rs") => "text/x-rust",
+        Some("toml") => "text/x-toml",
+        Some("json") => "application/json",
+        Some("txt") => "text/plain",
+        Some("html") => "text/html",
+        Some("css") => "text/css",
+        Some("js") => "text/javascript",
+        Some("png") => "image/png",
+        Some("svg") => "image/svg+xml",
+        _ => "application/octet-stream",
+    }
 }
 
 fn normalize_path(path: &str) -> Result<String> {
@@ -1037,8 +1190,7 @@ mod tests {
     }
 
     /// A store written before the split keeps its worktree, and the device
-    /// state it used to carry moves to the local book instead of being dropped.
-    #[test]
+    /// state it used to carry moves to the local book instead of being dropped.    #[test]
     fn the_migration_splits_a_pre_split_worktree_record() {
         let dir = tempfile::tempdir().unwrap();
         let (vfs_root, records_root) = (dir.path().join("vfs"), dir.path().join("records"));
@@ -1084,6 +1236,95 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn ensure_gives_a_session_its_own_copy_and_says_where_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vfs");
+        let store = dir.path().join("store");
+        std::fs::create_dir_all(root.join("projects/demo/src")).unwrap();
+        std::fs::write(root.join("projects/demo/src/main.rs"), b"fn main() {}").unwrap();
+        let mut state = State::open(
+            &root,
+            &dir.path().join("records"),
+            "mush-test",
+            "worktree",
+            Some(&store),
+        )
+        .unwrap();
+
+        let from = root.join("projects/demo");
+        let from = from.to_string_lossy().to_string();
+        let first = state
+            .ensure_worktree("lane", "thread-1", Some(&from))
+            .unwrap();
+        assert_eq!(first, root.join("worktrees/lane"));
+        assert!(first.join("src/main.rs").is_file(), "the copy is on disk");
+        assert!(state.load_worktree("lane").is_ok(), "the book knows it");
+
+        // The agent edits its own tree; the project it came from is untouched.
+        std::fs::write(first.join("src/main.rs"), b"fn main() { changed }").unwrap();
+        assert_eq!(
+            std::fs::read(root.join("projects/demo/src/main.rs")).unwrap(),
+            b"fn main() {}"
+        );
+
+        // Idempotent: a restart or a second session takes the same tree, not a
+        // second copy, so work in progress is not thrown away.
+        let again = state
+            .ensure_worktree("lane", "thread-1", Some(&from))
+            .unwrap();
+        assert_eq!(again, first);
+        assert_eq!(
+            std::fs::read(again.join("src/main.rs")).unwrap(),
+            b"fn main() { changed }"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_captures_a_file_the_agent_wrote_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vfs");
+        let store = dir.path().join("store");
+        std::fs::create_dir_all(root.join("projects/demo")).unwrap();
+        std::fs::write(root.join("projects/demo/README.md"), b"hello").unwrap();
+        let mut state = State::open(
+            &root,
+            &dir.path().join("records"),
+            "mush-test",
+            "worktree",
+            Some(&store),
+        )
+        .unwrap();
+        let from = root.join("projects/demo").to_string_lossy().to_string();
+        let tree = state
+            .ensure_worktree("lane", "thread-1", Some(&from))
+            .unwrap();
+        let before = state.load_worktree_state("lane").unwrap().head_tree;
+
+        // What an agent does: write with open(2). No `vfs.put`, no index entry.
+        std::fs::write(tree.join("notes.md"), b"reviewed by agent").unwrap();
+        state.snapshot_worktree("lane", None).unwrap();
+
+        let after = state.load_worktree_state("lane").unwrap().head_tree;
+        assert_ne!(before, after, "the snapshot saw the agent's file");
+        let recorded = state
+            .vfs
+            .file("worktrees/lane/notes.md")
+            .unwrap()
+            .expect("the file is in the tree");
+        assert_eq!(recorded.size, b"reviewed by agent".len() as u64);
+    }
+
+    #[test]
+    fn ensure_without_a_project_and_without_a_source_says_what_is_missing() {
+        let (_dir, mut state) = state();
+        let error = state
+            .ensure_worktree("nope", "thread-1", None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no project at"), "{error}");
     }
 
     #[test]

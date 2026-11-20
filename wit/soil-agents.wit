@@ -213,6 +213,24 @@ interface types {
     display-name: option<string>,
   }
 
+  /// One machine a person may place work on.
+  ///
+  /// Facts, not capacity: `attached` says this host reached that device's agent
+  /// service when it opened the surface, and `detail` is why it did not. Nothing
+  /// here claims what the device could do later, and no field is a credential.
+  record device {
+    /// Stable id, compared by hosts; never drawn.
+    id: string,
+    /// What a header shows.
+    label: string,
+    /// This host runs on it.
+    current: bool,
+    /// The device's agent service answered this host.
+    attached: bool,
+    /// Why it did not answer, when it did not. Host text, bounded by the host.
+    detail: option<string>,
+  }
+
   record agent {
     /// Stable for the life of the session, and unique within the host.
     id: string,
@@ -223,6 +241,12 @@ interface types {
     /// Workspace root, if the harness has one. Host policy may redact this.
     workspace: option<string>,
     model: option<string>,
+    /// The device this agent's harness runs on, as the host labels it.
+    ///
+    /// Absent when the adapter cannot say. A view must not fill it in: "which
+    /// machine is this running on" has one answer per agent, and a guess reads
+    /// as a fact once it is drawn.
+    device: option<string>,
     phase: phase,
     /// What the agent is trying to accomplish now. Absent when the harness has
     /// no notion of a goal and the last user message is the only evidence.
@@ -260,7 +284,7 @@ interface types {
 
 /// Read-only: what the agents are doing.
 interface observe {
-  use types.{agent, binding, error, scope, turn};
+  use types.{agent, binding, device, error, scope, turn};
 
   record page {
     /// Newest last.
@@ -273,6 +297,20 @@ interface observe {
   /// person first, then most recently active. A view may reorder; a surface
   /// that only has room for one row should not have to.
   agents: func() -> result<list<agent>, error>;
+
+  /// The devices this surface may place work on, in the host's own order.
+  ///
+  /// Empty when the host was given no device: an adapter that has not thought
+  /// about placement offers no choice rather than one silent default. A surface
+  /// with no devices leaves its picker out; it does not invent a name.
+  devices: func() -> list<device>;
+
+  /// The models the harnesses will accept, in the host's order.
+  ///
+  /// Only strings a harness advertised: a picker that offered a name nobody
+  /// serves would be asking a person to choose a failure. Empty when no
+  /// harness named any, and then the picker is left out.
+  models: func() -> list<string>;
 
   get: func(id: string) -> result<agent, error>;
 

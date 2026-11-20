@@ -38,6 +38,11 @@ pub const TASK_FAILED_NOTICE: &str = "agent.task.failed.v1";
 pub struct Task {
     pub text: String,
     pub harness: String,
+    /// The device the person chose, as [`device_key`] spells it.
+    ///
+    /// A dispatcher that cannot reach that device must fail the task
+    /// ([`TASK_FAILED_NOTICE`]) rather than run it somewhere else: a session on
+    /// the wrong machine is not a slow answer, it is the wrong work.
     pub environment: String,
     pub title: Option<String>,
     /// The model the person asked for, when they named one. A harness that
@@ -74,6 +79,46 @@ pub struct NoSessions;
 impl Sessions for NoSessions {
     fn create(&mut self, _task: &Task) -> Result<Created, Error> {
         Err(Error::Unsupported)
+    }
+}
+
+/// One dispatcher per device, chosen by the device the person named.
+///
+/// The alternative — one dispatcher that runs everything it is given — is how a
+/// task asked for on `agora-one` quietly runs on the machine drawing the window.
+/// A device nobody attached is refused ([`Error::Unsupported`]) rather than
+/// falling through to the first route: the host turns that into
+/// [`TASK_FAILED_NOTICE`], so the person learns where their work did not go.
+pub struct RoutedSessions {
+    routes: Vec<(String, Box<dyn Sessions>)>,
+}
+
+impl RoutedSessions {
+    /// `routes` are `(device label, dispatcher)`; labels are compared with
+    /// [`device_key`], so a route registered as `Averys-Mac-Studio` answers a
+    /// task that names `averys-mac-studio`.
+    pub fn new(mut routes: Vec<(String, Box<dyn Sessions>)>) -> Self {
+        for (label, _) in &mut routes {
+            *label = device_key(label);
+        }
+        Self { routes }
+    }
+
+    /// The devices a route can place work on, in registration order.
+    pub fn devices(&self) -> Vec<String> {
+        self.routes.iter().map(|(id, _)| id.clone()).collect()
+    }
+}
+
+impl Sessions for RoutedSessions {
+    fn create(&mut self, task: &Task) -> Result<Created, Error> {
+        let wanted = device_key(&task.environment);
+        self.routes
+            .iter_mut()
+            .find(|(id, _)| *id == wanted)
+            .ok_or(Error::Unsupported)?
+            .1
+            .create(task)
     }
 }
 
@@ -252,6 +297,12 @@ pub struct Agent {
     pub title: String,
     pub workspace: Option<String>,
     pub model: Option<String>,
+    /// The device this agent's harness runs on, as the host labels it.
+    ///
+    /// `None` when the adapter cannot say. A view must not fill that in: the
+    /// question "which machine is this running on" has one answer per agent, and
+    /// a guess is indistinguishable from the fact once it is drawn.
+    pub device: Option<String>,
     pub phase: Phase,
     pub goal: Option<Goal>,
     /// Present on a shared desktop; omitted when the scope is one principal.
@@ -262,6 +313,42 @@ pub struct Agent {
     pub revision: u64,
     pub started_at_ms: u64,
     pub updated_at_ms: u64,
+}
+
+/// One device a surface may place work on.
+///
+/// Facts, not a capacity claim. `attached` says this host reached that device's
+/// agent service when it opened the surface, and `detail` is why it did not;
+/// neither is a statement about load or about what the device could do later.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Device {
+    /// Stable id: [`device_key`] of the label. Compared by hosts, never drawn.
+    pub id: String,
+    /// What a header shows.
+    pub label: String,
+    /// This host runs on it.
+    pub current: bool,
+    /// The device's agent service answered this host.
+    pub attached: bool,
+    /// Why it did not answer, when it did not. Host text, bounded by the host.
+    pub detail: Option<String>,
+}
+
+/// How two spellings of one device are made comparable.
+///
+/// The fleet names a machine with its mycelium hostname (`Averys-MacBook-Neo`),
+/// the builder registry with the same name lowercased (`averys-macbook-neo`),
+/// and a macOS hostname arrives as `Averys-MacBook-Neo.local`. Those are one
+/// device, so the comparable form drops the mDNS suffix and the case; the label
+/// people read keeps the spelling the host had. One rule, here, because two
+/// copies of it would disagree exactly once and then be trusted.
+pub fn device_key(label: &str) -> String {
+    let trimmed = label.trim();
+    let trimmed = trimmed
+        .strip_suffix(".local")
+        .or_else(|| trimmed.strip_suffix(".local."))
+        .unwrap_or(trimmed);
+    trimmed.to_lowercase()
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -315,6 +402,25 @@ pub trait AgentBackend: Send {
     fn send(&mut self, id: &str, text: &str) -> Result<(), Error>;
     fn interrupt(&mut self, id: &str) -> Result<(), Error>;
 
+    /// The devices this surface may place work on.
+    ///
+    /// The default is none: an adapter that has not thought about placement
+    /// offers no choice rather than one option that is really the only machine
+    /// it knows. The list is what the picker draws, so an empty one is a picker
+    /// a view can leave out.
+    fn devices(&mut self) -> Vec<Device> {
+        Vec::new()
+    }
+
+    /// Model ids the harness will accept, in the harness's own order.
+    ///
+    /// Empty when it advertises none, which is a fact a picker shows by not
+    /// offering a list. These are runnable strings — the harness said so — and
+    /// a view must not add to them.
+    fn models(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// The next change, waiting up to `timeout_ms`. `None` means "nothing yet",
     /// never "nothing will ever happen". A backend with no stream returns
     /// `None` immediately and a guest re-reads `list` after its own actions.
@@ -326,6 +432,71 @@ pub trait AgentBackend: Send {
     /// Re-read the roster after a session notice. The default is a no-op: an
     /// adapter whose list is its own state has nothing to re-read.
     fn refresh(&mut self) {}
+}
+
+/// A roster that also says which devices exist, including the ones it could not
+/// attach.
+///
+/// A device that refused this host is still a machine a person is choosing
+/// between; hiding it turns "the studio is not answering" into "the studio does
+/// not exist", and the fix for those is not the same. The roster stays the
+/// inner backend's: a window with one dead endpoint still shows the agents the
+/// live one has.
+pub struct DeclaredDevices {
+    devices: Vec<Device>,
+    inner: Box<dyn AgentBackend>,
+}
+
+impl DeclaredDevices {
+    pub fn new(devices: Vec<Device>, inner: Box<dyn AgentBackend>) -> Self {
+        Self { devices, inner }
+    }
+}
+
+impl AgentBackend for DeclaredDevices {
+    fn list(&mut self) -> Vec<Agent> {
+        self.inner.list()
+    }
+
+    fn get(&mut self, id: &str) -> Option<Agent> {
+        self.inner.get(id)
+    }
+
+    fn binding(&mut self) -> Binding {
+        self.inner.binding()
+    }
+
+    fn scope(&mut self) -> Scope {
+        self.inner.scope()
+    }
+
+    fn devices(&mut self) -> Vec<Device> {
+        self.devices.clone()
+    }
+
+    fn transcript(&mut self, id: &str, before: Option<u64>, limit: u32) -> Result<Page, Error> {
+        self.inner.transcript(id, before, limit)
+    }
+
+    fn answer(&mut self, id: &str, prompt_id: &str, answer: Answer) -> Result<(), Error> {
+        self.inner.answer(id, prompt_id, answer)
+    }
+
+    fn send(&mut self, id: &str, text: &str) -> Result<(), Error> {
+        self.inner.send(id, text)
+    }
+
+    fn interrupt(&mut self, id: &str) -> Result<(), Error> {
+        self.inner.interrupt(id)
+    }
+
+    fn next(&mut self, timeout_ms: u32) -> Option<Change> {
+        self.inner.next(timeout_ms)
+    }
+
+    fn refresh(&mut self) {
+        self.inner.refresh()
+    }
 }
 
 /// A host with no adapter attached. Every read fails loudly rather than
@@ -359,5 +530,89 @@ impl AgentBackend for NoAgents {
 
     fn interrupt(&mut self, _id: &str) -> Result<(), Error> {
         Err(Error::Denied)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Records which device it was asked for, so a test can tell a route from a
+    /// fallback.
+    struct Taken {
+        device: String,
+        asked: Vec<String>,
+    }
+
+    impl Sessions for Taken {
+        fn create(&mut self, task: &Task) -> Result<Created, Error> {
+            self.asked.push(self.device.clone());
+            Ok(Created {
+                id: format!("{}-{}", self.device, self.asked.len()),
+                harness: task.harness.clone(),
+                title: task.text.clone(),
+                workspace: None,
+                model: None,
+            })
+        }
+    }
+
+    fn task(environment: &str) -> Task {
+        Task {
+            text: "port the lane".into(),
+            harness: "operator".into(),
+            environment: environment.into(),
+            title: None,
+            model: None,
+        }
+    }
+
+    #[test]
+    fn a_task_runs_on_the_device_it_names() {
+        let mut routes = RoutedSessions::new(vec![
+            (
+                "averys-macbook-neo".into(),
+                Box::new(Taken {
+                    device: "neo".into(),
+                    asked: Vec::new(),
+                }),
+            ),
+            (
+                "Averys-Mac-Studio".into(),
+                Box::new(Taken {
+                    device: "studio".into(),
+                    asked: Vec::new(),
+                }),
+            ),
+        ]);
+
+        let created = routes
+            .create(&task("averys-mac-studio.local"))
+            .expect("the studio route answers its own name in any case");
+        assert_eq!(created.id, "studio-1");
+        assert_eq!(
+            routes.devices(),
+            vec!["averys-macbook-neo".to_string(), "averys-mac-studio".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_device_nobody_attached_is_refused_not_redirected() {
+        let mut routes = RoutedSessions::new(vec![(
+            "averys-macbook-neo".into(),
+            Box::new(Taken {
+                device: "neo".into(),
+                asked: Vec::new(),
+            }),
+        )]);
+
+        assert_eq!(routes.create(&task("agora-one")), Err(Error::Unsupported));
+    }
+
+    #[test]
+    fn one_device_has_one_comparable_name() {
+        assert_eq!(device_key("Averys-MacBook-Neo.local"), "averys-macbook-neo");
+        assert_eq!(device_key(" averys-macbook-neo "), "averys-macbook-neo");
+        assert_eq!(device_key("agora-one"), "agora-one");
     }
 }
