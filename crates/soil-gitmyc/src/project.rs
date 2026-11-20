@@ -43,6 +43,30 @@ impl Resolved {
     }
 }
 
+/// Which forge's API dialect we are speaking.
+///
+/// Two differences matter and both are small: how a branch is named in a commit
+/// listing (GitHub wants `master`, Gitea takes `refs/heads/master` too) and how raw
+/// file bytes are returned (GitHub wraps them in base64 JSON, Gitea serves `<raw>`).
+/// Everything else — refs, trees, commits — is the same shape, which is why this is
+/// a flag and not a trait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provider {
+    Gitea,
+    GitHub,
+}
+
+impl Provider {
+    #[must_use]
+    pub fn for_api(api: &str) -> Self {
+        if api.contains("github") {
+            Self::GitHub
+        } else {
+            Self::Gitea
+        }
+    }
+}
+
 /// A client for one forge. Holds the forge's credential, which is the reason it
 /// never leaves the host: callers present capabilities, this presents the token.
 #[derive(Clone)]
@@ -52,14 +76,17 @@ pub struct Forge {
     pub user: String,
     pub token: String,
     pub client: reqwest::Client,
+    pub provider: Provider,
 }
 
 impl Forge {
     #[must_use]
     pub fn new(base: impl Into<String>, api: impl Into<String>, user: impl Into<String>, token: impl Into<String>) -> Self {
+        let api = api.into();
         Self {
+            provider: Provider::for_api(&api),
             base: base.into(),
-            api: api.into(),
+            api,
             user: user.into(),
             token: token.into(),
             client: reqwest::Client::builder()
@@ -90,9 +117,16 @@ impl Forge {
         } else {
             format!("refs/heads/{requested}")
         };
+        // A commit listing names a branch, and GitHub does not accept the full ref
+        // while Gitea accepts either. `per_page` and `limit` are sent together so one
+        // request serves both dialects.
+        let short = full_ref
+            .strip_prefix("refs/heads/")
+            .unwrap_or(&full_ref)
+            .to_string();
         let url = self.api_url(
             repo,
-            &format!("commits?sha={}&limit=1", urlencode(&full_ref)),
+            &format!("commits?sha={}&per_page=1&limit=1", urlencode(&short)),
         );
         let response = self
             .client
@@ -213,18 +247,48 @@ impl Forge {
         if !is_tree_path(path) {
             bail!("path {path:?} does not name a file inside the tree");
         }
-        let url = self.api_url(repo, &format!("raw/{path}?ref={commit}"));
+        let (url, wrapped) = match self.provider {
+            Provider::Gitea => (self.api_url(repo, &format!("raw/{path}?ref={commit}")), false),
+            Provider::GitHub => (
+                self.api_url(repo, &format!("contents/{path}?ref={commit}")),
+                true,
+            ),
+        };
         let response = self
             .client
             .get(url)
             .basic_auth(&self.user, Some(&self.token))
+            .header("Accept", "application/vnd.github+json")
             .send()
             .await
             .with_context(|| format!("blob {path} of {repo}@{commit}"))?;
         if !response.status().is_success() {
             bail!("forge returned {} for {path}", response.status());
         }
-        Ok(response.bytes().await?.to_vec())
+        if !wrapped {
+            return Ok(response.bytes().await?.to_vec());
+        }
+        let body: Value = response.json().await.context("contents json")?;
+        let encoding = body
+            .get("encoding")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let content = body
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if encoding != "base64" || content.is_empty() {
+            // A file over ~1 MB comes back without inline content; the caller would
+            // rather see this than an empty file.
+            bail!(
+                "{path} is not inline in the contents API (encoding {encoding:?}); fetch it by blob id"
+            );
+        }
+        let cleaned: String = content.chars().filter(|c| !c.is_whitespace()).collect();
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(cleaned)
+            .with_context(|| format!("decode {path}"))
     }
 
     /// Materialize a commit into `vfs` under `prefix`.
