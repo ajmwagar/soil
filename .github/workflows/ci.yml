@@ -60,9 +60,15 @@ jobs:
       - name: Clippy (host features)
         run: cargo clippy -p soil --features dispatch,acp --all-targets --locked -- -D warnings
 
+      # The Lua module is generated from `wit/` (including `wit/deps/`). A
+      # checked-in surface that no longer matches is a guest API the host does
+      # not implement, so the generator's own gate runs before the test suite.
+      - name: Lua SDK is current
+        run: cargo run -p soil-sdk-lua --locked -- --check
+
       # `soil`'s own suite joins this step once it is green: three
       # `records_host` tests (upsert_get_scan_and_delete and two neighbours)
       # fail in every checkout today. That is a bug to fix, not a hole to widen
       # the gate around.
       - name: Test
-        run: cargo test -p soil-agent-host -p soil-agentsd --locked
+        run: cargo test -p soil-agent-host -p soil-agentsd -p soil-abi -p soil-sdk-lua --locked

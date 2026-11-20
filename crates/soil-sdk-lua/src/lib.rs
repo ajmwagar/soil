@@ -30,14 +30,8 @@ pub struct Generated {
 /// topologically orders them by their declared foreign dependencies.
 pub fn load(wit_dir: &Path) -> Result<Resolve> {
     let mut files = Vec::new();
-    for entry in std::fs::read_dir(wit_dir)
-        .with_context(|| format!("read WIT directory {}", wit_dir.display()))?
-    {
-        let path = entry?.path();
-        if path.extension().and_then(|value| value.to_str()) == Some("wit") {
-            files.push(path);
-        }
-    }
+    collect_wit_files(wit_dir, &mut files)
+        .with_context(|| format!("read WIT directory {}", wit_dir.display()))?;
     files.sort();
     if files.is_empty() {
         bail!("no .wit files in {}", wit_dir.display());
@@ -249,6 +243,22 @@ end
     }))?;
 
     Ok(Generated { lua, manifest })
+}
+
+/// Collects `.wit` files under `directory`, including vendored dependencies in
+/// `wit/deps/`. The canonical directory holds one package per top-level file;
+/// external packages such as `wasi:webgpu` live under `deps/` and must resolve
+/// so a canonical contract (for example `soil:present`) can be generated.
+fn collect_wit_files(directory: &Path, files: &mut Vec<std::path::PathBuf>) -> Result<()> {
+    for entry in std::fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_wit_files(&path, files)?;
+        } else if path.extension().and_then(|value| value.to_str()) == Some("wit") {
+            files.push(path);
+        }
+    }
+    Ok(())
 }
 
 struct Unit {
@@ -553,8 +563,12 @@ fn docs(docs: &Docs) -> Option<String> {
     }
     let mut out = String::new();
     for line in contents.lines() {
-        out.push_str("--- ");
-        out.push_str(line.trim_end());
+        let line = line.trim_end();
+        out.push_str("---");
+        if !line.is_empty() {
+            out.push(' ');
+            out.push_str(line);
+        }
         out.push('\n');
     }
     Some(out)
