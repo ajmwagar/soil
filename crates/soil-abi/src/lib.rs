@@ -63,6 +63,12 @@ pub const CONTRACTS: &[Contract] = &[
         interfaces: &[("storage", &["read", "write"])],
     },
     Contract {
+        file: "wit/soil-stream.wit",
+        source: include_str!("../../../wit/soil-stream.wit"),
+        package: "soil:streams@0.1.0",
+        interfaces: &[("duplex", &["accept"])],
+    },
+    Contract {
         file: "wit/soil-vfs.wit",
         source: include_str!("../../../wit/soil-vfs.wit"),
         package: "soil:vfs@1.0.0",
@@ -72,7 +78,7 @@ pub const CONTRACTS: &[Contract] = &[
         file: "wit/soil-vfs-mut.wit",
         source: include_str!("../../../wit/soil-vfs-mut.wit"),
         package: "soil:vfs-mut@0.1.0",
-        interfaces: &[("vfs-mut", &["write", "remove", "mkdir", "rmdir", "rename"])],
+        interfaces: &[("vfs-mut", &["begin-write", "write", "remove", "mkdir", "rmdir", "rename"])],
     },
     Contract {
         file: "wit/soil-index.wit",
@@ -108,8 +114,8 @@ pub const CONTRACTS: &[Contract] = &[
     Contract {
         file: "wit/soil-inference.wit",
         source: include_str!("../../../wit/soil-inference.wit"),
-        package: "soil:inference@0.2.0",
-        interfaces: &[("inference", &["models", "complete", "open-stream", "state"])],
+        package: "soil:inference@0.3.0",
+        interfaces: &[("inference", &["models", "complete", "embed", "open-stream", "state"])],
     },
     Contract {
         file: "wit/soil-spore.wit",

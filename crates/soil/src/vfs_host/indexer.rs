@@ -71,6 +71,7 @@ pub(crate) struct SqliteIndex {
     generation: u64,
     rebuilt_at_ms: u64,
     ready: bool,
+    source_hash: Option<String>,
 }
 
 impl SqliteIndex {
@@ -131,6 +132,7 @@ impl SqliteIndex {
             generation: 0,
             rebuilt_at_ms: 0,
             ready: false,
+            source_hash: None,
         };
         index.load()?;
         Ok(index)
@@ -146,6 +148,7 @@ impl SqliteIndex {
             .and_then(|value| value.parse().ok())
             .unwrap_or(0);
         self.ready = self.meta("ready")?.as_deref() == Some("1");
+        self.source_hash = self.meta("source_hash")?;
 
         let mut statement = self.db.prepare(
             "SELECT path,content_id,size,media_type,version,hydration,pinned,updated_at_ms,kind,child_count,text
@@ -206,10 +209,6 @@ impl SqliteIndex {
             params![key, value],
         )?;
         Ok(())
-    }
-
-    fn persisted_source(&self) -> anyhow::Result<Option<String>> {
-        self.meta("source_hash")
     }
 
     /// Persist one vector for a current chunk. Vectors are derived cache data,
@@ -350,6 +349,7 @@ impl SqliteIndex {
         self.generation = generation;
         self.rebuilt_at_ms = rebuilt_at_ms;
         self.ready = true;
+        self.source_hash = Some(source_hash.to_string());
         self.set_meta("generation", &generation.to_string())?;
         self.set_meta("rebuilt_at_ms", &rebuilt_at_ms.to_string())?;
         self.set_meta("ready", "1")?;
@@ -574,7 +574,7 @@ impl IndexBackend for SqliteIndex {
         let entries = vfs.list("")?;
         let directories = vfs.directories("")?;
         let source_hash = source_hash(&entries, &directories);
-        if self.ready && self.persisted_source()?.as_deref() == Some(&source_hash) {
+        if self.ready && self.source_hash.as_deref() == Some(&source_hash) {
             return Ok(());
         }
         self.rebuild(vfs, &entries, &directories, &source_hash)

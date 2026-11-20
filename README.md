@@ -56,14 +56,15 @@ Principles:
 | [`soil:http@0.1.0`](wit/soil-http.wit) | `soil:http` | WIT + bounded host + direct transport proof |
 | [`soil:index@1.1.0`](wit/soil-index.wit) | `soil:index` | derived browse/search + explicit KNN; fast direct-child traversal |
 | [`soil:vfs@1.0.0`](wit/soil-vfs.wit) | `soil:vfs` | read-only workspace namespace |
-| [`soil:vfs-mut@0.1.0`](wit/soil-vfs-mut.wit) | `soil:vfs-mut` | separate write/mkdir/rmdir/rename grant |
+| [`soil:streams@0.1.0`](wit/soil-stream.wit) | `soil:stream` | host-issued WSS/Iroh/pipe byte sessions; `accept` is a poll, `read` is bounded |
+| [`soil:vfs-mut@0.1.0`](wit/soil-vfs-mut.wit) | `soil:vfs-mut` | separate write/mkdir/rmdir/rename grant; streaming writer for uploads |
 | [`soil:vfs-cid@0.1.0`](wit/soil-vfs-cid.wit) | `soil:vfs-cid` | content-id lookup inside the workspace namespace |
 | [`soil:git@0.1.0`](wit/soil-git.wit) | `soil:git` | repository status for a granted workspace path |
 | [`soil:creds@1.0.0`](wit/soil-creds.wit) | `soil:creds` | host-held signing and verification; no secret export |
 | [`soil:unibus@0.1.0`](wit/soil-unibus.wit) | `soil:unibus` observe/publish | bounded poll/publish over the host-owned bus |
 | [`soil:media@0.1.0`](wit/soil-media.wit) | `soil:media`, optional `soil:media-encoded` | host playback, encoded chunks, bounded image readback |
 | [`soil:surface-import@0.1.0`](wit/soil-surface-import.wit) | `soil:surface-import` | host-owned imported surfaces, damage events, normalized input |
-| [`soil:inference@0.2.0`](wit/soil-inference.wit) | `soil:inference` | WIT + models, tools, completion, SSE stream resource |
+| [`soil:inference@0.3.0`](wit/soil-inference.wit) | `soil:inference` | WIT + models, tools, completion, embeddings, SSE stream resource |
 | [`soil:search@0.6.0`](wit/soil-search.wit) | `soil:search` | WIT + files/records/graph host composition + host-local application inventory + typed `@` mention resolver |
 | [`soil:spore@0.3.0`](wit/soil-spore.wit) | `soil:spore.catalog`, `soil:spore.launch` | installed-Spore catalog and host-owned launch; listing, running and install are separate intents |
 | [`soil:graph@0.1.0`](wit/soil-graph.wit) | `soil:graph` | read-only edge/reference queries over records |
@@ -97,6 +98,27 @@ name, interface and functions, so an accidental ABI change fails the build. See
 Battery, estimate, lid and Canvas animation are semantic WIT but are lowered
 through a bounded core-Wasm ABI by the S22 runtime. See
 [`docs/abi-core-wasm.md`](docs/abi-core-wasm.md).
+
+## One runner
+
+`soil` is one host and one binary. A Spore can run as a command, an HTTP
+service, a window or a browser bridge; the manifest's grants decide what it may
+call, not which executable started it.
+
+```sh
+soil spore run ./spore --mode command -- ingest --event '<json>'
+soil spore run ./spore --mode http
+soil spore run ./spore --mode ui
+soil spore run ./spore --mode web
+```
+
+The command path links VFS, VFS mutation, the derived index, records, Unibus,
+inference, HTTP, time and credentials in the same `WasiHost`. A Spore that
+imports an interface it was not granted still fails; linking is the host
+offering, grants are the Spore's authority.
+
+See [docs/soil-shell.md](docs/soil-shell.md) for the modes and the host
+environment.
 
 The first host-backed capability is BLE: [`crates/soil-ble-host`](crates/soil-ble-host)
 runs the [COLMI ring Spore](https://github.com/ajmwagar/spores/tree/main/spores/colmi-ring)
