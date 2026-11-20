@@ -7041,6 +7041,29 @@
               "result": "result<page, error>"
             },
             {
+              "docs": "Scan live records packed into one buffer. Same cursor and limit rules as\n`scan`, but the entries are framed bytes rather than a list of records.",
+              "kind": "freestanding",
+              "lua": "scan_packed",
+              "member": "scan-packed",
+              "name": "scan-packed",
+              "params": [
+                {
+                  "name": "collection",
+                  "type": "string"
+                },
+                {
+                  "name": "cursor",
+                  "type": "option<string>"
+                },
+                {
+                  "name": "limit",
+                  "type": "u32"
+                }
+              ],
+              "resource": null,
+              "result": "result<packed-page, error>"
+            },
+            {
               "docs": "Create or replace a local record. The host assigns `revision` and\n`origin`; the returned entry is authoritative.",
               "kind": "freestanding",
               "lua": "upsert",
@@ -7157,6 +7180,22 @@
               "kind": "record",
               "lua": "Key",
               "name": "key"
+            },
+            {
+              "docs": "A page of live records packed into one buffer.\n\nThe frame is, repeated until the buffer ends, all integers little-endian:\n  u32 id-length, id bytes, u64 revision, u32 body-length, body bytes\n\nThis exists for callers that read a whole book: lowering thousands of\n`entry` values costs more than the bytes, while one `list<u8>` crosses the\nboundary once. There is no `deleted` field; packed scans are live-only.",
+              "fields": [
+                {
+                  "name": "entries",
+                  "type": "list<u8>"
+                },
+                {
+                  "name": "next",
+                  "type": "option<string>"
+                }
+              ],
+              "kind": "record",
+              "lua": "PackedPage",
+              "name": "packed-page"
             },
             {
               "docs": null,

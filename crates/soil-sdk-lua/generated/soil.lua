@@ -1091,6 +1091,7 @@ M.soil.records.records.types.CasResult = { fields = { { name = "applied", type =
 M.soil.records.records.types.Entry = { fields = { { name = "key", type = "key" }, { name = "schema", type = "string" }, { name = "revision", type = "u64" }, { name = "updated-at-ms", type = "u64" }, { name = "origin", type = "string" }, { name = "deleted", type = "bool" }, { name = "body", type = "list<u8>" } } }
 M.soil.records.records.types.Error = { DENIED = "denied", NOT_FOUND = "not-found", OVER_BUDGET = "over-budget", INVALID = "invalid", STALE = "stale", IO = "io", UNSUPPORTED = "unsupported" }
 M.soil.records.records.types.Key = { fields = { { name = "collection", type = "string" }, { name = "id", type = "string" } } }
+M.soil.records.records.types.PackedPage = { fields = { { name = "entries", type = "list<u8>" }, { name = "next", type = "option<string>" } } }
 M.soil.records.records.types.Page = { fields = { { name = "entries", type = "list<entry>" }, { name = "next", type = "option<string>" } } }
 M.soil.records.records.types.Version = { fields = { { name = "revision", type = "u64" }, { name = "origin", type = "string" } } }
 --- Merge remote changes with last-writer-wins. This never calls back into
@@ -1132,6 +1133,12 @@ end
 -- WIT: scan -> result<page, error>
 function M.soil.records.records.scan(args)
   return dispatch("soil:records@0.1.0/records", "scan", args)
+end
+--- Scan live records packed into one buffer. Same cursor and limit rules as
+--- `scan`, but the entries are framed bytes rather than a list of records.
+-- WIT: scan-packed -> result<packed-page, error>
+function M.soil.records.records.scan_packed(args)
+  return dispatch("soil:records@0.1.0/records", "scan-packed", args)
 end
 --- Create or replace a local record. The host assigns `revision` and
 --- `origin`; the returned entry is authoritative.

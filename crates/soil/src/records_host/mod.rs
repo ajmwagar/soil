@@ -223,6 +223,10 @@ impl RecordsBookHost {
     }
 }
 
+fn put_u32(out: &mut Vec<u8>, value: usize) {
+    out.extend_from_slice(&(value as u32).to_le_bytes());
+}
+
 impl records::Host for RecordsBookHost {
     fn get(&mut self, key: records::Key) -> Result<records::Entry, records::Error> {
         let id = self.key(&key)?;
@@ -268,6 +272,43 @@ impl records::Host for RecordsBookHost {
             entries: page,
             next,
         })
+    }
+
+    fn scan_packed(
+        &mut self,
+        collection: String,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> Result<records::PackedPage, records::Error> {
+        if collection != self.collection {
+            return Err(records::Error::Invalid);
+        }
+        if limit == 0 || limit > MAX_PAGE {
+            return Err(records::Error::OverBudget);
+        }
+        let records = {
+            let store = self.store.lock().expect("records store poisoned");
+            store
+                .scan_records(&self.book, cursor.as_deref(), limit as usize + 1)
+                .map_err(|error| store_error("records store", error))?
+        };
+        let mut records: Vec<_> = records.into_iter().collect();
+        let next = if records.len() > limit as usize {
+            records.truncate(limit as usize);
+            records.last().map(|record| record.entity_id.clone())
+        } else {
+            None
+        };
+        let mut entries = Vec::new();
+        for record in records {
+            let body = serde_json::to_vec(&record.fields).unwrap_or_default();
+            put_u32(&mut entries, record.entity_id.len());
+            entries.extend_from_slice(record.entity_id.as_bytes());
+            entries.extend_from_slice(&record.updated_hlc.to_le_bytes());
+            put_u32(&mut entries, body.len());
+            entries.extend_from_slice(&body);
+        }
+        Ok(records::PackedPage { entries, next })
     }
 
     fn upsert(&mut self, entry: records::Entry) -> Result<records::Entry, records::Error> {
@@ -449,6 +490,38 @@ where
 mod tests {
     use super::*;
     use self::soil::records::records::Host as _;
+
+    #[test]
+    fn packed_page_frames_id_revision_and_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = RecordsBookHost::open(dir.path(), "personal/test/packed", "things").unwrap();
+        host.upsert(records::Entry {
+            key: records::Key {
+                collection: "things".into(),
+                id: "one".into(),
+            },
+            schema: "things/thing".into(),
+            revision: 0,
+            updated_at_ms: 0,
+            origin: String::new(),
+            deleted: false,
+            body: br#"{"n":1}"#.to_vec(),
+        })
+        .unwrap();
+        let page = host.scan_packed("things".into(), None, 10).unwrap();
+        let mut rest = &page.entries[..];
+        let id_len = u32::from_le_bytes(rest[..4].try_into().unwrap()) as usize;
+        rest = &rest[4..];
+        assert_eq!(&rest[..id_len], b"one");
+        rest = &rest[id_len..];
+        let revision = u64::from_le_bytes(rest[..8].try_into().unwrap());
+        rest = &rest[8..];
+        let body_len = u32::from_le_bytes(rest[..4].try_into().unwrap()) as usize;
+        rest = &rest[4..];
+        assert_eq!(&rest[..body_len], br#"{"n":1}"#);
+        assert!(revision > 0);
+        assert!(page.next.is_none());
+    }
 
     fn contact(id: &str) -> records::Entry {
         let value = serde_json::json!({

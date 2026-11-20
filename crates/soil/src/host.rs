@@ -691,6 +691,15 @@ impl records::Host for WasiHost {
         self.with_records(|book| records::Host::scan(book, collection, cursor, limit))
     }
 
+    fn scan_packed(
+        &mut self,
+        collection: String,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> std::result::Result<records::PackedPage, records::Error> {
+        self.with_records(|book| records::Host::scan_packed(book, collection, cursor, limit))
+    }
+
     fn upsert(
         &mut self,
         entry: records::Entry,
