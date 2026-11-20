@@ -3557,7 +3557,7 @@
     },
     {
       "docs": "Host-mediated language-model inference.\n\nThe host owns provider selection, endpoint discovery, authentication, model\naliases, budgets, and transport. A Spore names a model, messages, and tools.\nCredentials and provider routes never cross this boundary.",
-      "id": "soil:inference@0.2.0",
+      "id": "soil:inference@0.3.0",
       "interfaces": [
         {
           "docs": null,
@@ -3612,6 +3612,21 @@
               "result": "result<response, error>"
             },
             {
+              "docs": "Non-streaming text embeddings. The host scrubs every input before it\nleaves the process and returns vectors in input order.",
+              "kind": "freestanding",
+              "lua": "embed",
+              "member": "embed",
+              "name": "embed",
+              "params": [
+                {
+                  "name": "request",
+                  "type": "embed-request"
+                }
+              ],
+              "resource": null,
+              "result": "result<embed-response, error>"
+            },
+            {
               "docs": "List models visible to this host/profile.",
               "kind": "freestanding",
               "lua": "models",
@@ -3645,9 +3660,24 @@
               "params": [],
               "resource": null,
               "result": "result<inference-state, error>"
+            },
+            {
+              "docs": "Non-streaming speaker embedding. This is an audio path, deliberately\nseparate from text `embed`: it sends PCM16, not scrubbed text.",
+              "kind": "freestanding",
+              "lua": "voice_embed",
+              "member": "voice-embed",
+              "name": "voice-embed",
+              "params": [
+                {
+                  "name": "request",
+                  "type": "voice-embedding-request"
+                }
+              ],
+              "resource": null,
+              "result": "result<voice-embedding-response, error>"
             }
           ],
-          "id": "soil:inference@0.2.0/inference",
+          "id": "soil:inference@0.3.0/inference",
           "name": "inference",
           "types": [
             {
@@ -3675,6 +3705,19 @@
               "name": "attachment"
             },
             {
+              "cases": [
+                "chat",
+                "tools",
+                "vision",
+                "embeddings",
+                "rerank"
+              ],
+              "docs": "What a model can do. A host fills these from its provider catalog; a\nguest uses them to pick a tier without hardcoding provider names.",
+              "kind": "enum",
+              "lua": "Capability",
+              "name": "capability"
+            },
+            {
               "docs": null,
               "fields": [
                 {
@@ -3695,6 +3738,66 @@
               "kind": "resource",
               "lua": "CompletionStream",
               "name": "completion-stream"
+            },
+            {
+              "docs": null,
+              "fields": [
+                {
+                  "name": "model",
+                  "type": "string"
+                },
+                {
+                  "name": "inputs",
+                  "type": "list<string>"
+                },
+                {
+                  "name": "dimensions",
+                  "type": "option<u32>"
+                },
+                {
+                  "name": "prompt-cache-key",
+                  "type": "option<string>"
+                }
+              ],
+              "kind": "record",
+              "lua": "EmbedRequest",
+              "name": "embed-request"
+            },
+            {
+              "docs": null,
+              "fields": [
+                {
+                  "name": "model",
+                  "type": "string"
+                },
+                {
+                  "name": "vectors",
+                  "type": "list<list<f32>>"
+                },
+                {
+                  "name": "usage",
+                  "type": "option<embed-usage>"
+                }
+              ],
+              "kind": "record",
+              "lua": "EmbedResponse",
+              "name": "embed-response"
+            },
+            {
+              "docs": null,
+              "fields": [
+                {
+                  "name": "prompt-tokens",
+                  "type": "u32"
+                },
+                {
+                  "name": "total-tokens",
+                  "type": "u32"
+                }
+              ],
+              "kind": "record",
+              "lua": "EmbedUsage",
+              "name": "embed-usage"
             },
             {
               "cases": [
@@ -3781,6 +3884,18 @@
                 },
                 {
                   "name": "context-window",
+                  "type": "option<u32>"
+                },
+                {
+                  "name": "tier",
+                  "type": "option<string>"
+                },
+                {
+                  "name": "capabilities",
+                  "type": "list<capability>"
+                },
+                {
+                  "name": "embedding-dimensions",
                   "type": "option<u32>"
                 }
               ],
@@ -3915,13 +4030,61 @@
               "kind": "record",
               "lua": "Usage",
               "name": "usage"
+            },
+            {
+              "docs": "One PCM16LE mono utterance for speaker/voice embedding. The model and\ncheckpoint are named explicitly: voice templates are only comparable to\nembeddings from the same pipeline.",
+              "fields": [
+                {
+                  "name": "model",
+                  "type": "string"
+                },
+                {
+                  "name": "checkpoint",
+                  "type": "string"
+                },
+                {
+                  "name": "sample-rate",
+                  "type": "u32"
+                },
+                {
+                  "name": "dimensions",
+                  "type": "option<u32>"
+                },
+                {
+                  "name": "pcm16",
+                  "type": "list<u8>"
+                }
+              ],
+              "kind": "record",
+              "lua": "VoiceEmbeddingRequest",
+              "name": "voice-embedding-request"
+            },
+            {
+              "docs": null,
+              "fields": [
+                {
+                  "name": "model",
+                  "type": "string"
+                },
+                {
+                  "name": "embedding",
+                  "type": "list<f32>"
+                },
+                {
+                  "name": "usage",
+                  "type": "option<embed-usage>"
+                }
+              ],
+              "kind": "record",
+              "lua": "VoiceEmbeddingResponse",
+              "name": "voice-embedding-response"
             }
           ]
         }
       ],
       "name": "inference",
       "namespace": "soil",
-      "version": "0.2.0"
+      "version": "0.3.0"
     },
     {
       "docs": "Shared normalized input types.\n\nPresentation surfaces (Canvas, Terminal, imported surfaces) use the same\nsemantic key, pointer, scroll and text vocabulary. The host owns platform\nkeycode and IME translation; guests only see these normalized values.",
@@ -7987,6 +8150,151 @@
       "version": "1.0.0"
     },
     {
+      "docs": "Host-issued byte streams.\n\nA Spore never creates a listener, dials a socket, or holds a TLS key. The\nhost accepts the transport, authenticates the peer, and queues a bounded\nduplex session. A Spore polls `accept`, then reads and writes the bytes.",
+      "id": "soil:streams@0.1.0",
+      "interfaces": [
+        {
+          "docs": null,
+          "functions": [
+            {
+              "docs": null,
+              "kind": "method",
+              "lua": "close",
+              "member": "close",
+              "name": "[method]session.close",
+              "params": [
+                {
+                  "name": "self",
+                  "type": "borrow<session>"
+                }
+              ],
+              "resource": "session",
+              "result": "result<_, error>"
+            },
+            {
+              "docs": null,
+              "kind": "method",
+              "lua": "info",
+              "member": "info",
+              "name": "[method]session.info",
+              "params": [
+                {
+                  "name": "self",
+                  "type": "borrow<session>"
+                }
+              ],
+              "resource": "session",
+              "result": "info"
+            },
+            {
+              "docs": "`none` is end of stream. A read never waits forever; the host may\nreturn `none` when the peer is gone or the session was closed.",
+              "kind": "method",
+              "lua": "read",
+              "member": "read",
+              "name": "[method]session.read",
+              "params": [
+                {
+                  "name": "self",
+                  "type": "borrow<session>"
+                },
+                {
+                  "name": "max",
+                  "type": "u32"
+                }
+              ],
+              "resource": "session",
+              "result": "result<option<list<u8>>, error>"
+            },
+            {
+              "docs": null,
+              "kind": "method",
+              "lua": "write",
+              "member": "write",
+              "name": "[method]session.write",
+              "params": [
+                {
+                  "name": "self",
+                  "type": "borrow<session>"
+                },
+                {
+                  "name": "data",
+                  "type": "list<u8>"
+                }
+              ],
+              "resource": "session",
+              "result": "result<u64, error>"
+            },
+            {
+              "docs": "Take the next authenticated session for `protocol`, or `none` when the\nqueue is empty. This is a poll, not a listener.",
+              "kind": "freestanding",
+              "lua": "accept",
+              "member": "accept",
+              "name": "accept",
+              "params": [
+                {
+                  "name": "protocol",
+                  "type": "string"
+                }
+              ],
+              "resource": null,
+              "result": "result<option<own<session>>, error>"
+            }
+          ],
+          "id": "soil:streams@0.1.0/duplex",
+          "name": "duplex",
+          "types": [
+            {
+              "cases": [
+                "denied",
+                "invalid",
+                "closed",
+                "over-budget",
+                "unavailable",
+                "io"
+              ],
+              "docs": null,
+              "kind": "enum",
+              "lua": "Error",
+              "name": "error"
+            },
+            {
+              "docs": null,
+              "fields": [
+                {
+                  "name": "protocol",
+                  "type": "string"
+                },
+                {
+                  "name": "peer",
+                  "type": "option<string>"
+                },
+                {
+                  "name": "principal",
+                  "type": "option<string>"
+                },
+                {
+                  "name": "media-type",
+                  "type": "option<string>"
+                }
+              ],
+              "kind": "record",
+              "lua": "Info",
+              "name": "info"
+            },
+            {
+              "docs": null,
+              "kind": "resource",
+              "lua": "Session",
+              "name": "session"
+            }
+          ]
+        }
+      ],
+      "name": "streams",
+      "namespace": "soil",
+      "version": "0.1.0"
+    },
+    {
       "docs": "Host-owned imported surfaces.\n\nA surface is a native view, remote stream, decoded video, browser view, or\nanother Spore's render target. The host owns the pixels/texture and composes\nthem into Canvas. A Spore receives an opaque handle, metadata, damage, and\nnormalized input only.",
       "id": "soil:surface-import@0.1.0",
       "interfaces": [
@@ -9181,6 +9489,86 @@
           "docs": null,
           "functions": [
             {
+              "docs": null,
+              "kind": "method",
+              "lua": "abort",
+              "member": "abort",
+              "name": "[method]writer.abort",
+              "params": [
+                {
+                  "name": "self",
+                  "type": "borrow<writer>"
+                }
+              ],
+              "resource": "writer",
+              "result": "result<_, error>"
+            },
+            {
+              "docs": null,
+              "kind": "method",
+              "lua": "finish",
+              "member": "finish",
+              "name": "[method]writer.finish",
+              "params": [
+                {
+                  "name": "self",
+                  "type": "borrow<writer>"
+                }
+              ],
+              "resource": "writer",
+              "result": "result<write-result, error>"
+            },
+            {
+              "docs": null,
+              "kind": "method",
+              "lua": "write",
+              "member": "write",
+              "name": "[method]writer.write",
+              "params": [
+                {
+                  "name": "self",
+                  "type": "borrow<writer>"
+                },
+                {
+                  "name": "data",
+                  "type": "list<u8>"
+                }
+              ],
+              "resource": "writer",
+              "result": "result<u64, error>"
+            },
+            {
+              "docs": "Open a streaming writer. `expected-size` is an advisory quota; the host\nmay still enforce a smaller per-principal limit.",
+              "kind": "freestanding",
+              "lua": "begin_write",
+              "member": "begin-write",
+              "name": "begin-write",
+              "params": [
+                {
+                  "name": "path",
+                  "type": "string"
+                },
+                {
+                  "name": "media-type",
+                  "type": "string"
+                },
+                {
+                  "name": "expected-size",
+                  "type": "option<u64>"
+                },
+                {
+                  "name": "expected-version",
+                  "type": "option<u64>"
+                },
+                {
+                  "name": "mode",
+                  "type": "option<u32>"
+                }
+              ],
+              "resource": null,
+              "result": "result<own<writer>, error>"
+            },
+            {
               "docs": "Change permission bits without touching content. A mode belongs to the\nentry, not to a version of the bytes, so this adds no version.",
               "kind": "freestanding",
               "lua": "chmod",
@@ -9343,6 +9731,12 @@
               "kind": "record",
               "lua": "WriteResult",
               "name": "write-result"
+            },
+            {
+              "docs": "Stream one file into the VFS. The host owns the temp object, hashing,\nquotas and the atomic commit. `write` returns the bytes accepted so far.",
+              "kind": "resource",
+              "lua": "Writer",
+              "name": "writer"
             }
           ]
         }
