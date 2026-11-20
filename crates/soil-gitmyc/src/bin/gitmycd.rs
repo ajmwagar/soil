@@ -107,6 +107,48 @@ enum Command {
         #[arg(default_value = "")]
         prompt: String,
     },
+    /// Write a manifest: every path in a commit with its content id and size.
+    ///
+    /// This is the one node that pays for the bytes. Every other node reads the
+    /// manifest and hydrates what it actually opens.
+    Manifest {
+        #[arg(long)]
+        repo: String,
+        #[arg(long = "ref", default_value = "main")]
+        ref_name: String,
+        /// Where to write it. `-` prints it.
+        #[arg(long, default_value = "-")]
+        out: String,
+        #[arg(long, default_value = "https://git.fpl.dev")]
+        upstream: String,
+        #[arg(long, default_value = "https://git.fpl.dev/api/v1")]
+        api: String,
+        #[arg(long, env = "GITMYC_UPSTREAM_USER", default_value = "")]
+        upstream_user: String,
+        #[arg(long, env = "GITMYC_UPSTREAM_TOKEN", default_value = "")]
+        upstream_token: String,
+        #[arg(long, env = "GITMYC_UPSTREAM_TOKEN_FILE")]
+        upstream_token_file: Option<PathBuf>,
+    },
+    /// Register a manifest into a VFS without fetching a byte, then optionally
+    /// hydrate one path to prove the pull-through works.
+    Hydrate {
+        #[arg(long)]
+        vfs: String,
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Pull this repository-relative path now (repeatable).
+        #[arg(long = "path")]
+        paths: Vec<String>,
+        #[arg(long, default_value = "https://git.fpl.dev/api/v1")]
+        api: String,
+        #[arg(long, env = "GITMYC_UPSTREAM_USER", default_value = "")]
+        upstream_user: String,
+        #[arg(long, env = "GITMYC_UPSTREAM_TOKEN", default_value = "")]
+        upstream_token: String,
+        #[arg(long, env = "GITMYC_UPSTREAM_TOKEN_FILE")]
+        upstream_token_file: Option<PathBuf>,
+    },
     /// Materialize a commit into a VFS namespace, as content.
     Mount {
         /// VFS root, or a name under `$XDG_DATA_HOME/soil/vfs`.
@@ -222,6 +264,86 @@ async fn main() -> Result<()> {
                 "{}",
                 soil_gitmyc::askpass::answer(path.as_deref(), &prompt)?
             );
+            Ok(())
+        }
+        Command::Manifest {
+            repo,
+            ref_name,
+            out,
+            upstream,
+            api,
+            upstream_user,
+            upstream_token,
+            upstream_token_file,
+        } => {
+            if !is_repo(&repo) {
+                bail!("repo must be owner/name");
+            }
+            let token = read_upstream_token(upstream_token, upstream_token_file)?;
+            let forge = Forge::new(upstream, api, upstream_user, token);
+            let resolved = forge.resolve(&repo, &ref_name).await?;
+            let manifest =
+                soil_gitmyc::Manifest::build(&forge, &repo, &resolved.commit, &resolved.prefix())
+                    .await?;
+            if out == "-" {
+                println!("{}", serde_json::to_string_pretty(&manifest)?);
+            } else {
+                manifest.write(&expand(&out))?;
+                println!(
+                    "{} entries for {}@{} -> {}",
+                    manifest.entries.len(),
+                    manifest.repo,
+                    &resolved.commit[..8.min(resolved.commit.len())],
+                    out
+                );
+            }
+            Ok(())
+        }
+        Command::Hydrate {
+            vfs,
+            manifest,
+            paths,
+            api,
+            upstream_user,
+            upstream_token,
+            upstream_token_file,
+        } => {
+            let manifest = soil_gitmyc::Manifest::read(&expand_path(&manifest))?;
+            let root = vfs_root(&vfs);
+            let mut store = fungos_vfs::Vfs::open_with_role(&root, fungos_vfs::NodeRole::Cache)
+                .with_context(|| format!("open vfs {}", root.display()))?;
+            let registered = manifest.register(&mut store)?;
+            println!(
+                "registered {registered} placeholders under {} (fetched 0 bytes)",
+                manifest.prefix
+            );
+            if paths.is_empty() {
+                let (present, total) = manifest.coverage(&store)?;
+                println!("coverage {present}/{total}");
+                return Ok(());
+            }
+            let token = read_upstream_token(upstream_token, upstream_token_file)?;
+            let hydrator = soil_gitmyc::ForgeHydrator::new(
+                api,
+                upstream_user,
+                token,
+                manifest.repo.clone(),
+                manifest.commit.clone(),
+                manifest.prefix.clone(),
+            );
+            for path in paths {
+                let full = format!("{}/{}", manifest.prefix, path);
+                let bytes = store
+                    .get_or_hydrate(&full, &hydrator)
+                    .with_context(|| format!("hydrate {full}"))?;
+                println!(
+                    "  {path}: {} bytes, {}",
+                    bytes.len(),
+                    fungos_vfs::ContentId::from_bytes(&bytes)
+                );
+            }
+            let (present, total) = manifest.coverage(&store)?;
+            println!("coverage {present}/{total}");
             Ok(())
         }
         Command::Mount {

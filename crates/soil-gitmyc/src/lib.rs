@@ -22,6 +22,8 @@
 //! * [`pulls`] — proposals to move a base ref, and their verdicts. The landing is
 //!   still a refs compare-and-swap, so protected-ref policy applies to merging
 //!   exactly as it applies to pushing.
+//! * [`pullthrough`] — a manifest of content ids plus a hydrator, so a second node
+//!   fetches only the bytes it reads, from a peer first and the forge second.
 //! * [`serve`] — the network edge: git smart-HTTP with the ref advertisement
 //!   filtered by the capability and overlaid with our refs, plus `/mint`,
 //!   `/tree`, `/blob`, `/refs/update` and `/audit`.
@@ -34,10 +36,12 @@ pub mod askpass;
 pub mod capability;
 pub mod project;
 pub mod pulls;
+pub mod pullthrough;
 pub mod refs;
 pub mod serve;
 
 pub use capability::{CapError, Claims, MAX_READ_TTL_SECS, MAX_WRITE_TTL_SECS};
 pub use project::{Forge, Resolved};
 pub use pulls::{Check, Pull, PullStatus, Review, Stage};
+pub use pullthrough::{ForgeHydrator, Manifest, ManifestEntry, MeshHydrator, PeerSource};
 pub use refs::{AuditEntry, Outcome, Refs};
