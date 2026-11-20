@@ -96,6 +96,12 @@ Flags for driving a Spore without a human (accepted by `soil spore run`):
 | `--pointer X,Y` | queue a pointer move at a surface-space point |
 | `--click X,Y` | queue a move, a press, and a release at that point |
 | `--spores DIR` | where to find installed Spores (default `~/Library/Application Support/fungOS/spores`) |
+| `--install-root DIR` | install root for `soil:spore/install` (with `--store-index` and `--store-packages`) |
+| `--store-index FILE` | signed store index the install capability resolves an id and digest in |
+| `--store-packages DIR` | package cache for `.spore` tars; a missing tar is fetched from `--install-origin` |
+| `--install-origin URL` | one approved store origin for a missing package |
+| `--install-keyring FILE` | PGP keyring for the package sidecar; otherwise install is denied |
+| `--allow-unsigned-install` | development only: install without a publisher signature |
 
 The window title is the Spore's `[spore] title` from its manifest, or its name
 title-cased, or the module's file name — an app called "Term" shows "Term", not

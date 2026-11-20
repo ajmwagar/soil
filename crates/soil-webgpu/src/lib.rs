@@ -307,6 +307,7 @@ impl CatalogHost for NoCatalog {
     }
 }
 
+
 /// The host's installed-Spore catalogue, read from a directory tree.
 ///
 /// The host decides where Spores live and this answers with what is there. A
@@ -629,6 +630,9 @@ pub struct WebGpuHost {
     input: Arc<Mutex<VecDeque<InputEvent>>>,
     interactive: bool,
     catalog: Box<dyn CatalogHost>,
+    /// Host-owned package installation. `DenyInstall` refuses every request until
+    /// the presenter supplies an install root, index and signing policy.
+    install: Box<dyn soil_install::InstallHost>,
     /// The HTTP policy, credentials and transport a guest may use. `None`
     /// refuses every request instead of quietly reaching the network.
     http: Option<HttpAccess>,
@@ -846,6 +850,8 @@ pub struct HostSetup {
     /// Tells the guest to keep polling after the first frame.
     pub interactive: bool,
     pub catalog: Box<dyn CatalogHost>,
+    /// The install grant. `DenyInstall` is the denying default.
+    pub install: Box<dyn soil_install::InstallHost>,
     /// The HTTP grant. `None` denies every request: a capture host that does
     /// not need the network has none.
     pub http: Option<HttpAccess>,
@@ -899,6 +905,7 @@ impl HostSetup {
             input: Arc::new(Mutex::new(VecDeque::new())),
             interactive: false,
             catalog: Box::new(NoCatalog),
+            install: Box::new(soil_install::DenyInstall),
             http: None,
             records: None,
             vfs: None,
@@ -954,6 +961,7 @@ impl WebGpuHost {
             input: setup.input,
             interactive: setup.interactive,
             catalog: setup.catalog,
+            install: setup.install,
             http,
             records: setup
                 .records
@@ -1755,6 +1763,56 @@ fn catalog_failure(failure: CatalogFailure) -> soil::spore::catalog::Failure {
     }
 }
 
+impl soil::spore::install::Host for WebGpuHost {
+    fn install(
+        &mut self,
+        id: String,
+        digest: String,
+    ) -> std::result::Result<soil::spore::install::Installed, soil::spore::install::Error> {
+        let state = self.install.install(&id, &digest).map_err(install_error)?;
+        Ok(installed(state))
+    }
+
+    fn rollback(
+        &mut self,
+        id: String,
+    ) -> std::result::Result<soil::spore::install::Installed, soil::spore::install::Error> {
+        let state = self.install.rollback(&id).map_err(install_error)?;
+        Ok(installed(state))
+    }
+
+    fn status(
+        &mut self,
+        id: String,
+    ) -> std::result::Result<Option<soil::spore::install::Installed>, soil::spore::install::Error>
+    {
+        let state = self.install.status(&id).map_err(install_error)?;
+        Ok(state.map(installed))
+    }
+}
+
+fn installed(state: soil_install::InstalledState) -> soil::spore::install::Installed {
+    soil::spore::install::Installed {
+        id: state.id,
+        name: state.name.unwrap_or_default(),
+        version: state.version,
+        digest: state.digest,
+        previous_digest: state.previous_digest,
+    }
+}
+
+fn install_error(error: soil_install::InstallError) -> soil::spore::install::Error {
+    use crate::soil::spore::install::Error;
+    match error {
+        soil_install::InstallError::Denied => Error::Denied,
+        soil_install::InstallError::NotFound => Error::NotFound,
+        soil_install::InstallError::Invalid => Error::Invalid,
+        soil_install::InstallError::Consent => Error::Consent,
+        soil_install::InstallError::Io => Error::Io,
+        soil_install::InstallError::Unsupported => Error::Unsupported,
+    }
+}
+
 fn catalog_error(error: CatalogError) -> soil::spore::catalog::Error {
     match error {
         CatalogError::Denied => soil::spore::catalog::Error::Denied,
@@ -2268,6 +2326,9 @@ impl WebGpuRuntime {
         soil::spore::catalog::add_to_linker::<_, HasSelf<_>>(&mut linker, |host| host)
             .map_err(anyhow::Error::from)
             .context("link soil:spore catalog")?;
+        soil::spore::install::add_to_linker::<_, HasSelf<_>>(&mut linker, |host| host)
+            .map_err(anyhow::Error::from)
+            .context("link soil:spore install")?;
         soil::agents::observe::add_to_linker::<_, HasSelf<_>>(&mut linker, |host| host)
             .map_err(anyhow::Error::from)
             .context("link soil:agent observe")?;

@@ -84,6 +84,234 @@ pub struct InstallOptions<'a> {
     pub warm: Option<&'a Path>,
 }
 
+/// The answer an install capability gives a guest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InstallError {
+    /// The caller was not allowed to install, or no signing policy was given.
+    Denied,
+    /// The index has no entry for that id and digest, or the tar is not cached.
+    NotFound,
+    /// The package, lock, import gate or signature did not verify.
+    Invalid,
+    /// The package asks for authority the installed one did not have.
+    Consent,
+    Io,
+    /// This host cannot install from that source.
+    Unsupported,
+}
+
+impl From<Error> for InstallError {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::NotFound(_) => Self::NotFound,
+            Error::Store(_) => Self::Invalid,
+            Error::Invalid(_) => Self::Invalid,
+            Error::Io(_) => Self::Io,
+            Error::Spore(soil_spore::Error::Signature(_)) => Self::Invalid,
+            Error::Spore(_) => Self::Invalid,
+        }
+    }
+}
+
+impl From<soil_store::Error> for InstallError {
+    fn from(error: soil_store::Error) -> Self {
+        Self::from(Error::from(error))
+    }
+}
+
+impl From<soil_spore::Error> for InstallError {
+    fn from(error: soil_spore::Error) -> Self {
+        Self::from(Error::from(error))
+    }
+}
+
+/// The host authority a `soil:spore/install` guest calls.
+///
+/// The storefront names a package by id and digest. It never names a path, an
+/// origin or a grant: this trait resolves all three from the host's index,
+/// package cache and config.
+pub trait InstallHost: Send {
+    fn install(&mut self, id: &str, digest: &str) -> Result<InstalledState, InstallError>;
+    fn rollback(&mut self, id: &str) -> Result<InstalledState, InstallError>;
+    fn status(&mut self, id: &str) -> Result<Option<InstalledState>, InstallError>;
+}
+
+/// A capability that refuses every install call. The default when a host was
+/// not given an install root, index and signing policy.
+pub struct DenyInstall;
+
+impl InstallHost for DenyInstall {
+    fn install(&mut self, _id: &str, _digest: &str) -> Result<InstalledState, InstallError> {
+        Err(InstallError::Denied)
+    }
+
+    fn rollback(&mut self, _id: &str) -> Result<InstalledState, InstallError> {
+        Err(InstallError::Denied)
+    }
+
+    fn status(&mut self, _id: &str) -> Result<Option<InstalledState>, InstallError> {
+        Err(InstallError::Denied)
+    }
+}
+
+/// The default installer: a signed index, a local package cache, and an
+/// optional store origin for a tar the cache does not have.
+///
+/// The capability is deliberately local-first. `origin` only fetches the exact
+/// digest the index named; the guest cannot point it anywhere.
+pub struct SporeInstaller {
+    root: PathBuf,
+    index: PathBuf,
+    packages: PathBuf,
+    origin: Option<String>,
+    keyring: Option<PathBuf>,
+    allow_unsigned_dev: bool,
+    allow_consent: bool,
+}
+
+impl SporeInstaller {
+    pub fn new(
+        root: impl Into<PathBuf>,
+        index: impl Into<PathBuf>,
+        packages: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            root: root.into(),
+            index: index.into(),
+            packages: packages.into(),
+            origin: None,
+            keyring: None,
+            allow_unsigned_dev: false,
+            allow_consent: false,
+        }
+    }
+
+    pub fn with_origin(mut self, origin: impl Into<String>) -> Self {
+        self.origin = Some(origin.into());
+        self
+    }
+
+    pub fn with_keyring(mut self, keyring: impl Into<PathBuf>) -> Self {
+        self.keyring = Some(keyring.into());
+        self
+    }
+
+    /// Development only: install a tar with no publisher signature. A release
+    /// host must supply a keyring instead.
+    pub fn allow_unsigned_dev(mut self) -> Self {
+        self.allow_unsigned_dev = true;
+        self
+    }
+
+    /// Explicitly accept a grant-set growth. The storefront does not get to set
+    /// this; a host operator does.
+    pub fn allow_consent(mut self) -> Self {
+        self.allow_consent = true;
+        self
+    }
+
+    fn entry(&self, id: &str, digest: &str) -> Result<soil_store::Entry, InstallError> {
+        let index = soil_store::Index::read(&self.index).map_err(InstallError::from)?;
+        let entry = index
+            .entries
+            .iter()
+            .rev()
+            .find(|entry| entry.spore_id == id && entry.digest == digest)
+            .cloned()
+            .ok_or(InstallError::NotFound)?;
+        if entry.kind == soil_store::EntryKind::Yank
+            || index.entries.iter().any(|later| {
+                later.spore_id == id
+                    && later.seq > entry.seq
+                    && later.kind == soil_store::EntryKind::Yank
+            })
+        {
+            return Err(InstallError::Invalid);
+        }
+        Ok(entry)
+    }
+
+    fn consent(&self, id: &str, manifest: &soil_spore::Manifest) -> Result<(), InstallError> {
+        if self.allow_consent {
+            return Ok(());
+        }
+        let Ok(states) = status(&self.root) else {
+            return Ok(());
+        };
+        let Some(previous) = states.iter().find(|state| state.id == id) else {
+            return Ok(());
+        };
+        let previous_manifest = soil_spore::Manifest::load(&self.root.join(previous.tree_name()))
+            .map_err(|_| InstallError::Invalid)?;
+        if previous_manifest
+            .system
+            .as_ref()
+            .map(|system| system.role.as_str())
+            != manifest.system.as_ref().map(|system| system.role.as_str())
+        {
+            return Err(InstallError::Consent);
+        }
+        let previous_grants: std::collections::BTreeSet<&str> = previous_manifest
+            .grants
+            .keys()
+            .map(String::as_str)
+            .collect();
+        if manifest
+            .grants
+            .keys()
+            .any(|grant| !previous_grants.contains(grant.as_str()))
+        {
+            return Err(InstallError::Consent);
+        }
+        Ok(())
+    }
+}
+
+impl InstallHost for SporeInstaller {
+    fn install(&mut self, id: &str, digest: &str) -> Result<InstalledState, InstallError> {
+        if self.keyring.is_none() && !self.allow_unsigned_dev {
+            return Err(InstallError::Denied);
+        }
+        let entry = self.entry(id, digest)?;
+        let package = fetch_package(
+            &entry.package,
+            digest,
+            &self.packages,
+            self.origin.as_deref(),
+        )?;
+        let bytes =
+            fs::read(&package).map_err(|error| InstallError::from(Error::Io(error.to_string())))?;
+        let (manifest, _) = soil_spore::verify(&bytes).map_err(InstallError::from)?;
+        if manifest.spore.id != id {
+            return Err(InstallError::Invalid);
+        }
+        self.consent(id, &manifest)?;
+        install(
+            &package,
+            &self.root,
+            InstallOptions {
+                keyring: self.keyring.as_deref(),
+                key: None,
+                publisher: entry.publisher.as_deref(),
+                public_key: None,
+                warm: None,
+            },
+        )
+        .map_err(InstallError::from)
+    }
+
+    fn rollback(&mut self, id: &str) -> Result<InstalledState, InstallError> {
+        crate::rollback(id, &self.root).map_err(InstallError::from)
+    }
+
+    fn status(&mut self, id: &str) -> Result<Option<InstalledState>, InstallError> {
+        Ok(crate::status(&self.root)
+            .map_err(InstallError::from)?
+            .into_iter()
+            .find(|state| state.id == id))
+    }
+}
+
 /// Install a verified package, replacing the current directory only after the
 /// new tree is unpacked. The previous tar stays in `.packages` for rollback.
 pub fn install(
@@ -788,6 +1016,10 @@ mod tests {
     const CID: &str = "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi";
 
     fn fixture(version: &str, body: &str) -> Vec<u8> {
+        fixture_with_grants(version, body, "")
+    }
+
+    fn fixture_with_grants(version: &str, body: &str, extra: &str) -> Vec<u8> {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("ui")).unwrap();
         std::fs::write(
@@ -810,12 +1042,45 @@ default = "canvas"
 surfaces = ["canvas"]
 [grants]
 "soil:canvas" = "present the test view"
-"#
+{extra}"#
             ),
         )
         .unwrap();
         std::fs::write(dir.path().join("ui/main.lua"), body).unwrap();
         soil_spore::pack(dir.path()).unwrap()
+    }
+
+    fn cached_index(
+        temp: &Path,
+        packages: &Path,
+        bytes: &[u8],
+        version: &str,
+        grants: Vec<String>,
+    ) -> (std::path::PathBuf, String) {
+        let (_, lock) = soil_spore::verify(bytes).unwrap();
+        std::fs::create_dir_all(packages).unwrap();
+        std::fs::write(packages.join(format!("{}.spore", lock.digest)), bytes).unwrap();
+        let entry = soil_store::Entry {
+            seq: 1,
+            kind: soil_store::EntryKind::Add,
+            spore_id: "dev.fungos.install-test".into(),
+            version: version.into(),
+            digest: lock.digest.clone(),
+            package: soil_store::cid::raw(bytes),
+            listing: None,
+            module: None,
+            ui: None,
+            grants,
+            system: None,
+            devices: Vec::new(),
+            publisher: Some("mycelium:test".into()),
+            publisher_key: None,
+            signature: String::new(),
+        };
+        let index = soil_store::Index::seal("test", vec![entry]);
+        let index_path = temp.join("index.json");
+        std::fs::write(&index_path, serde_json::to_vec(&index).unwrap()).unwrap();
+        (index_path, lock.digest)
     }
 
     fn write_package(path: &Path, bytes: &[u8]) {
@@ -889,6 +1154,106 @@ surfaces = ["canvas"]
         let operator_key = temp.join("operator.asc");
         std::fs::write(&operator_key, b"unsigned dev").unwrap();
         (index_path, operator_key)
+    }
+
+    #[test]
+    fn the_install_capability_installs_a_cached_indexed_package() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("spores");
+        let packages = temp.path().join("packages");
+        let bytes = fixture("0.1.0", "return 'one'");
+        let (index, digest) = cached_index(
+            temp.path(),
+            &packages,
+            &bytes,
+            "0.1.0",
+            vec!["soil:canvas".into()],
+        );
+
+        let mut host = SporeInstaller::new(&root, &index, &packages).allow_unsigned_dev();
+        let installed = host.install("dev.fungos.install-test", &digest).unwrap();
+        assert_eq!(installed.version, "0.1.0");
+        assert_eq!(installed.digest, digest);
+        assert_eq!(
+            host.status("dev.fungos.install-test")
+                .unwrap()
+                .unwrap()
+                .version,
+            "0.1.0"
+        );
+    }
+
+    #[test]
+    fn the_install_capability_stops_on_a_grant_growth_until_consent() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("spores");
+        let packages = temp.path().join("packages");
+        let one = fixture("0.1.0", "return 'one'");
+        let (index, digest) = cached_index(
+            temp.path(),
+            &packages,
+            &one,
+            "0.1.0",
+            vec!["soil:canvas".into()],
+        );
+        let mut host = SporeInstaller::new(&root, &index, &packages).allow_unsigned_dev();
+        host.install("dev.fungos.install-test", &digest).unwrap();
+
+        let two = fixture_with_grants(
+            "0.2.0",
+            "return 'two'",
+            "\"soil:http\" = \"reach the one reviewed origin\"\n",
+        );
+        let (index, digest) = cached_index(
+            temp.path(),
+            &packages,
+            &two,
+            "0.2.0",
+            vec!["soil:canvas".into(), "soil:http".into()],
+        );
+        let mut host = SporeInstaller::new(&root, &index, &packages).allow_unsigned_dev();
+        assert_eq!(
+            host.install("dev.fungos.install-test", &digest),
+            Err(InstallError::Consent)
+        );
+        assert_eq!(
+            host.status("dev.fungos.install-test")
+                .unwrap()
+                .unwrap()
+                .version,
+            "0.1.0"
+        );
+
+        let mut host = SporeInstaller::new(&root, &index, &packages)
+            .allow_unsigned_dev()
+            .allow_consent();
+        assert_eq!(
+            host.install("dev.fungos.install-test", &digest)
+                .unwrap()
+                .version,
+            "0.2.0"
+        );
+    }
+
+    #[test]
+    fn the_install_capability_denies_when_no_signing_policy_is_configured() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("spores");
+        let packages = temp.path().join("packages");
+        let bytes = fixture("0.1.0", "return 'one'");
+        let (index, digest) = cached_index(
+            temp.path(),
+            &packages,
+            &bytes,
+            "0.1.0",
+            vec!["soil:canvas".into()],
+        );
+
+        let mut host = SporeInstaller::new(&root, &index, &packages);
+        assert_eq!(
+            host.install("dev.fungos.install-test", &digest),
+            Err(InstallError::Denied)
+        );
     }
 
     #[cfg(unix)]
@@ -1259,18 +1624,19 @@ pub fn sync(root: &Path, options: SyncOptions<'_>) -> Result<Vec<SyncOutcome>, E
         let Some(role) = entry.system.as_ref() else {
             continue;
         };
-        if let Some(class) = options.class {
-            if !entry.devices.is_empty() && !entry.devices.iter().any(|device| device == class) {
-                outcomes.push(SyncOutcome {
-                    id: entry.spore_id.clone(),
-                    role: role.clone(),
-                    from: None,
-                    to: entry.version.clone(),
-                    digest: entry.digest.clone(),
-                    action: format!("skipped: not for {class}"),
-                });
-                continue;
-            }
+        let class = options.class.filter(|class| {
+            !entry.devices.is_empty() && !entry.devices.iter().any(|device| device == class)
+        });
+        if let Some(class) = class {
+            outcomes.push(SyncOutcome {
+                id: entry.spore_id.clone(),
+                role: role.clone(),
+                from: None,
+                to: entry.version.clone(),
+                digest: entry.digest.clone(),
+                action: format!("skipped: not for {class}"),
+            });
+            continue;
         }
         let current = installed
             .iter()
@@ -1336,6 +1702,51 @@ fn operator_key_path(seed: &Path) -> PathBuf {
     seed.join("operator.asc")
 }
 
+/// Resolve a package into `.packages`, fetching the exact digest from the
+/// approved store origin only when the cache does not already have it.
+///
+/// The CID is the address the caller already checked; the digest names the
+/// cache entry, so two callers cannot disagree about which tar is being read.
+pub fn fetch_package(
+    cid: &str,
+    digest: &str,
+    packages: &Path,
+    origin: Option<&str>,
+) -> Result<PathBuf, Error> {
+    let package = packages.join(format!("{digest}.spore"));
+    if !package.is_file() {
+        let origin = origin.ok_or_else(|| {
+            Error::NotFound(format!("{digest} is not cached and no --origin was given"))
+        })?;
+        let url = format!("{}/package/{digest}", origin.trim_end_matches('/'));
+        let response = ureq::get(&url)
+            .call()
+            .map_err(|error| Error::Store(format!("{url}: {error}")))?;
+        let mut bytes = Vec::new();
+        response
+            .into_reader()
+            .read_to_end(&mut bytes)
+            .map_err(|error| Error::Io(format!("{url}: {error}")))?;
+        fs::create_dir_all(packages)
+            .map_err(|error| Error::Io(format!("{}: {error}", packages.display())))?;
+        let temporary = package.with_extension("spore.tmp");
+        fs::write(&temporary, &bytes)
+            .map_err(|error| Error::Io(format!("{}: {error}", temporary.display())))?;
+        fs::rename(&temporary, &package)
+            .map_err(|error| Error::Io(format!("{}: {error}", package.display())))?;
+    }
+    let bytes =
+        fs::read(&package).map_err(|error| Error::Io(format!("{}: {error}", package.display())))?;
+    let found = soil_store::cid::raw(&bytes);
+    if found != cid {
+        return Err(Error::Invalid(format!(
+            "{} hashes to {found}, not {cid}",
+            package.display()
+        )));
+    }
+    Ok(package)
+}
+
 /// Resolve a package by its content id instead of a path.
 ///
 /// The index is what knows which digest and which publisher key a CID belongs
@@ -1378,43 +1789,7 @@ pub fn install_cid(
         .iter()
         .find(|entry| entry.package == cid)
         .ok_or_else(|| Error::NotFound(format!("no index entry carries {cid}")))?;
-    let package = packages.join(format!("{}.spore", entry.digest));
-    if !package.is_file() {
-        let origin = origin.ok_or_else(|| {
-            Error::NotFound(format!(
-                "{} is not cached and no --origin was given",
-                entry.digest
-            ))
-        })?;
-        let url = format!("{}/package/{}", origin.trim_end_matches('/'), entry.digest);
-        let response = ureq::get(&url)
-            .call()
-            .map_err(|error| Error::Store(format!("{url}: {error}")))?;
-        let mut bytes = Vec::new();
-        response
-            .into_reader()
-            .read_to_end(&mut bytes)
-            .map_err(|error| Error::Io(format!("{url}: {error}")))?;
-        // The cache is a directory this code owns the first time it runs: a
-        // fresh machine that has never installed anything has no `packages/`,
-        // and a fetch that downloads a package and then cannot write it is a
-        // download for nothing.
-        if let Some(parent) = package.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| Error::Io(format!("{}: {error}", parent.display())))?;
-        }
-        fs::write(&package, &bytes)
-            .map_err(|error| Error::Io(format!("{}: {error}", package.display())))?;
-    }
-    let bytes =
-        fs::read(&package).map_err(|error| Error::Io(format!("{}: {error}", package.display())))?;
-    let found = soil_store::cid::raw(&bytes);
-    if found != cid {
-        return Err(Error::Invalid(format!(
-            "{} hashes to {found}, not {cid}",
-            package.display()
-        )));
-    }
+    let package = fetch_package(&entry.package, &entry.digest, packages, origin)?;
     install(
         &package,
         root,

@@ -7707,6 +7707,106 @@
           ]
         },
         {
+          "docs": "Host-owned package installation.\n\nA Spore names a package by id and digest; it never names a path, a URL or a\ngrant. The host resolves the digest against its signed index, verifies the\ntar, checks the import/grant rule, and only then swaps the install root.\nInstalling is the storefront's question, never its authority.",
+          "functions": [
+            {
+              "docs": "Install `digest` of `id`. The package must already be in the host's\npackage cache or reachable through the host's approved store origin;\nthe guest never supplies either.",
+              "kind": "freestanding",
+              "lua": "install",
+              "member": "install",
+              "name": "install",
+              "params": [
+                {
+                  "name": "id",
+                  "type": "string"
+                },
+                {
+                  "name": "digest",
+                  "type": "string"
+                }
+              ],
+              "resource": null,
+              "result": "result<installed, error>"
+            },
+            {
+              "docs": "Roll back to the one previous digest kept in `.packages`.",
+              "kind": "freestanding",
+              "lua": "rollback",
+              "member": "rollback",
+              "name": "rollback",
+              "params": [
+                {
+                  "name": "id",
+                  "type": "string"
+                }
+              ],
+              "resource": null,
+              "result": "result<installed, error>"
+            },
+            {
+              "docs": "What this host currently runs, if anything.",
+              "kind": "freestanding",
+              "lua": "status",
+              "member": "status",
+              "name": "status",
+              "params": [
+                {
+                  "name": "id",
+                  "type": "string"
+                }
+              ],
+              "resource": null,
+              "result": "result<option<installed>, error>"
+            }
+          ],
+          "id": "soil:spore@0.3.0/install",
+          "name": "install",
+          "types": [
+            {
+              "cases": [
+                "denied",
+                "not-found",
+                "invalid",
+                "consent",
+                "io",
+                "unsupported"
+              ],
+              "docs": null,
+              "kind": "enum",
+              "lua": "Error",
+              "name": "error"
+            },
+            {
+              "docs": null,
+              "fields": [
+                {
+                  "name": "id",
+                  "type": "string"
+                },
+                {
+                  "name": "name",
+                  "type": "string"
+                },
+                {
+                  "name": "version",
+                  "type": "string"
+                },
+                {
+                  "name": "digest",
+                  "type": "string"
+                },
+                {
+                  "name": "previous-digest",
+                  "type": "option<string>"
+                }
+              ],
+              "kind": "record",
+              "lua": "Installed",
+              "name": "installed"
+            }
+          ]
+        },
+        {
           "docs": "Opening a document: which Spore can, and which one was asked for.\n\nTwo facts with different owners. What a Spore can open is its own `handles`\ndeclaration in the manifest; what *should* open something is a preference,\nand it lives in the desktop's `fungos/desktop/filetypes` book. A preference\nmay only choose among declarations — an id that no longer handles the kind is\nskipped, never obeyed.\n\nNot yet imported by either world: the shape is agreed, the host backend and\nthe guest bindings land next, and wiring an unbuilt interface into a world\nwould hand every Spore a function that refuses.",
           "functions": [
             {

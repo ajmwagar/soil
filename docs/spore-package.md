@@ -300,8 +300,9 @@ the index chain and is for local development only.
 
 ## Not implemented
 
-- The store Spore's `soil:spore.install` capability. `soil-install` is the host
-  CLI; granting that capability to `spores/store` is still a separate step.
+- The store Spore's use of `soil:spore/install`. The host capability exists and
+  `canvas-winit` can be given an install root, index, package cache and keyring,
+  but `spores/store` has not been granted it or rebuilt to call it yet.
 - Publishing to IPFS or a mirror set. `pack` produces the bytes; pinning them is
   the publisher's step.
 - Revocation. Mycelium owns that record; a package carries no revocation state.

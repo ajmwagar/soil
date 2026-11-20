@@ -1251,6 +1251,33 @@ end
 function M.soil.spore.defaults.set(args)
   return dispatch("soil:spore@0.3.0/defaults", "set", args)
 end
+M.soil.spore.install = M.soil.spore.install or {}
+--- Host-owned package installation.
+---
+--- A Spore names a package by id and digest; it never names a path, a URL or a
+--- grant. The host resolves the digest against its signed index, verifies the
+--- tar, checks the import/grant rule, and only then swaps the install root.
+--- Installing is the storefront's question, never its authority.
+M.soil.spore.install.types = M.soil.spore.install.types or {}
+M.soil.spore.install.types.Error = { DENIED = "denied", NOT_FOUND = "not-found", INVALID = "invalid", CONSENT = "consent", IO = "io", UNSUPPORTED = "unsupported" }
+M.soil.spore.install.types.Installed = { fields = { { name = "id", type = "string" }, { name = "name", type = "string" }, { name = "version", type = "string" }, { name = "digest", type = "string" }, { name = "previous-digest", type = "option<string>" } } }
+--- Install `digest` of `id`. The package must already be in the host's
+--- package cache or reachable through the host's approved store origin;
+--- the guest never supplies either.
+-- WIT: install -> result<installed, error>
+function M.soil.spore.install.install(args)
+  return dispatch("soil:spore@0.3.0/install", "install", args)
+end
+--- Roll back to the one previous digest kept in `.packages`.
+-- WIT: rollback -> result<installed, error>
+function M.soil.spore.install.rollback(args)
+  return dispatch("soil:spore@0.3.0/install", "rollback", args)
+end
+--- What this host currently runs, if anything.
+-- WIT: status -> result<option<installed>, error>
+function M.soil.spore.install.status(args)
+  return dispatch("soil:spore@0.3.0/install", "status", args)
+end
 M.soil.spore.open = M.soil.spore.open or {}
 --- Opening a document: which Spore can, and which one was asked for.
 ---

@@ -199,10 +199,49 @@ interface defaults {
   clear: func(kind: string) -> result<_, error>;
 }
 
+/// Host-owned package installation.
+///
+/// A Spore names a package by id and digest; it never names a path, a URL or a
+/// grant. The host resolves the digest against its signed index, verifies the
+/// tar, checks the import/grant rule, and only then swaps the install root.
+/// Installing is the storefront's question, never its authority.
+interface install {
+  enum error {
+    denied,
+    not-found,
+    invalid,
+    /// The package asks for authority the installed one did not have.
+    consent,
+    io,
+    unsupported,
+  }
+
+  record installed {
+    id: string,
+    name: string,
+    version: string,
+    digest: string,
+    previous-digest: option<string>,
+  }
+
+  /// Install `digest` of `id`. The package must already be in the host's
+  /// package cache or reachable through the host's approved store origin;
+  /// the guest never supplies either.
+  install: func(id: string, digest: string) -> result<installed, error>;
+
+  /// Roll back to the one previous digest kept in `.packages`.
+  rollback: func(id: string) -> result<installed, error>;
+
+  /// What this host currently runs, if anything.
+  status: func(id: string) -> result<option<installed>, error>;
+}
+
 world spore-host {
   import catalog;
+  import install;
 }
 
 world guest {
   import catalog;
+  import install;
 }
