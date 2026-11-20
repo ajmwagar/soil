@@ -605,7 +605,15 @@ async fn serve(spore: Spore, run: Run) -> Result<()> {
     // capability and left the records import unresolved. The operator names
     // the collection (or the package declares it), and the book defaults to
     // the collection's own name.
-    if spore.manifest.grants.contains_key("soil:records") {
+    // `soil:records.read` is the least-privilege spelling a read-only Spore
+    // uses; the older `soil:records` names the whole capability. Both open a
+    // book here, matching `present::grants`.
+    if spore
+        .manifest
+        .grants
+        .keys()
+        .any(|grant| grant.starts_with("soil:records"))
+    {
         let root = run
             .present
             .records_root
@@ -650,7 +658,67 @@ async fn serve(spore: Spore, run: Run) -> Result<()> {
     // capability and left the records import unresolved. The operator names
     // the collection (or the package declares it), and the book defaults to
     // the collection's own name.
-    if spore.manifest.grants.contains_key("soil:records") {
+    // `soil:records.read` is the least-privilege spelling a read-only Spore
+    // uses; the older `soil:records` names the whole capability. Both open a
+    // book here, matching `present::grants`.
+    if spore
+        .manifest
+        .grants
+        .keys()
+        .any(|grant| grant.starts_with("soil:records"))
+    {
+        let root = run
+            .present
+            .records_root
+            .clone()
+            .or_else(crate::present::default_records_root)
+            .context("no records store: pass --records DIR")?;
+        let declared = spore.manifest.records.as_ref();
+        let collection = run
+            .present
+            .collection
+            .clone()
+            .or_else(|| declared.and_then(|records| records.collection.clone()))
+            .or_else(|| {
+                declared
+                    .filter(|records| records.collections.len() == 1)
+                    .and_then(|records| records.collections.first().cloned())
+            })
+            .context(
+                "the Spore is granted soil:records, so --collection NAME says which collection \
+                 the browser may address",
+            )?;
+        let book = run
+            .present
+            .book
+            .clone()
+            .or_else(|| declared.and_then(|records| records.book.clone()))
+            .unwrap_or_else(|| collection.clone());
+        builder = builder.records_book(
+            ::soil::RecordsBookHost::open(&root, book.clone(), collection.clone())
+                .with_context(|| {
+                    format!(
+                        "open records collection {collection} in book {book} at {}",
+                        root.display()
+                    )
+                })?,
+        );
+    }
+    // A Spore granted `soil:records` must have a book linked before it can
+    // instantiate. The HTTP surface is a host surface like the window, and the
+    // grant is the same one; before this, `--surface http` linked every other
+    // capability and left the records import unresolved. The operator names
+    // the collection (or the package declares it), and the book defaults to
+    // the collection's own name.
+    // `soil:records.read` is the least-privilege spelling a read-only Spore
+    // uses; the older `soil:records` names the whole capability. Both open a
+    // book here, matching `present::grants`.
+    if spore
+        .manifest
+        .grants
+        .keys()
+        .any(|grant| grant.starts_with("soil:records"))
+    {
         let root = run
             .present
             .records_root
