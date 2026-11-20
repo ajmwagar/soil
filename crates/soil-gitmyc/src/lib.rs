@@ -19,6 +19,9 @@
 //!   and cannot move one, so refs are ours while objects stay its.
 //! * [`askpass`] — the credential helper git runs, so a host program
 //!   authenticates with a capability file instead of an agent or a keychain.
+//! * [`pulls`] — proposals to move a base ref, and their verdicts. The landing is
+//!   still a refs compare-and-swap, so protected-ref policy applies to merging
+//!   exactly as it applies to pushing.
 //! * [`serve`] — the network edge: git smart-HTTP with the ref advertisement
 //!   filtered by the capability and overlaid with our refs, plus `/mint`,
 //!   `/tree`, `/blob`, `/refs/update` and `/audit`.
@@ -30,9 +33,11 @@
 pub mod askpass;
 pub mod capability;
 pub mod project;
+pub mod pulls;
 pub mod refs;
 pub mod serve;
 
 pub use capability::{CapError, Claims, MAX_READ_TTL_SECS, MAX_WRITE_TTL_SECS};
 pub use project::{Forge, Resolved};
+pub use pulls::{Check, Pull, PullStatus, Review, Stage};
 pub use refs::{AuditEntry, Outcome, Refs};

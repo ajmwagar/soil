@@ -85,6 +85,9 @@ enum Command {
         /// serve them, not move them.
         #[arg(long, default_value = "~/.local/share/gitmyc/refs.sqlite3")]
         refs: PathBuf,
+        /// Pull requests and their verdicts.
+        #[arg(long, default_value = "~/.local/share/gitmyc/pulls.sqlite3")]
+        pulls: PathBuf,
         /// Admin token for `POST /mint`. Unset disables minting on this node.
         #[arg(long, env = "GITMYC_ADMIN_TOKEN")]
         admin_token: Option<String>,
@@ -191,6 +194,7 @@ async fn main() -> Result<()> {
             upstream_token_file,
             key,
             refs,
+            pulls,
             admin_token,
         } => {
             let token = read_upstream_token(upstream_token, upstream_token_file)?;
@@ -199,6 +203,9 @@ async fn main() -> Result<()> {
                 forge: Forge::new(upstream, api, upstream_user, token),
                 refs: std::sync::Arc::new(tokio::sync::Mutex::new(
                     soil_gitmyc::Refs::open(expand_path(&refs))?,
+                )),
+                pulls: std::sync::Arc::new(tokio::sync::Mutex::new(
+                    soil_gitmyc::pulls::Pulls::open(expand_path(&pulls))?,
                 )),
                 admin_token,
             };

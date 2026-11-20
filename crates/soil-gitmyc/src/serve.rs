@@ -35,6 +35,7 @@ use crate::{
         filter_ref_advertisement_with,
     },
     project::{Forge, is_commit, is_repo, is_tree_path},
+    pulls::{Pulls, Stage},
     refs::{Outcome, Refs},
 };
 
@@ -48,7 +49,44 @@ pub struct ForgeState {
     /// The refs authority. One process, one lock: an update is serialized so the
     /// compare-and-swap cannot be raced by a second request in flight.
     pub refs: Arc<tokio::sync::Mutex<Refs>>,
+    /// Proposals to move a base ref, and the verdicts on them. The landing itself
+    /// is still a refs compare-and-swap.
+    pub pulls: Arc<tokio::sync::Mutex<Pulls>>,
     pub admin_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PullRequest {
+    pub repo: String,
+    pub head: String,
+    pub base: String,
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub draft: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MergeRequest {
+    /// The head commit the caller believes it is landing. A stale value is a 409,
+    /// exactly like a ref update.
+    pub head_sha: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReviewRequest {
+    /// `approved`, `changes_requested` or `commented`.
+    pub state: String,
+    #[serde(default)]
+    pub body: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CheckRequest {
+    pub name: String,
+    /// `pending`, `success` or `failure`.
+    pub state: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,6 +126,14 @@ pub fn router(state: ForgeState) -> Router {
         .route("/refs/{owner}/{repo}", get(list_refs))
         .route("/refs/update", post(update_ref))
         .route("/audit/{owner}/{repo}", get(audit))
+        .route("/pulls/{owner}/{repo}", get(list_pulls).post(open_pull))
+        .route(
+            "/pulls/{owner}/{repo}/{number}",
+            get(get_pull).patch(update_pull),
+        )
+        .route("/pulls/{owner}/{repo}/{number}/reviews", post(review_pull))
+        .route("/pulls/{owner}/{repo}/{number}/checks", post(check_pull))
+        .route("/pulls/{owner}/{repo}/{number}/merge", post(merge_pull))
         .route("/tree/{owner}/{repo}/{commit}", get(tree))
         .route("/blob/{owner}/{repo}/{commit}/{*path}", get(blob))
         .with_state(Arc::new(state))
@@ -545,36 +591,11 @@ async fn update_ref(
             return error(StatusCode::BAD_GATEWAY, &format!("{failure:#}"));
         }
     }
-    // If this is the first time we touch a ref, take the forge's tip as the
-    // baseline: a caller's `old` must be checked against what git actually shows,
-    // not against "we have never heard of this branch".
+    // A caller's `old` must be checked against what git actually shows, not
+    // against "we have never heard of this branch".
     if request.old.is_some() {
-        let known = {
-            let refs = state.refs.lock().await;
-            refs.get(&request.repo, &request.name).ok().flatten()
-        };
-        if known.is_none() {
-            match state
-                .forge
-                .current_ref(&request.repo, &request.name)
-                .await
-            {
-                Ok(Some(tip)) => {
-                    let mut refs = state.refs.lock().await;
-                    if let Err(failure) =
-                        refs.adopt(&request.repo, &request.name, &tip, capability::now_secs())
-                    {
-                        return error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            &format!("refs: {failure:#}"),
-                        );
-                    }
-                }
-                Ok(None) => {}
-                Err(failure) => {
-                    return error(StatusCode::BAD_GATEWAY, &format!("{failure:#}"));
-                }
-            }
+        if let Err(response) = adopt_baseline(&state, &request.repo, &request.name).await {
+            return response;
         }
     }
     let mut refs = state.refs.lock().await;
@@ -608,6 +629,413 @@ async fn update_ref(
         Ok(Outcome::Denied { detail }) => {
             (StatusCode::FORBIDDEN, Json(json!({ "error": detail }))).into_response()
         }
+    }
+}
+
+async fn list_pulls(
+    State(state): State<Arc<ForgeState>>,
+    AxumPath((owner, repo)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let repo = repo_name(&owner, &repo);
+    let claims = match authorize(&state, &headers, &repo) {
+        Ok(claims) => claims,
+        Err(response) => return response,
+    };
+    let pulls = state.pulls.lock().await;
+    match pulls.list(&repo, 100) {
+        Ok(values) => {
+            let visible: Vec<_> = values
+                .into_iter()
+                .filter(|pull| {
+                    claims.allows_read(&pull.head_ref) || claims.allows_read(&pull.base_ref)
+                })
+                .collect();
+            Json(json!({ "repo": repo, "pulls": visible })).into_response()
+        }
+        Err(failure) => error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{failure:#}")),
+    }
+}
+
+async fn get_pull(
+    State(state): State<Arc<ForgeState>>,
+    AxumPath((owner, repo, number)): AxumPath<(String, String, i64)>,
+    headers: HeaderMap,
+) -> Response {
+    let repo = repo_name(&owner, &repo);
+    if let Err(response) = authorize(&state, &headers, &repo) {
+        return response;
+    }
+    match pull_status(&state, &repo, number).await {
+        Ok((_, status)) => Json(status).into_response(),
+        Err(response) => response,
+    }
+}
+
+async fn open_pull(
+    State(state): State<Arc<ForgeState>>,
+    AxumPath((owner, repo)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<PullRequest>,
+) -> Response {
+    let repo = repo_name(&owner, &repo);
+    let claims = match authorize(&state, &headers, &repo) {
+        Ok(claims) => claims,
+        Err(response) => return response,
+    };
+    if !claims.allows_write(&request.head) {
+        return error(
+            StatusCode::FORBIDDEN,
+            &format!("capability does not write {}", request.head),
+        );
+    }
+    if let Err(response) = adopt_baseline(&state, &repo, &request.head).await {
+        return response;
+    }
+    if let Err(response) = adopt_baseline(&state, &repo, &request.base).await {
+        return response;
+    }
+    let (head_sha, base_sha) = {
+        let refs = state.refs.lock().await;
+        let head = refs.get(&repo, &request.head).ok().flatten();
+        let base = refs.get(&repo, &request.base).ok().flatten();
+        match (head, base) {
+            (Some(head), Some(base)) => (head, base),
+            (None, _) => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    &format!("{} does not exist; move the ref first", request.head),
+                );
+            }
+            (_, None) => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    &format!("{} does not exist; nothing to land onto", request.base),
+                );
+            }
+        }
+    };
+    let mut pulls = state.pulls.lock().await;
+    match pulls.open_pull(
+        &repo,
+        &request.head,
+        &request.base,
+        &request.title,
+        &request.body,
+        &claims.sub,
+        &head_sha,
+        &base_sha,
+        request.draft,
+        capability::now_secs(),
+    ) {
+        Ok(pull) => {
+            let status = pulls.status(&pull, Some(&head_sha), Some(&base_sha));
+            match status {
+                Ok(status) => (StatusCode::CREATED, Json(status)).into_response(),
+                Err(failure) => error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{failure:#}")),
+            }
+        }
+        Err(failure) => error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{failure:#}")),
+    }
+}
+
+async fn review_pull(
+    State(state): State<Arc<ForgeState>>,
+    AxumPath((owner, repo, number)): AxumPath<(String, String, i64)>,
+    headers: HeaderMap,
+    Json(request): Json<ReviewRequest>,
+) -> Response {
+    let repo = repo_name(&owner, &repo);
+    let claims = match authorize(&state, &headers, &repo) {
+        Ok(claims) => claims,
+        Err(response) => return response,
+    };
+    if !matches!(
+        request.state.as_str(),
+        "approved" | "changes_requested" | "commented"
+    ) {
+        return error(StatusCode::BAD_REQUEST, "unknown review state");
+    }
+    // A reviewer may not review their own work: the author's verdict is not a
+    // second opinion, and the stage would read as approved with one participant.
+    let author = {
+        let pulls = state.pulls.lock().await;
+        match pulls.pull(&repo, number) {
+            Ok(Some(pull)) => pull.author,
+            Ok(None) => return error(StatusCode::NOT_FOUND, "no such pull request"),
+            Err(failure) => return error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{failure:#}")),
+        }
+    };
+    if author == claims.sub {
+        return error(
+            StatusCode::FORBIDDEN,
+            "a pull request cannot be reviewed by its author",
+        );
+    }
+    {
+        let mut pulls = state.pulls.lock().await;
+        if let Err(failure) = pulls.add_review(
+            &repo,
+            number,
+            &claims.sub,
+            &request.state,
+            &request.body,
+            capability::now_secs(),
+        ) {
+            return error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{failure:#}"));
+        }
+    }
+    match pull_status(&state, &repo, number).await {
+        Ok((_, status)) => Json(status).into_response(),
+        Err(response) => response,
+    }
+}
+
+async fn check_pull(
+    State(state): State<Arc<ForgeState>>,
+    AxumPath((owner, repo, number)): AxumPath<(String, String, i64)>,
+    headers: HeaderMap,
+    Json(request): Json<CheckRequest>,
+) -> Response {
+    let repo = repo_name(&owner, &repo);
+    if let Err(response) = authorize(&state, &headers, &repo) {
+        return response;
+    }
+    if !matches!(request.state.as_str(), "pending" | "success" | "failure") {
+        return error(StatusCode::BAD_REQUEST, "unknown check state");
+    }
+    {
+        let mut pulls = state.pulls.lock().await;
+        if let Err(failure) = pulls.set_check(
+            &repo,
+            number,
+            &request.name,
+            &request.state,
+            capability::now_secs(),
+        ) {
+            return error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{failure:#}"));
+        }
+    }
+    match pull_status(&state, &repo, number).await {
+        Ok((_, status)) => Json(status).into_response(),
+        Err(response) => response,
+    }
+}
+
+/// Take the forge's tip as our baseline for a ref we have not touched yet.
+///
+/// A PR's base is usually a branch this service has never moved (`main`), so
+/// "does not exist" would be a lie about a branch git happily shows.
+async fn adopt_baseline(state: &ForgeState, repo: &str, name: &str) -> Result<(), Response> {
+    let known = {
+        let refs = state.refs.lock().await;
+        refs.get(repo, name).ok().flatten()
+    };
+    if known.is_some() {
+        return Ok(());
+    }
+    match state.forge.current_ref(repo, name).await {
+        Ok(Some(tip)) => {
+            let mut refs = state.refs.lock().await;
+            refs.adopt(repo, name, &tip, capability::now_secs())
+                .map_err(|failure| {
+                    error(StatusCode::INTERNAL_SERVER_ERROR, &format!("refs: {failure:#}"))
+                })
+                .map(|_| ())
+        }
+        Ok(None) => Ok(()),
+        Err(failure) => Err(error(StatusCode::BAD_GATEWAY, &format!("{failure:#}"))),
+    }
+}
+
+/// Land a pull request: the same compare-and-swap, with the same policy.
+///
+/// The stage must be `merge` — approved, green, and not stale — so a merge cannot
+/// quietly land a diff nobody reviewed or one that moved under the reviewer.
+async fn merge_pull(
+    State(state): State<Arc<ForgeState>>,
+    AxumPath((owner, repo, number)): AxumPath<(String, String, i64)>,
+    headers: HeaderMap,
+    Json(request): Json<MergeRequest>,
+) -> Response {
+    let repo = repo_name(&owner, &repo);
+    let claims = match authorize(&state, &headers, &repo) {
+        Ok(claims) => claims,
+        Err(response) => return response,
+    };
+    if !claims.write.iter().any(|pattern| pattern == "*" || pattern.starts_with("refs/heads/")) {
+        return error(StatusCode::FORBIDDEN, "this capability is read-only");
+    }
+    // The base may be forge-backed on the first landing.
+    let base_ref = {
+        let pulls = state.pulls.lock().await;
+        match pulls.pull(&repo, number) {
+            Ok(Some(pull)) => Some(pull.base_ref),
+            Ok(None) => None,
+            Err(failure) => {
+                return error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{failure:#}"));
+            }
+        }
+    };
+    if let Some(base_ref) = &base_ref {
+        if let Err(response) = adopt_baseline(&state, &repo, base_ref).await {
+            return response;
+        }
+    }
+    let (pull, status) = match pull_status(&state, &repo, number).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    if status.stage != Stage::Merge {
+        return error(
+            StatusCode::CONFLICT,
+            &format!("stage is {}: {}", stage_name(status.stage), status.reason),
+        );
+    }
+    if pull.head_sha != request.head_sha {
+        return error(
+            StatusCode::CONFLICT,
+            &format!("pull request is about {}, not {}", pull.head_sha, request.head_sha),
+        );
+    }
+    // The landing is a ref update, so policy applies here too: an agent subject
+    // may not move a protected base ref even with a green, approved PR.
+    let mut refs = state.refs.lock().await;
+    let outcome = refs.update(
+        &repo,
+        &pull.base_ref,
+        Some(&pull.base_sha),
+        &pull.head_sha,
+        &claims.sub,
+        &claims.nonce,
+        capability::now_secs(),
+    );
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(failure) => return error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{failure:#}")),
+    };
+    match outcome {
+        Outcome::Applied { .. } => {
+            let mut pulls = state.pulls.lock().await;
+            if let Err(failure) = pulls.mark_merged(
+                &repo,
+                number,
+                &claims.sub,
+                &pull.head_sha,
+                capability::now_secs(),
+            ) {
+                return error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{failure:#}"));
+            }
+            drop(pulls);
+            drop(refs);
+            match pull_status(&state, &repo, number).await {
+                Ok((_, status)) => Json(status).into_response(),
+                Err(response) => response,
+            }
+        }
+        Outcome::Stale { current, detail } => (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": detail, "current": current })),
+        )
+            .into_response(),
+        Outcome::Denied { detail } => {
+            (StatusCode::FORBIDDEN, Json(json!({ "error": detail }))).into_response()
+        }
+    }
+}
+
+/// Mark a draft ready, or back. Only the author moves the draft flag: it is the
+/// author's statement about their own work.
+async fn update_pull(
+    State(state): State<Arc<ForgeState>>,
+    AxumPath((owner, repo, number)): AxumPath<(String, String, i64)>,
+    headers: HeaderMap,
+    Json(request): Json<DraftRequest>,
+) -> Response {
+    let repo = repo_name(&owner, &repo);
+    let claims = match authorize(&state, &headers, &repo) {
+        Ok(claims) => claims,
+        Err(response) => return response,
+    };
+    {
+        let pulls = state.pulls.lock().await;
+        let pull = match pulls.pull(&repo, number) {
+            Ok(Some(pull)) => pull,
+            Ok(None) => return error(StatusCode::NOT_FOUND, "no such pull request"),
+            Err(failure) => {
+                return error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{failure:#}"));
+            }
+        };
+        if pull.author != claims.sub {
+            return error(
+                StatusCode::FORBIDDEN,
+                "only the author moves a pull request between draft and ready",
+            );
+        }
+        if pull.state != "open" {
+            return error(StatusCode::CONFLICT, "pull request is not open");
+        }
+    }
+    {
+        let mut pulls = state.pulls.lock().await;
+        if let Err(failure) = pulls.set_draft(&repo, number, request.draft) {
+            return error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{failure:#}"));
+        }
+    }
+    match pull_status(&state, &repo, number).await {
+        Ok((_, status)) => Json(status).into_response(),
+        Err(response) => response,
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DraftRequest {
+    pub draft: bool,
+}
+
+async fn pull_status(
+    state: &ForgeState,
+    repo: &str,
+    number: i64,
+) -> Result<(crate::pulls::Pull, crate::pulls::PullStatus), Response> {
+    let (pull, head_now, base_now) = {
+        let pulls = state.pulls.lock().await;
+        let pull = match pulls.pull(repo, number) {
+            Ok(Some(pull)) => pull,
+            Ok(None) => return Err(error(StatusCode::NOT_FOUND, "no such pull request")),
+            Err(failure) => {
+                return Err(error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("{failure:#}"),
+                ));
+            }
+        };
+        let refs = state.refs.lock().await;
+        let head_now = refs.get(repo, &pull.head_ref).ok().flatten();
+        let base_now = refs.get(repo, &pull.base_ref).ok().flatten();
+        (pull, head_now, base_now)
+    };
+    let pulls = state.pulls.lock().await;
+    match pulls.status(&pull, head_now.as_deref(), base_now.as_deref()) {
+        Ok(status) => Ok((pull, status)),
+        Err(failure) => Err(error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("{failure:#}"),
+        )),
+    }
+}
+
+fn stage_name(stage: Stage) -> &'static str {
+    match stage {
+        Stage::Agent => "agent",
+        Stage::Draft => "draft",
+        Stage::Review => "review",
+        Stage::Changes => "changes",
+        Stage::Ci => "ci",
+        Stage::Merge => "merge",
+        Stage::Merged => "merged",
+        Stage::Closed => "closed",
+        Stage::Stale => "stale",
     }
 }
 
