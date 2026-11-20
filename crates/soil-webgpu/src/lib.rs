@@ -1564,6 +1564,18 @@ impl records_host::records::Host for WebGpuHost {
             .scan(collection, cursor, limit)
     }
 
+    fn scan_packed(
+        &mut self,
+        collection: String,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> std::result::Result<records_host::records::PackedPage, records_host::records::Error> {
+        self.records
+            .as_mut()
+            .ok_or(records_host::records::Error::Unsupported)?
+            .scan_packed(collection, cursor, limit)
+    }
+
     fn upsert(
         &mut self,
         entry: records_host::records::Entry,

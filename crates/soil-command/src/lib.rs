@@ -842,6 +842,21 @@ impl ::soil::records_host::records::Host for Host {
             .scan(collection, cursor, limit)
     }
 
+    fn scan_packed(
+        &mut self,
+        collection: String,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> Result<
+        ::soil::records_host::records::PackedPage,
+        ::soil::records_host::records::Error,
+    > {
+        self.records
+            .as_mut()
+            .ok_or(::soil::records_host::records::Error::Denied)?
+            .scan_packed(collection, cursor, limit)
+    }
+
     fn upsert(
         &mut self,
         entry: ::soil::records_host::records::Entry,
