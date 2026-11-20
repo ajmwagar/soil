@@ -182,6 +182,33 @@ enum Command {
         #[arg(long, env = "GITMYC_UPSTREAM_TOKEN_FILE")]
         upstream_token_file: Option<PathBuf>,
     },
+    /// Make the forges agree with the authority.
+    ///
+    /// A landing moves a ref here; this puts that answer back on the forge, so a
+    /// mirror is only ever one run behind and drift is a number, not a suspicion.
+    Replicate {
+        #[arg(long)]
+        repo: String,
+        /// `name=url`, repeatable. Credentials come from the token flags.
+        #[arg(long = "target")]
+        targets: Vec<String>,
+        /// Token for targets whose URL host matches this prefix (repeatable:
+        /// `https://git.fpl.dev=@file`).
+        #[arg(long = "token-for", value_name = "PREFIX=FILE")]
+        token_for: Vec<String>,
+        /// Where the token-free flag form points: one token file for all targets.
+        #[arg(long, env = "GITMYC_MIRROR_TOKEN_FILE")]
+        token_file: Option<PathBuf>,
+        #[arg(long, default_value = "~/.cache/gitmyc/mirror")]
+        cache: String,
+        #[arg(long, default_value = "~/.local/share/gitmyc/refs.sqlite3")]
+        refs: PathBuf,
+        /// Report what would move without moving it.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, env = "GITMYC_UPSTREAM_USER", default_value = "gitmyc")]
+        mirror_user: String,
+    },
     /// Materialize a commit into a VFS namespace, as content.
     Mount {
         /// VFS root, or a name under `$XDG_DATA_HOME/soil/vfs`.
@@ -465,6 +492,99 @@ async fn main() -> Result<()> {
             }
             let (present, total) = manifest.coverage(&store)?;
             println!("coverage {present}/{total}");
+            Ok(())
+        }
+        Command::Replicate {
+            repo,
+            targets,
+            token_for,
+            token_file,
+            cache,
+            refs,
+            dry_run,
+            mirror_user,
+        } => {
+            if !is_repo(&repo) {
+                bail!("repo must be owner/name");
+            }
+            if targets.is_empty() {
+                bail!("at least one --target name=url is required");
+            }
+            let mut parsed = Vec::new();
+            for spec in &targets {
+                let (name, url) = spec
+                    .split_once('=')
+                    .with_context(|| format!("--target {spec:?} is not name=url"))?;
+                // A bare host means "this repo on that forge": the common case is
+                // `gitea=https://git.fpl.dev`, not a URL repeated per repo.
+                let url = if url.trim_end_matches('/').split("://").nth(1).is_some_and(|rest| !rest.contains('/')) {
+                    format!("{}/{repo}.git", url.trim_end_matches('/'))
+                } else {
+                    url.to_string()
+                };
+                let url = url.as_str();
+                // The token for a target comes from the prefix that matches its URL,
+                // else from the single token file. Read once, kept in memory for the
+                // run, never written anywhere.
+                let matched = token_for
+                    .iter()
+                    .filter_map(|pair| pair.split_once('='))
+                    .find(|(prefix, _)| url.starts_with(*prefix))
+                    .map(|(_, file)| file.to_string());
+                let source = matched.or_else(|| token_file.as_ref().map(|file| file.display().to_string()));
+                let token = match source {
+                    Some(file) => {
+                        let text = std::fs::read_to_string(expand(&file))
+                            .with_context(|| format!("read mirror token {file}"))?;
+                        Some(text.trim().to_string())
+                    }
+                    None => None,
+                };
+                parsed.push(soil_gitmyc::Target {
+                    name: name.to_string(),
+                    url: url.to_string(),
+                    token,
+                });
+            }
+            let store = soil_gitmyc::Refs::open(expand_path(&refs))?;
+            let held = store.list(&repo)?;
+            if held.is_empty() {
+                println!("no refs held for {repo}");
+                return Ok(());
+            }
+            let cache_path = expand(&cache);
+            let askpass = soil_gitmyc::replicate::write_askpass(&cache_path, &mirror_user)?;
+            let report = soil_gitmyc::replicate::replicate(
+                &repo,
+                &held,
+                &cache_path,
+                &parsed,
+                &askpass,
+                dry_run,
+            )?;
+            for row in &report.rows {
+                let targets: Vec<String> = row
+                    .targets
+                    .iter()
+                    .map(|(name, sha)| {
+                        format!(
+                            "{name}={}",
+                            sha.as_deref().map(|s| &s[..8.min(s.len())]).unwrap_or("absent")
+                        )
+                    })
+                    .collect();
+                println!(
+                    "  {:<34} authority={} {} {}",
+                    row.reference,
+                    &row.authority[..8.min(row.authority.len())],
+                    targets.join(" "),
+                    row.action
+                );
+                if let Some(detail) = &row.detail {
+                    println!("     {detail}");
+                }
+            }
+            println!("{} refs, {} needing attention", report.rows.len(), report.drifted());
             Ok(())
         }
         Command::Mount {
