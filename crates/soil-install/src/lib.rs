@@ -294,6 +294,7 @@ impl InstallHost for SporeInstaller {
                 key: None,
                 publisher: entry.publisher.as_deref(),
                 public_key: None,
+                warm: None,
             },
         )
         .map_err(InstallError::from)
