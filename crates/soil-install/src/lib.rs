@@ -1624,18 +1624,19 @@ pub fn sync(root: &Path, options: SyncOptions<'_>) -> Result<Vec<SyncOutcome>, E
         let Some(role) = entry.system.as_ref() else {
             continue;
         };
-        if let Some(class) = options.class {
-            if !entry.devices.is_empty() && !entry.devices.iter().any(|device| device == class) {
-                outcomes.push(SyncOutcome {
-                    id: entry.spore_id.clone(),
-                    role: role.clone(),
-                    from: None,
-                    to: entry.version.clone(),
-                    digest: entry.digest.clone(),
-                    action: format!("skipped: not for {class}"),
-                });
-                continue;
-            }
+        let class = options.class.filter(|class| {
+            !entry.devices.is_empty() && !entry.devices.iter().any(|device| device == class)
+        });
+        if let Some(class) = class {
+            outcomes.push(SyncOutcome {
+                id: entry.spore_id.clone(),
+                role: role.clone(),
+                from: None,
+                to: entry.version.clone(),
+                digest: entry.digest.clone(),
+                action: format!("skipped: not for {class}"),
+            });
+            continue;
         }
         let current = installed
             .iter()
