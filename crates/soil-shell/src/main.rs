@@ -35,13 +35,14 @@ fn usage() -> &'static str {
                                     [--bridge ADDR] [--bridge-wait SECS] [--allow-origin URL]...\n\
                                     [--credential-env NAME] [--appdata-root DIR] [--hue-bridge URL] [--surface window|web|frame|fb]...\n\
                                     [--announce-endpoint URI]... [--announce-unsigned-dev]\n\
-       spore exec <dir|package.spore> [--vfs-root DIR] [--records-root DIR] [--book NAME]
-                                    [--unibus-config FILE] [--hub ADDR]... -- <args...>
+       spore exec <dir|package.spore> [--vfs-root DIR] [--records-root DIR] [--book NAME]\n\
+                                    [--unibus-config FILE] [--hub ADDR]... -- <args...>\n\
        spore warm <dir|package.spore>   compile it into the window host's cache\n\
        install --id SPORE [--json] [--root DIR] [--index FILE] [--packages DIR] [--origin URL]\n\
        command [--root DIR]... [--list] run NAME [ARGS...]\n\
        command [--root DIR]... shims [--dir DIR] [--prune]\n\
-       command [--root DIR]... warm\n\       shell [--mount DIR] [--fuse-binary PATH] [--shell PATH] [--no-mount] [-- command...]\n\
+       command [--root DIR]... warm\n\
+       shell [--mount DIR] [--fuse-binary PATH] [--shell PATH] [--no-mount] [-- command...]\n\
        ls [PREFIX]\n\
        stat PATH\n\
        cat PATH\n\
