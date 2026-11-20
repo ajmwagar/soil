@@ -117,6 +117,52 @@ impl Forge {
         })
     }
 
+    /// The forge's current value for a ref, if it has one.
+    ///
+    /// The refs authority owns the refs it has touched; for everything else the
+    /// forge is the baseline, so a caller's `old` can be checked against reality
+    /// instead of against "we have never heard of this branch".
+    pub async fn current_ref(&self, repo: &str, name: &str) -> Result<Option<String>> {
+        let url = self.api_url(repo, "git/refs");
+        let response = self
+            .client
+            .get(url)
+            .basic_auth(&self.user, Some(&self.token))
+            .send()
+            .await
+            .with_context(|| format!("listing refs of {repo}"))?;
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+        let body: Value = response.json().await.context("ref list is not json")?;
+        Ok(body.as_array().and_then(|refs| {
+            refs.iter()
+                .find(|entry| entry.get("ref").and_then(Value::as_str) == Some(name))
+                .and_then(|entry| entry.pointer("/object/sha"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        }))
+    }
+
+    /// Does the forge actually have this commit?
+    ///
+    /// A ref may only point at content that can be served, so this is the check
+    /// that keeps `git clone` from advertising a tip nobody can fetch.
+    pub async fn commit_exists(&self, repo: &str, commit: &str) -> Result<bool> {
+        if !is_commit(commit) {
+            return Ok(false);
+        }
+        let url = self.api_url(repo, &format!("git/commits/{commit}"));
+        let response = self
+            .client
+            .get(url)
+            .basic_auth(&self.user, Some(&self.token))
+            .send()
+            .await
+            .with_context(|| format!("checking {commit} in {repo}"))?;
+        Ok(response.status().is_success())
+    }
+
     /// The commit's tree, recursively, without fetching a single blob.
     pub async fn tree(&self, repo: &str, commit: &str) -> Result<Vec<TreeEntry>> {
         let url = self.api_url(

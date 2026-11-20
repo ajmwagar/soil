@@ -32,9 +32,10 @@ use serde_json::{json, Value};
 use crate::{
     capability::{
         self, CAPABILITY_VERSION, CapError, Claims, MAX_READ_TTL_SECS, MAX_WRITE_TTL_SECS,
-        filter_ref_advertisement,
+        filter_ref_advertisement_with,
     },
-    project::{Forge, is_repo, is_tree_path},
+    project::{Forge, is_commit, is_repo, is_tree_path},
+    refs::{Outcome, Refs},
 };
 
 /// Longest capability we will even look at: it travels in a URL.
@@ -44,7 +45,21 @@ const MAX_CAPABILITY_BYTES: usize = 4096;
 pub struct ForgeState {
     pub key: SigningKey,
     pub forge: Forge,
+    /// The refs authority. One process, one lock: an update is serialized so the
+    /// compare-and-swap cannot be raced by a second request in flight.
+    pub refs: Arc<tokio::sync::Mutex<Refs>>,
     pub admin_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RefUpdateRequest {
+    pub repo: String,
+    #[serde(rename = "ref")]
+    pub name: String,
+    /// `null` means "this ref must not exist yet".
+    #[serde(default)]
+    pub old: Option<String>,
+    pub new: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,6 +85,9 @@ pub fn router(state: ForgeState) -> Router {
         .route("/git/{owner}/{repo}/info/refs", get(info_refs))
         .route("/git/{owner}/{repo}/git-upload-pack", post(upload_pack))
         .route("/git/{owner}/{repo}/git-receive-pack", post(receive_pack))
+        .route("/refs/{owner}/{repo}", get(list_refs))
+        .route("/refs/update", post(update_ref))
+        .route("/audit/{owner}/{repo}", get(audit))
         .route("/tree/{owner}/{repo}/{commit}", get(tree))
         .route("/blob/{owner}/{repo}/{commit}/{*path}", get(blob))
         .with_state(Arc::new(state))
@@ -222,7 +240,24 @@ async fn info_refs(
             return error(StatusCode::BAD_GATEWAY, &format!("upstream body: {failure}"));
         }
     };
-    let Some(filtered) = filter_ref_advertisement(&advertisement, &claims) else {
+    let overlay: Vec<(String, String)> = {
+        let refs = state.refs.lock().await;
+        match refs.list(&repo) {
+            Ok(values) => values
+                .into_iter()
+                .map(|value| (value.name, value.sha))
+                .collect(),
+            Err(failure) => {
+                return error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("refs: {failure:#}"),
+                );
+            }
+        }
+    };
+    let Some((_, _, filtered)) =
+        filter_ref_advertisement_with(&advertisement, &claims, &overlay)
+    else {
         return error(
             StatusCode::FORBIDDEN,
             "capability covers none of this repository's refs",
@@ -312,7 +347,7 @@ async fn receive_pack(
     }
     error(
         StatusCode::NOT_IMPLEMENTED,
-        "ref updates go through an explicit refs CAS, not git-receive-pack",
+        "ref updates go through POST /refs/update (compare-and-swap), not git-receive-pack",
     )
 }
 
@@ -418,6 +453,162 @@ async fn resolve(
         .resolve(repo, &full_ref)
         .await
         .map_err(|failure| error(StatusCode::BAD_GATEWAY, &format!("{failure:#}")))
+}
+
+async fn list_refs(
+    State(state): State<Arc<ForgeState>>,
+    AxumPath((owner, repo)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let repo = repo_name(&owner, &repo);
+    let claims = match authorize(&state, &headers, &repo) {
+        Ok(claims) => claims,
+        Err(response) => return response,
+    };
+    let refs = state.refs.lock().await;
+    match refs.list(&repo) {
+        Ok(mut values) => {
+            values.retain(|value| claims.allows_read(&value.name));
+            Json(json!({ "repo": repo, "refs": values })).into_response()
+        }
+        Err(failure) => error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("refs: {failure:#}"),
+        ),
+    }
+}
+
+async fn audit(
+    State(state): State<Arc<ForgeState>>,
+    AxumPath((owner, repo)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let repo = repo_name(&owner, &repo);
+    if let Err(response) = authorize(&state, &headers, &repo) {
+        return response;
+    }
+    let refs = state.refs.lock().await;
+    match refs.audit(&repo, 500) {
+        Ok(entries) => Json(json!({ "repo": repo, "audit": entries })).into_response(),
+        Err(failure) => error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("audit: {failure:#}"),
+        ),
+    }
+}
+
+/// Move one ref. The capability decides *which* refs; policy decides *what kind*
+/// of subject may; this handler decides nothing on its own.
+async fn update_ref(
+    State(state): State<Arc<ForgeState>>,
+    headers: HeaderMap,
+    Json(request): Json<RefUpdateRequest>,
+) -> Response {
+    if !is_repo(&request.repo) {
+        return error(StatusCode::BAD_REQUEST, "repo must be owner/name");
+    }
+    let claims = match authorize(&state, &headers, &request.repo) {
+        Ok(claims) => claims,
+        Err(response) => return response,
+    };
+    if claims.write.is_empty() {
+        return error(StatusCode::FORBIDDEN, "this capability is read-only");
+    }
+    if !claims.allows_write(&request.name) {
+        return error(
+            StatusCode::FORBIDDEN,
+            &format!(
+                "capability for {} does not cover {:?} (writes: {:?})",
+                claims.repo, request.name, claims.write
+            ),
+        );
+    }
+    if !is_commit(&request.new) {
+        return error(StatusCode::BAD_REQUEST, "new must be a full commit id");
+    }
+    if let Some(old) = &request.old
+        && !is_commit(old)
+    {
+        return error(StatusCode::BAD_REQUEST, "old must be a full commit id or null");
+    }
+    // A ref may never point at content the forge cannot serve: every reader
+    // would get a clone that cannot complete.
+    match state.forge.commit_exists(&request.repo, &request.new).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "new commit is not present at the forge; push it before moving a ref to it",
+            );
+        }
+        Err(failure) => {
+            return error(StatusCode::BAD_GATEWAY, &format!("{failure:#}"));
+        }
+    }
+    // If this is the first time we touch a ref, take the forge's tip as the
+    // baseline: a caller's `old` must be checked against what git actually shows,
+    // not against "we have never heard of this branch".
+    if request.old.is_some() {
+        let known = {
+            let refs = state.refs.lock().await;
+            refs.get(&request.repo, &request.name).ok().flatten()
+        };
+        if known.is_none() {
+            match state
+                .forge
+                .current_ref(&request.repo, &request.name)
+                .await
+            {
+                Ok(Some(tip)) => {
+                    let mut refs = state.refs.lock().await;
+                    if let Err(failure) =
+                        refs.adopt(&request.repo, &request.name, &tip, capability::now_secs())
+                    {
+                        return error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &format!("refs: {failure:#}"),
+                        );
+                    }
+                }
+                Ok(None) => {}
+                Err(failure) => {
+                    return error(StatusCode::BAD_GATEWAY, &format!("{failure:#}"));
+                }
+            }
+        }
+    }
+    let mut refs = state.refs.lock().await;
+    let outcome = refs.update(
+        &request.repo,
+        &request.name,
+        request.old.as_deref(),
+        &request.new,
+        &claims.sub,
+        &claims.nonce,
+        capability::now_secs(),
+    );
+    match outcome {
+        Err(failure) => error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("refs: {failure:#}"),
+        ),
+        Ok(Outcome::Applied { old, new }) => Json(json!({
+            "repo": request.repo,
+            "ref": request.name,
+            "old": old,
+            "new": new,
+            "subject": claims.sub,
+        }))
+        .into_response(),
+        Ok(Outcome::Stale { current, detail }) => (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": detail, "current": current })),
+        )
+            .into_response(),
+        Ok(Outcome::Denied { detail }) => {
+            (StatusCode::FORBIDDEN, Json(json!({ "error": detail }))).into_response()
+        }
+    }
 }
 
 fn repo_name(owner: &str, repo: &str) -> String {

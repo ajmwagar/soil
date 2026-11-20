@@ -14,16 +14,22 @@
 //!   a tree as placeholders, fetch one blob. [`project::ForgeHydrator`] implements
 //!   `fungos_vfs::Hydrator`, so a placeholder hydrates exactly like any other
 //!   VFS node and is verified by the VFS's own content id.
+//! * [`refs`] — the refs authority: one sqlite file, one compare-and-swap per
+//!   update, every attempt audited. The forge we run exposes only `GET /git/refs`
+//!   and cannot move one, so refs are ours while objects stay its.
 //! * [`serve`] — the network edge: git smart-HTTP with the ref advertisement
-//!   filtered by the capability, plus `/mint`, `/tree`, `/blob`.
+//!   filtered by the capability and overlaid with our refs, plus `/mint`,
+//!   `/tree`, `/blob`, `/refs/update` and `/audit`.
 //!
-//! Deliberate limits: no pack computation (git does that), no write path yet
-//! (refs go through an explicit CAS update, not `receive-pack`), and no refs
-//! database of our own — the forge we already run stays the authority.
+//! Deliberate limits: no pack computation (git does that), and `receive-pack`
+//! stays refused — a push is not an update, and the one verb that moves a ref is
+//! an explicit compare-and-swap.
 
 pub mod capability;
 pub mod project;
+pub mod refs;
 pub mod serve;
 
 pub use capability::{CapError, Claims, MAX_READ_TTL_SECS, MAX_WRITE_TTL_SECS};
 pub use project::{Forge, Resolved};
+pub use refs::{AuditEntry, Outcome, Refs};

@@ -261,14 +261,23 @@ pub fn pkt_decode_stream(stream: &[u8]) -> Option<Vec<Option<Vec<u8>>>> {
     Some(out)
 }
 
-/// Filter an `info/refs` advertisement to the refs a capability covers.
+/// Filter an `info/refs` advertisement to the refs a capability covers, and
+/// overlay refs this service owns.
+///
+/// The forge's advertisement is the object store's opinion; `overlay` is the refs
+/// authority's. Overlay entries replace same-named refs and must themselves pass
+/// the capability, so a stale or over-broad overlay cannot become a leak.
 ///
 /// The capability list rides on the first ref line, so dropping that line
 /// silently downgrades the clone; caps are therefore moved onto whichever ref
-/// line ends up first. `capabilities^{}` is the empty-repository advertisement
-/// and is always kept (there is nothing to protect in it).
+/// line ends up first. `HEAD` is a symref: its object id is rewritten to the
+/// overlay's value when the overlay moves the branch it points at.
 #[must_use]
-pub fn filter_ref_advertisement(stream: &[u8], claims: &Claims) -> Option<Vec<u8>> {
+pub fn filter_ref_advertisement_with(
+    stream: &[u8],
+    claims: &Claims,
+    overlay: &[(String, String)],
+) -> Option<(Option<Vec<u8>>, Vec<(String, String)>, Vec<u8>)> {
     let lines = pkt_decode_stream(stream)?;
     let mut caps: Option<Vec<u8>> = None;
     let mut header: Option<Vec<u8>> = None;
@@ -289,7 +298,6 @@ pub fn filter_ref_advertisement(stream: &[u8], claims: &Claims) -> Option<Vec<u8
             caps = this_caps;
         }
         let Ok(text) = std::str::from_utf8(body) else {
-            // Not a ref we can reason about; dropping it is the safe direction.
             continue;
         };
         let mut parts = text.split(' ');
@@ -297,31 +305,73 @@ pub fn filter_ref_advertisement(stream: &[u8], claims: &Claims) -> Option<Vec<u8
         let name = parts.next().unwrap_or_default().trim().to_string();
         refs.push((oid, name, body.to_vec()));
     }
-    // `HEAD` is a symref, so it is authorized by identity, not by pattern: show
-    // it only when it points at the tip of a ref the capability covers.
+
+    // The refs authority speaks last, for the refs it is allowed to speak about.
+    let overlay: Vec<(String, String)> = overlay
+        .iter()
+        .filter(|(name, _)| claims.allows_read(name))
+        .cloned()
+        .collect();
+    for (name, sha) in &overlay {
+        match refs.iter_mut().find(|(_, existing, _)| existing == name) {
+            Some(entry) => {
+                entry.0 = sha.clone();
+                entry.2 = format!("{sha} {name}").into_bytes();
+            }
+            None => refs.push((sha.clone(), name.clone(), format!("{sha} {name}").into_bytes())),
+        }
+    }
+
+    // `HEAD` follows the branch it names, if we know which one that is.
+    let head_target = caps
+        .as_deref()
+        .map(String::from_utf8_lossy)
+        .and_then(|text| {
+            text.split(' ')
+                .find_map(|cap| cap.strip_prefix("symref=HEAD:").map(str::to_string))
+        });
+    if let Some(target) = &head_target {
+        if let Some((sha, _, _)) = refs.iter().find(|(_, name, _)| name == target) {
+            let sha = sha.clone();
+            for (oid, name, _) in refs.iter_mut() {
+                if name == "HEAD" {
+                    *oid = sha.clone();
+                }
+            }
+        }
+    }
+
     let readable_tips: Vec<String> = refs
         .iter()
         .filter(|(_, name, _)| claims.allows_read(name))
         .map(|(oid, _, _)| oid.clone())
         .collect();
-    let mut kept: Vec<Vec<u8>> = Vec::new();
+    let mut kept: Vec<(String, String, Vec<u8>)> = Vec::new();
     for (oid, name, body) in refs {
         let keep = name == "capabilities^{}"
             || (name == "HEAD" && readable_tips.iter().any(|tip| tip == &oid))
             || claims.allows_read(&name);
         if keep {
-            kept.push(body);
+            let mut body = body;
+            if name == "HEAD" || body.len() >= 40 {
+                // Keep the oid in the line in step with any rewrite above.
+                let rest = String::from_utf8_lossy(&body).to_string();
+                if let Some(name_part) = rest.split_once(' ').map(|(_, rest)| rest.to_string()) {
+                    body = format!("{oid} {name_part}").into_bytes();
+                }
+            }
+            kept.push((oid, name, body));
         }
     }
     if kept.is_empty() {
         return None;
     }
     let mut out = Vec::new();
-    if let Some(header) = header {
-        out.extend_from_slice(&pkt_encode(&header));
+    if let Some(header) = &header {
+        out.extend_from_slice(&pkt_encode(header));
         out.extend_from_slice(b"0000");
     }
-    for (index, mut body) in kept.into_iter().enumerate() {
+    for (index, (_, _, mut body)) in kept.into_iter().enumerate() {
         if index == 0 {
             if let Some(caps) = &caps {
                 body.push(0);
@@ -331,7 +381,13 @@ pub fn filter_ref_advertisement(stream: &[u8], claims: &Claims) -> Option<Vec<u8
         out.extend_from_slice(&pkt_encode(&body));
     }
     out.extend_from_slice(b"0000");
-    Some(out)
+    Some((header, overlay, out))
+}
+
+/// The common case: filter, with no overlay.
+#[must_use]
+pub fn filter_ref_advertisement(stream: &[u8], claims: &Claims) -> Option<Vec<u8>> {
+    filter_ref_advertisement_with(stream, claims, &[]).map(|(_, _, filtered)| filtered)
 }
 
 
@@ -346,7 +402,7 @@ pub fn now_secs() -> i64 {
 }
 
 /// Random per-mint nonce, so one capability can be denied without rotating the
-/// signing key (the write path is what consults the denylist; reads rely on TTL).
+/// signing key (the write path consults it, and the audit log records it).
 #[must_use]
 pub fn nonce() -> String {
     let mut bytes = [0u8; 16];

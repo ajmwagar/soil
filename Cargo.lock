@@ -7546,6 +7546,7 @@ dependencies = [
  "fungos-vfs",
  "getrandom 0.2.17",
  "reqwest 0.12.28",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
