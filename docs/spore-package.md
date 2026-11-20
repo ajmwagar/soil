@@ -260,11 +260,15 @@ screenshots, and a written reason for every grant. Passing it means a package is
 ready to be *reviewed*, not approved; see `docs/spore-store.md`.
 
 `check` reads the module's component type and fails when an imported WIT package
-is missing from `[grants]`. A module that imports `soil:records` while the
-manifest lists only WASI is rejected before anyone signs it. The manifest stays
-intent — the host still enforces — but it can no longer be wrong about what the
-module asks for. A core module is rejected outright: a Spore module is a
-component, and a core module has no component type to check.
+is missing from `[grants]`. A grant for any capability in a package declares
+that package: `"soil:spore.catalog"` covers the `soil:spore` import, because the
+host enforces the capability, not the package. A module that imports
+`soil:records` while the manifest lists only WASI is rejected before anyone
+signs it. The manifest stays intent — the host still enforces — but it can no
+longer be wrong about what the module asks for. A core module is rejected
+outright: a Spore module is a component, and a core module has no component type
+to check. `pack`, `verify`, and the host installer run the same import rule, so a
+tar cannot reach a machine by bypassing `check`.
 
 ## Man pages in Mush
 

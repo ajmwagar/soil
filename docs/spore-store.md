@@ -608,7 +608,8 @@ The catalog still carries identity (`spore_id`, `version`, digest, `grants`,
 `system`), not prose, so a card for a package this host has not installed shows
 its id and category until listings are fetched by CID.
 
-The host installer is `soil-install`. It verifies a local tar, keeps it at
+The host installer is `soil-install`. It verifies a local tar, including the
+same import/grant rule as `soil-spore check`, keeps it at
 `.packages/<digest>.spore`, unpacks into a staging directory, and only then swaps
 `<root>/<id>`. `.install/<id>.json` is the host's crash-safe state; it records the current and
 previous digest. Projecting that state into `fungos.store.installed@1` is the
