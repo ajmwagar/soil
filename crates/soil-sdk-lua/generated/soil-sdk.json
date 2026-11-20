@@ -825,6 +825,16 @@
               "result": "scope"
             },
             {
+              "docs": "The devices this surface may place work on, in the host's own order.\n\nEmpty when the host was given no device: an adapter that has not thought\nabout placement offers no choice rather than one silent default. A surface\nwith no devices leaves its picker out; it does not invent a name.",
+              "kind": "freestanding",
+              "lua": "devices",
+              "member": "devices",
+              "name": "devices",
+              "params": [],
+              "resource": null,
+              "result": "list<device>"
+            },
+            {
               "docs": null,
               "kind": "freestanding",
               "lua": "get",
@@ -848,6 +858,16 @@
               "params": [],
               "resource": null,
               "result": "binding"
+            },
+            {
+              "docs": "The models the harnesses will accept, in the host's order.\n\nOnly strings a harness advertised: a picker that offered a name nobody\nserves would be asking a person to choose a failure. Empty when no\nharness named any, and then the picker is left out.",
+              "kind": "freestanding",
+              "lua": "models",
+              "member": "models",
+              "name": "models",
+              "params": [],
+              "resource": null,
+              "result": "list<string>"
             },
             {
               "docs": "One subscription per surface. Changes that happened before it opened are\nnot replayed: `agents` is the snapshot, the subscription is the delta.",
@@ -915,6 +935,13 @@
               "kind": "variant",
               "lua": "Change",
               "name": "change"
+            },
+            {
+              "docs": null,
+              "kind": "type",
+              "lua": "Device",
+              "name": "device",
+              "type": "device"
             },
             {
               "docs": null,
@@ -1042,6 +1069,10 @@
                   "type": "option<string>"
                 },
                 {
+                  "name": "device",
+                  "type": "option<string>"
+                },
+                {
                   "name": "phase",
                   "type": "phase"
                 },
@@ -1121,6 +1152,34 @@
               "kind": "record",
               "lua": "Choice",
               "name": "choice"
+            },
+            {
+              "docs": "One machine a person may place work on.\n\nFacts, not capacity: `attached` says this host reached that device's agent\nservice when it opened the surface, and `detail` is why it did not. Nothing\nhere claims what the device could do later, and no field is a credential.",
+              "fields": [
+                {
+                  "name": "id",
+                  "type": "string"
+                },
+                {
+                  "name": "label",
+                  "type": "string"
+                },
+                {
+                  "name": "current",
+                  "type": "bool"
+                },
+                {
+                  "name": "attached",
+                  "type": "bool"
+                },
+                {
+                  "name": "detail",
+                  "type": "option<string>"
+                }
+              ],
+              "kind": "record",
+              "lua": "Device",
+              "name": "device"
             },
             {
               "cases": [
@@ -7644,6 +7703,106 @@
               "lua": "Error",
               "name": "error",
               "type": "error"
+            }
+          ]
+        },
+        {
+          "docs": "Host-owned package installation.\n\nA Spore names a package by id and digest; it never names a path, a URL or a\ngrant. The host resolves the digest against its signed index, verifies the\ntar, checks the import/grant rule, and only then swaps the install root.\nInstalling is the storefront's question, never its authority.",
+          "functions": [
+            {
+              "docs": "Install `digest` of `id`. The package must already be in the host's\npackage cache or reachable through the host's approved store origin;\nthe guest never supplies either.",
+              "kind": "freestanding",
+              "lua": "install",
+              "member": "install",
+              "name": "install",
+              "params": [
+                {
+                  "name": "id",
+                  "type": "string"
+                },
+                {
+                  "name": "digest",
+                  "type": "string"
+                }
+              ],
+              "resource": null,
+              "result": "result<installed, error>"
+            },
+            {
+              "docs": "Roll back to the one previous digest kept in `.packages`.",
+              "kind": "freestanding",
+              "lua": "rollback",
+              "member": "rollback",
+              "name": "rollback",
+              "params": [
+                {
+                  "name": "id",
+                  "type": "string"
+                }
+              ],
+              "resource": null,
+              "result": "result<installed, error>"
+            },
+            {
+              "docs": "What this host currently runs, if anything.",
+              "kind": "freestanding",
+              "lua": "status",
+              "member": "status",
+              "name": "status",
+              "params": [
+                {
+                  "name": "id",
+                  "type": "string"
+                }
+              ],
+              "resource": null,
+              "result": "result<option<installed>, error>"
+            }
+          ],
+          "id": "soil:spore@0.3.0/install",
+          "name": "install",
+          "types": [
+            {
+              "cases": [
+                "denied",
+                "not-found",
+                "invalid",
+                "consent",
+                "io",
+                "unsupported"
+              ],
+              "docs": null,
+              "kind": "enum",
+              "lua": "Error",
+              "name": "error"
+            },
+            {
+              "docs": null,
+              "fields": [
+                {
+                  "name": "id",
+                  "type": "string"
+                },
+                {
+                  "name": "name",
+                  "type": "string"
+                },
+                {
+                  "name": "version",
+                  "type": "string"
+                },
+                {
+                  "name": "digest",
+                  "type": "string"
+                },
+                {
+                  "name": "previous-digest",
+                  "type": "option<string>"
+                }
+              ],
+              "kind": "record",
+              "lua": "Installed",
+              "name": "installed"
             }
           ]
         },

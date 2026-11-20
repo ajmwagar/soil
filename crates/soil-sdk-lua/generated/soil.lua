@@ -145,6 +145,7 @@ M.soil.agents.observe.types = M.soil.agents.observe.types or {}
 M.soil.agents.observe.types.Agent = { type = "agent" }
 M.soil.agents.observe.types.Binding = { type = "binding" }
 M.soil.agents.observe.types.Change = { UPSERTED = "upserted", REMOVED = "removed" }
+M.soil.agents.observe.types.Device = { type = "device" }
 M.soil.agents.observe.types.Error = { type = "error" }
 M.soil.agents.observe.types.Page = { fields = { { name = "turns", type = "list<turn>" }, { name = "before", type = "option<u64>" } } }
 M.soil.agents.observe.types.Scope = { type = "scope" }
@@ -170,6 +171,15 @@ end
 function M.soil.agents.observe.current_scope(args)
   return dispatch("soil:agents@0.1.0/observe", "current-scope", args)
 end
+--- The devices this surface may place work on, in the host's own order.
+---
+--- Empty when the host was given no device: an adapter that has not thought
+--- about placement offers no choice rather than one silent default. A surface
+--- with no devices leaves its picker out; it does not invent a name.
+-- WIT: devices -> list<device>
+function M.soil.agents.observe.devices(args)
+  return dispatch("soil:agents@0.1.0/observe", "devices", args)
+end
 -- WIT: get -> result<agent, error>
 function M.soil.agents.observe.get(args)
   return dispatch("soil:agents@0.1.0/observe", "get", args)
@@ -178,6 +188,15 @@ end
 -- WIT: intent -> binding
 function M.soil.agents.observe.intent(args)
   return dispatch("soil:agents@0.1.0/observe", "intent", args)
+end
+--- The models the harnesses will accept, in the host's order.
+---
+--- Only strings a harness advertised: a picker that offered a name nobody
+--- serves would be asking a person to choose a failure. Empty when no
+--- harness named any, and then the picker is left out.
+-- WIT: models -> list<string>
+function M.soil.agents.observe.models(args)
+  return dispatch("soil:agents@0.1.0/observe", "models", args)
 end
 --- One subscription per surface. Changes that happened before it opened are
 --- not replayed: `agents` is the snapshot, the subscription is the delta.
@@ -195,9 +214,10 @@ M.soil.agents.types = M.soil.agents.types or {}
 M.soil.agents.types.types = M.soil.agents.types.types or {}
 M.soil.agents.types.types.Activity = { fields = { { name = "kind", type = "activity-kind" }, { name = "label", type = "string" }, { name = "detail", type = "option<string>" }, { name = "status", type = "status" }, { name = "started-at-ms", type = "u64" }, { name = "finished-at-ms", type = "option<u64>" } } }
 M.soil.agents.types.types.ActivityKind = { YOU = "you", MODEL = "model", MEMORY = "memory", FILES = "files", SHELL = "shell", NETWORK = "network", BROWSER = "browser", AGENT = "agent", SKILL = "skill", HOOK = "hook", OTHER = "other" }
-M.soil.agents.types.types.Agent = { fields = { { name = "id", type = "string" }, { name = "harness", type = "string" }, { name = "title", type = "string" }, { name = "workspace", type = "option<string>" }, { name = "model", type = "option<string>" }, { name = "phase", type = "phase" }, { name = "goal", type = "option<goal>" }, { name = "owner", type = "option<owner>" }, { name = "activity", type = "list<activity>" }, { name = "prompts", type = "list<prompt>" }, { name = "usage", type = "usage" }, { name = "revision", type = "u64" }, { name = "started-at-ms", type = "u64" }, { name = "updated-at-ms", type = "u64" } } }
+M.soil.agents.types.types.Agent = { fields = { { name = "id", type = "string" }, { name = "harness", type = "string" }, { name = "title", type = "string" }, { name = "workspace", type = "option<string>" }, { name = "model", type = "option<string>" }, { name = "device", type = "option<string>" }, { name = "phase", type = "phase" }, { name = "goal", type = "option<goal>" }, { name = "owner", type = "option<owner>" }, { name = "activity", type = "list<activity>" }, { name = "prompts", type = "list<prompt>" }, { name = "usage", type = "usage" }, { name = "revision", type = "u64" }, { name = "started-at-ms", type = "u64" }, { name = "updated-at-ms", type = "u64" } } }
 M.soil.agents.types.types.Binding = { fields = { { name = "agent", type = "option<string>" }, { name = "view", type = "option<string>" } } }
 M.soil.agents.types.types.Choice = { fields = { { name = "id", type = "string" }, { name = "label", type = "string" }, { name = "detail", type = "option<string>" }, { name = "danger", type = "bool" } } }
+M.soil.agents.types.types.Device = { fields = { { name = "id", type = "string" }, { name = "label", type = "string" }, { name = "current", type = "bool" }, { name = "attached", type = "bool" }, { name = "detail", type = "option<string>" } } }
 M.soil.agents.types.types.Error = { DENIED = "denied", NOT_FOUND = "not-found", NOT_READY = "not-ready", INVALID = "invalid", OVER_BUDGET = "over-budget", STALE = "stale", UNSUPPORTED = "unsupported", IO = "io" }
 M.soil.agents.types.types.Goal = { fields = { { name = "text", type = "string" }, { name = "set-at-ms", type = "u64" } } }
 M.soil.agents.types.types.Owner = { fields = { { name = "actor", type = "string" }, { name = "display-name", type = "option<string>" } } }
@@ -1230,6 +1250,33 @@ end
 -- WIT: set -> result<_, error>
 function M.soil.spore.defaults.set(args)
   return dispatch("soil:spore@0.3.0/defaults", "set", args)
+end
+M.soil.spore.install = M.soil.spore.install or {}
+--- Host-owned package installation.
+---
+--- A Spore names a package by id and digest; it never names a path, a URL or a
+--- grant. The host resolves the digest against its signed index, verifies the
+--- tar, checks the import/grant rule, and only then swaps the install root.
+--- Installing is the storefront's question, never its authority.
+M.soil.spore.install.types = M.soil.spore.install.types or {}
+M.soil.spore.install.types.Error = { DENIED = "denied", NOT_FOUND = "not-found", INVALID = "invalid", CONSENT = "consent", IO = "io", UNSUPPORTED = "unsupported" }
+M.soil.spore.install.types.Installed = { fields = { { name = "id", type = "string" }, { name = "name", type = "string" }, { name = "version", type = "string" }, { name = "digest", type = "string" }, { name = "previous-digest", type = "option<string>" } } }
+--- Install `digest` of `id`. The package must already be in the host's
+--- package cache or reachable through the host's approved store origin;
+--- the guest never supplies either.
+-- WIT: install -> result<installed, error>
+function M.soil.spore.install.install(args)
+  return dispatch("soil:spore@0.3.0/install", "install", args)
+end
+--- Roll back to the one previous digest kept in `.packages`.
+-- WIT: rollback -> result<installed, error>
+function M.soil.spore.install.rollback(args)
+  return dispatch("soil:spore@0.3.0/install", "rollback", args)
+end
+--- What this host currently runs, if anything.
+-- WIT: status -> result<option<installed>, error>
+function M.soil.spore.install.status(args)
+  return dispatch("soil:spore@0.3.0/install", "status", args)
 end
 M.soil.spore.open = M.soil.spore.open or {}
 --- Opening a document: which Spore can, and which one was asked for.
