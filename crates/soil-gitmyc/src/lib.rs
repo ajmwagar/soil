@@ -37,6 +37,7 @@ pub mod capability;
 pub mod project;
 pub mod pulls;
 pub mod pullthrough;
+pub mod search;
 pub mod refs;
 pub mod serve;
 
@@ -44,4 +45,5 @@ pub use capability::{CapError, Claims, MAX_READ_TTL_SECS, MAX_WRITE_TTL_SECS};
 pub use project::{Forge, Resolved};
 pub use pulls::{Check, Pull, PullStatus, Review, Stage};
 pub use pullthrough::{ForgeHydrator, Manifest, ManifestEntry, MeshHydrator, PeerSource};
+pub use search::{Hit, scan};
 pub use refs::{AuditEntry, Outcome, Refs};

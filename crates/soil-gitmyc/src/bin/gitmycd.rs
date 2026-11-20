@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use ed25519_dalek::SigningKey;
+use fungos_vfs::Hydrator as _;
 use soil_gitmyc::{
     Claims, Forge, capability, project::is_repo, serve::ForgeState,
 };
@@ -129,6 +130,24 @@ enum Command {
         upstream_token: String,
         #[arg(long, env = "GITMYC_UPSTREAM_TOKEN_FILE")]
         upstream_token_file: Option<PathBuf>,
+    },
+    /// Search a manifest without fetching it: filter with the per-file Bloom,
+    /// hydrate only the candidates, confirm with a literal scan.
+    ///
+    /// This is the prefilter half of a hosted index: it answers "which files could
+    /// contain this" from a 44 KB catalog, so a cold node hydrates a handful
+    /// instead of a tree.
+    Find {
+        /// A VFS root holding a mounted subtree.
+        #[arg(long)]
+        vfs: String,
+        /// Namespace prefix to search under, e.g. `fpl/edgerunner@<commit>`.
+        #[arg(long)]
+        prefix: String,
+        #[arg(long)]
+        pattern: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
     /// Register a manifest into a VFS without fetching a byte, then optionally
     /// hydrate one path to prove the pull-through works.
@@ -297,6 +316,42 @@ async fn main() -> Result<()> {
                     out
                 );
             }
+            Ok(())
+        }
+        Command::Find {
+            vfs,
+            prefix,
+            pattern,
+            limit,
+        } => {
+            let root = vfs_root(&vfs);
+            let mut store = fungos_vfs::Vfs::open_with_role(&root, fungos_vfs::NodeRole::Cache)
+                .with_context(|| format!("open vfs {}", root.display()))?;
+            let entries = store.list(&prefix)?;
+            let (mut scanned, mut cold, mut hits) = (0, 0, 0);
+            for entry in entries {
+                if hits >= limit {
+                    break;
+                }
+                if !soil_gitmyc::search::is_searchable(&entry.media_type) {
+                    continue;
+                }
+                match store.get(&entry.path) {
+                    Ok(bytes) => {
+                        scanned += 1;
+                        for hit in soil_gitmyc::scan(&entry.path, &bytes, &pattern, limit - hits) {
+                            println!("{}:{}: {}", hit.path, hit.line, hit.text.trim());
+                            hits += 1;
+                        }
+                    }
+                    // A placeholder is the cost this scan pays: searching cold
+                    // content means fetching it, which is why a real index is built
+                    // where the bytes already are.
+                    Err(fungos_vfs::VfsError::NotHydrated(_)) => cold += 1,
+                    Err(failure) => eprintln!("{}: {failure}", entry.path),
+                }
+            }
+            println!("--- {hits} hits, {scanned} files scanned, {cold} placeholders skipped");
             Ok(())
         }
         Command::Hydrate {
