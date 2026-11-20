@@ -2,7 +2,7 @@
 
 Status: **first host contract, 2026-11-05.**
 
-`soil:inference@0.2.0` is the host-mediated model interface for Spores. It is
+`soil:inference@0.3.0` is the host-mediated model interface for Spores. It is
 not a provider SDK: endpoint discovery, Geode credentials, model aliases,
 budgets, scrubbing, and transport stay in the host.
 
@@ -11,6 +11,7 @@ budgets, scrubbing, and transport stay in the host.
 ```wit
 models()              -> list<model>
 complete(request)     -> response
+embed(request)        -> embed-response
 open-stream(request)  -> completion-stream
 state()               -> inference-state
 ```
@@ -73,9 +74,36 @@ return tool calls even without public text.
 id
 provider
 context-window
+tier                 fast | balanced | deep | embed
+capabilities         chat | tools | vision | embeddings | rerank
+embedding-dimensions
 ```
 
-The host supplies the provider label; the Spore never selects one.
+The host supplies the provider label and fills tier/capabilities from its
+catalog. The Spore never selects a provider. Tiers are Bifrost aliases
+(`tier/fast`, `tier/deep`, `tier/embed`), so a guest names policy, not a vendor.
+
+## Embeddings
+
+```wit
+record embed-request {
+  model: string,
+  inputs: list<string>,
+  dimensions: option<u32>,
+  prompt-cache-key: option<string>,
+}
+
+record embed-response {
+  model: string,
+  vectors: list<list<f32>>,
+  usage: option<embed-usage>,
+}
+```
+
+`embed` posts to the provider's `/v1/embeddings`, scrubs every input, and
+returns one vector per input in input order. This is the retrieval primitive
+for transcript chunks and record search; it is deliberately separate from chat
+so a host can route it to a local embedding tier without a chat model.
 
 ## Host mapping
 
@@ -114,9 +142,9 @@ Operator Spore links `soil:inference`; a native Operator keeps its existing
 HTTP transport. Both paths share message conversion, SSE parsing, tool-call
 accumulation, loop guards, and turn construction.
 
-The Spore transport has no `prepare_session` and no embeddings. Those calls
-return `unsupported` rather than falling back to a side channel. The host can
-add them as separate capabilities later.
+The Spore transport has no `prepare_session`. That call returns `unsupported`
+rather than falling back to a side channel. Embeddings are now a first-class
+surface (`embed`) so RAG does not need a second transport.
 
 ## Boundaries
 

@@ -1238,7 +1238,55 @@ impl ::soil::vfs_host::vfs::Host for WebGpuHost {
     }
 }
 
+impl ::soil::vfs_host::vfs_mut::HostWriter for WebGpuHost {
+    fn write(
+        &mut self,
+        _writer: wasmtime::component::Resource<::soil::vfs_host::VfsWriter>,
+        _data: Vec<u8>,
+    ) -> std::result::Result<u64, ::soil::vfs_host::vfs_mut::Error> {
+        Err(::soil::vfs_host::vfs_mut::Error::Denied)
+    }
+
+    fn finish(
+        &mut self,
+        _writer: wasmtime::component::Resource<::soil::vfs_host::VfsWriter>,
+    ) -> std::result::Result<
+        ::soil::vfs_host::vfs_mut::WriteResult,
+        ::soil::vfs_host::vfs_mut::Error,
+    > {
+        Err(::soil::vfs_host::vfs_mut::Error::Denied)
+    }
+
+    fn abort(
+        &mut self,
+        _writer: wasmtime::component::Resource<::soil::vfs_host::VfsWriter>,
+    ) -> std::result::Result<(), ::soil::vfs_host::vfs_mut::Error> {
+        Err(::soil::vfs_host::vfs_mut::Error::Denied)
+    }
+
+    fn drop(
+        &mut self,
+        _writer: wasmtime::component::Resource<::soil::vfs_host::VfsWriter>,
+    ) -> std::result::Result<(), wasmtime::Error> {
+        Ok(())
+    }
+}
+
 impl ::soil::vfs_host::vfs_mut::Host for WebGpuHost {
+    fn begin_write(
+        &mut self,
+        _path: String,
+        _media_type: String,
+        _expected_size: Option<u64>,
+        _expected_version: Option<u64>,
+        _mode: Option<u32>,
+    ) -> std::result::Result<
+        wasmtime::component::Resource<::soil::vfs_host::VfsWriter>,
+        ::soil::vfs_host::vfs_mut::Error,
+    > {
+        Err(::soil::vfs_host::vfs_mut::Error::Denied)
+    }
+
     fn write(
         &mut self,
         path: String,

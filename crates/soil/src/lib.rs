@@ -57,6 +57,9 @@ mod gateway;
 mod host;
 #[cfg(any(feature = "http", feature = "wasi"))]
 pub mod http_host;
+pub use soil_inference_host::InferenceHost;
+#[cfg(feature = "wasi")]
+mod command;
 #[cfg(feature = "principal")]
 pub mod local_identity;
 #[cfg(any(feature = "http", feature = "wasi"))]
@@ -80,12 +83,16 @@ pub mod git_host;
 #[cfg(feature = "desktops")]
 pub mod desktops;
 #[cfg(feature = "wasi")]
+pub mod stream;
+#[cfg(feature = "wasi")]
 pub mod unibus;
 #[cfg(feature = "vfs")]
 pub mod vfs_host;
 #[cfg(feature = "work")]
 pub mod work;
 
+#[cfg(feature = "wasi")]
+pub use command::{CommandOutcome, CommandService};
 #[cfg(feature = "wasi")]
 pub use context::HttpContext;
 #[cfg(feature = "wasi")]
@@ -107,6 +114,8 @@ pub use policy::{HttpPolicy, NetworkPolicy, WasiHostPolicy};
 pub use records_host::RecordsBookHost;
 #[cfg(feature = "wasi")]
 pub use service::HttpService;
+#[cfg(feature = "wasi")]
+pub use stream::{StreamHub, StreamInfo, StreamSession};
 #[cfg(feature = "wasi")]
 pub use unibus::{
     Bus, BusError, BusReceipt, Frame, MAX_BUS_BODY, MAX_POLL_LIMIT, MemoryBus, Page, UnibusBus,

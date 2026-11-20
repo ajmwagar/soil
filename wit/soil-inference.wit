@@ -3,7 +3,7 @@
 // The host owns provider selection, endpoint discovery, authentication, model
 // aliases, budgets, and transport. A Spore names a model, messages, and tools.
 // Credentials and provider routes never cross this boundary.
-package soil:inference@0.2.0;
+package soil:inference@0.3.0;
 
 interface inference {
   enum role {
@@ -11,6 +11,16 @@ interface inference {
     user,
     assistant,
     tool,
+  }
+
+  /// What a model can do. A host fills these from its provider catalog; a
+  /// guest uses them to pick a tier without hardcoding provider names.
+  enum capability {
+    chat,
+    tools,
+    vision,
+    embeddings,
+    rerank,
   }
 
   record tool-call {
@@ -52,6 +62,11 @@ interface inference {
     id: string,
     provider: string,
     context-window: option<u32>,
+    /// Host policy tier, e.g. `fast`, `balanced`, `deep`, `embed`.
+    tier: option<string>,
+    capabilities: list<capability>,
+    /// Present for embedding models.
+    embedding-dimensions: option<u32>,
   }
 
   record usage {
@@ -75,6 +90,46 @@ interface inference {
     message: message,
     finish-reason: option<string>,
     usage: option<usage>,
+  }
+
+  record embed-request {
+    model: string,
+    inputs: list<string>,
+    /// Optional output width. Unsupported by some providers; the host may
+    /// reject rather than silently ignore it.
+    dimensions: option<u32>,
+    prompt-cache-key: option<string>,
+  }
+
+  record embed-usage {
+    prompt-tokens: u32,
+    total-tokens: u32,
+  }
+
+  record embed-response {
+    model: string,
+    /// One vector per input, in input order.
+    vectors: list<list<f32>>,
+    usage: option<embed-usage>,
+  }
+
+  /// One PCM16LE mono utterance for speaker/voice embedding. The model and
+  /// checkpoint are named explicitly: voice templates are only comparable to
+  /// embeddings from the same pipeline.
+  record voice-embedding-request {
+    model: string,
+    checkpoint: string,
+    sample-rate: u32,
+    /// Expected embedding width, when the caller wants the host to verify it.
+    dimensions: option<u32>,
+    /// Raw PCM16 little-endian mono samples, not a container format.
+    pcm16: list<u8>,
+  }
+
+  record voice-embedding-response {
+    model: string,
+    embedding: list<f32>,
+    usage: option<embed-usage>,
   }
 
   record chunk {
@@ -113,6 +168,14 @@ interface inference {
 
   /// Non-streaming completion.
   complete: func(request: request) -> result<response, error>;
+
+  /// Non-streaming text embeddings. The host scrubs every input before it
+  /// leaves the process and returns vectors in input order.
+  embed: func(request: embed-request) -> result<embed-response, error>;
+
+  /// Non-streaming speaker embedding. This is an audio path, deliberately
+  /// separate from text `embed`: it sends PCM16, not scrubbed text.
+  voice-embed: func(request: voice-embedding-request) -> result<voice-embedding-response, error>;
 
   /// Open a streaming completion. The returned resource is bounded by the host
   /// session and must be cancelled or dropped when the guest is done.

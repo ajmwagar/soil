@@ -91,6 +91,7 @@ impl HttpService {
             .map_err(anyhow::Error::from)
             .context("link wasi:http")?;
         crate::context::add_to_linker(&mut linker)?;
+        soil_inference_host::add_to_linker(&mut linker).context("link soil:inference")?;
         creds::add_to_linker(&mut linker)?;
         unibus::add_to_linker(&mut linker)?;
         crate::time::add_to_linker(&mut linker)?;
@@ -100,7 +101,11 @@ impl HttpService {
             super::host::WasiHost,
             HasSelf<super::host::WasiHost>,
         >(&mut linker, |state| state)?;
-        if builder.has_records() {
+        crate::stream::add_to_linker(&mut linker)?;        if builder.has_vfs() {
+            crate::vfs_host::add_to_linker::<WasiHost>(&mut linker).context("link soil:vfs")?;
+            crate::vfs_host::add_mutation_to_linker::<WasiHost>(&mut linker)
+                .context("link soil:vfs-mut")?;
+        }        if builder.has_records() {
             crate::records_host::add_to_linker(&mut linker).context("link soil:records")?;
         }
         if builder.has_http() {

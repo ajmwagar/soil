@@ -34,7 +34,7 @@ canonical package (currently `wasi:webgpu` for `soil:present`) is vendored under
 | `soil:storage@1.0.0` | contract | content-addressed asset cache; host pending |
 | `soil:media@0.1.0` | wired | playback, encoded chunks, image |
 | `soil:surface-import@0.1.0` | wired | host-owned imported surfaces |
-| `soil:inference@0.2.0` | wired | models, tools, completion stream |
+| `soil:inference@0.3.0` | wired | models, tools, completion stream, embeddings |
 | `soil:notify@1.1.0` | wired | inbox/focus/history/cleanup and ringer |
 | `soil:agents@0.1.0` | contract | the set of agents for a principal or shared desktop: phase, goal, owner, activity, prompts, answers |
 | `fungos:actions@1.0.0` | wired | action bus plus presentation catalog |
