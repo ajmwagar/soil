@@ -332,6 +332,58 @@ impl LocalRepo {
         Ok(files.len())
     }
 
+    /// Apply a patch and stage it, without committing.
+    pub fn apply_staged(&self, patch: &Path, expected: Option<&str>) -> Result<String> {
+        let head = self.head()?;
+        if let Some(expected) = expected {
+            if head != expected {
+                bail!("CAS mismatch: expected {expected}, HEAD is {head}");
+            }
+        }
+        let output = Command::new("git")
+            .args([
+                "-C",
+                self.root.to_str().unwrap(),
+                "apply",
+                "--whitespace=nowarn",
+            ])
+            .arg(patch)
+            .output()
+            .context("run git apply")?;
+        if !output.status.success() {
+            bail!(
+                "git apply: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let add = Command::new("git")
+            .args(["-C", self.root.to_str().unwrap(), "add", "-A"])
+            .status()
+            .context("run git add")?;
+        if !add.success() {
+            bail!("git add failed");
+        }
+        Ok(head)
+    }
+
+    /// Commit the staged worktree after a CAS check.
+    pub fn commit(&self, expected: Option<&str>, message: &str) -> Result<String> {
+        let head = self.head()?;
+        if let Some(expected) = expected {
+            if head != expected {
+                bail!("CAS mismatch: expected {expected}, HEAD is {head}");
+            }
+        }
+        let status = Command::new("git")
+            .args(["-C", self.root.to_str().unwrap(), "commit", "-m", message])
+            .status()
+            .context("run git commit")?;
+        if !status.success() {
+            bail!("git commit failed");
+        }
+        self.head()
+    }
+
     /// Apply a patch, commit it, and check the expected HEAD first.
     pub fn apply(
         &self,

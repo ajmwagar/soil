@@ -169,6 +169,18 @@ enum Command {
         message: String,
         #[arg(long)]
         dry_run: bool,
+        /// Apply and stage, but do not commit.
+        #[arg(long)]
+        no_commit: bool,
+    },
+    /// Commit already-staged local changes after a CAS check.
+    Commit {
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long)]
+        expected: Option<String>,
+        #[arg(long, default_value = "theseus: apply VFS edits")]
+        message: String,
     },
 }
 
@@ -380,10 +392,28 @@ async fn main() -> Result<()> {
             expected,
             message,
             dry_run,
+            no_commit,
         } => {
             let local = LocalRepo::open(&repo)?;
-            let head = local.apply(&patch, expected.as_deref(), &message, dry_run)?;
-            println!("{head}");
+            if dry_run {
+                println!("{}", local.head()?);
+            } else if no_commit {
+                println!("{}", local.apply_staged(&patch, expected.as_deref())?);
+            } else {
+                println!(
+                    "{}",
+                    local.apply(&patch, expected.as_deref(), &message, false)?
+                );
+            }
+            Ok(())
+        }
+        Command::Commit {
+            repo,
+            expected,
+            message,
+        } => {
+            let local = LocalRepo::open(&repo)?;
+            println!("{}", local.commit(expected.as_deref(), &message)?);
             Ok(())
         }
     }
