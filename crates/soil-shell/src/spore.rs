@@ -497,6 +497,9 @@ pub fn exec(args: &[String]) -> Result<()> {
 
     let mut builder = WasiHostBuilder::new(WasiHostPolicy::default())
         .vfs(VfsHost::open(&vfs_root).context("open soil:vfs")?);
+    if spore.manifest.grants.contains_key("soil:codec") {
+        builder = builder.codec(::soil::codec_host::CodecHost::default());
+    }
     if let Some(listen) = wss_listen {
         let hub = StreamHub::new();
         let token = wss_token
@@ -515,6 +518,9 @@ pub fn exec(args: &[String]) -> Result<()> {
         builder = builder.records_book(
             RecordsBookHost::open(&records_root, book, "capture").context("open soil:records")?,
         );
+    }
+    if spore.manifest.grants.contains_key("soil:codec") {
+        builder = builder.codec(::soil::codec_host::CodecHost::default());
     }
     if let Some(inference) = inference_host() {
         builder = builder.inference(inference);
@@ -579,7 +585,10 @@ pub fn install(args: &[String]) -> Result<()> {
     // written is compiled now, so the click that follows does not pay for it.
     let package = root.join(state.tree_name());
     if let Err(error) = canvas_winit::prewarm(&package) {
-        eprintln!("soil: installed {} but could not compile it: {error:#}", state.id);
+        eprintln!(
+            "soil: installed {} but could not compile it: {error:#}",
+            state.id
+        );
     }
     if args.iter().any(|argument| argument == "--json") {
         println!(
@@ -591,7 +600,10 @@ pub fn install(args: &[String]) -> Result<()> {
             })
         );
     } else {
-        println!("installed {} {} ({})", state.id, state.version, state.digest);
+        println!(
+            "installed {} {} ({})",
+            state.id, state.version, state.digest
+        );
     }
     Ok(())
 }
@@ -734,6 +746,9 @@ async fn serve(spore: Spore, run: Run) -> Result<()> {
     std::fs::create_dir_all(&vfs_root).with_context(|| format!("create {}", vfs_root.display()))?;
     let mut builder = WasiHostBuilder::new(WasiHostPolicy::default())
         .vfs(VfsHost::open(&vfs_root).context("open soil:vfs")?);
+    if spore.manifest.grants.contains_key("soil:codec") {
+        builder = builder.codec(::soil::codec_host::CodecHost::default());
+    }
     if let Some(inference) = inference_host() {
         builder = builder.inference(inference);
     }
@@ -800,6 +815,59 @@ async fn serve(spore: Spore, run: Run) -> Result<()> {
         ));
         builder = builder.with_http(::soil::HttpCapability::new(policy, transport));
         _bridge_server = Some(server);
+    }
+    // A Spore granted `soil:records` must have a book linked before it can
+    // instantiate. The HTTP surface is a host surface like the window, and the
+    // grant is the same one; before this, `--surface http` linked every other
+    // capability and left the records import unresolved. The operator names
+    // the collection (or the package declares it), and the book defaults to
+    // the collection's own name.
+    // `soil:records.read` is the least-privilege spelling a read-only Spore
+    // uses; the older `soil:records` names the whole capability. Both open a
+    // book here, matching `present::grants`.
+    if spore
+        .manifest
+        .grants
+        .keys()
+        .any(|grant| grant.starts_with("soil:records"))
+    {
+        let root = run
+            .present
+            .records_root
+            .clone()
+            .or_else(crate::present::default_records_root)
+            .context("no records store: pass --records DIR")?;
+        let declared = spore.manifest.records.as_ref();
+        let collection = run
+            .present
+            .collection
+            .clone()
+            .or_else(|| declared.and_then(|records| records.collection.clone()))
+            .or_else(|| {
+                declared
+                    .filter(|records| records.collections.len() == 1)
+                    .and_then(|records| records.collections.first().cloned())
+            })
+            .context(
+                "the Spore is granted soil:records, so --collection NAME says which collection \
+                 the browser may address",
+            )?;
+        let book = run
+            .present
+            .book
+            .clone()
+            .or_else(|| declared.and_then(|records| records.book.clone()))
+            .unwrap_or_else(|| collection.clone());
+        builder = builder.records_book(
+            ::soil::RecordsBookHost::open(&root, book.clone(), collection.clone()).with_context(
+                || {
+                    format!(
+                        "open records collection {collection} in book {book} at {}",
+                        root.display()
+                    )
+                },
+            )?,
+        );
     }
     let service = Arc::new(
         HttpService::from_bytes_named(spore.manifest.spore.id.clone(), &wasm, builder)
@@ -942,7 +1010,9 @@ fn announce(manifest: &Manifest, root: &Path, run: &Run) -> Result<()> {
     // to outlive every request. When it does exit, say so once — a replica that
     // stopped renewing is out of the pool, not merely quiet.
     std::thread::spawn(move || match child.wait() {
-        Ok(status) => tracing::warn!(%status, "the announcer exited; this replica is out of the pool"),
+        Ok(status) => {
+            tracing::warn!(%status, "the announcer exited; this replica is out of the pool")
+        }
         Err(error) => tracing::warn!(%error, "lost track of the announcer"),
     });
     Ok(())
@@ -983,6 +1053,14 @@ fn inference_host() -> Option<::soil::InferenceHost> {
     let host = ::soil::InferenceHost::new(url, api_key, "soil", model).with_session(session);
     let host = match std::env::var("SOIL_VOICEPRINT_URL") {
         Ok(url) if !url.trim().is_empty() => host.with_voice_url(url),
+        _ => host,
+    };
+    let host = match std::env::var("SOIL_STT_URL") {
+        Ok(url) if !url.trim().is_empty() => host.with_stt_url(url),
+        _ => host,
+    };
+    let host = match std::env::var("SOIL_STT_MODEL") {
+        Ok(model) if !model.trim().is_empty() => host.with_stt_model(model),
         _ => host,
     };
     Some(host)

@@ -398,6 +398,26 @@ function M.soil.canvas.surface.present(args)
   return dispatch("soil:canvas@1.0.0/surface", "present", args)
 end
 M.soil.canvas = M.soil.canvas.surface
+M.soil.codec = M.soil.codec or {}
+M.soil.codec.codec = M.soil.codec.codec or {}
+M.soil.codec.codec.types = M.soil.codec.codec.types or {}
+M.soil.codec.codec.types.Error = { DENIED = "denied", INVALID = "invalid", UNSUPPORTED = "unsupported", OVER_BUDGET = "over-budget", IO = "io" }
+--- Decode one encoded packet for a session into interleaved PCM16.
+-- WIT: decode -> result<list<u8>, error>
+function M.soil.codec.codec.decode(args)
+  return dispatch("soil:codec@0.1.0/codec", "decode", args)
+end
+--- Encode one interleaved PCM16 frame for a session.
+-- WIT: encode -> result<list<u8>, error>
+function M.soil.codec.codec.encode(args)
+  return dispatch("soil:codec@0.1.0/codec", "encode", args)
+end
+--- Drop all codec state for a session.
+-- WIT: reset -> result<_, error>
+function M.soil.codec.codec.reset(args)
+  return dispatch("soil:codec@0.1.0/codec", "reset", args)
+end
+M.soil.codec = M.soil.codec.codec
 M.soil.creds = M.soil.creds or {}
 M.soil.creds.creds = M.soil.creds.creds or {}
 M.soil.creds.creds.types = M.soil.creds.creds.types or {}
@@ -602,47 +622,75 @@ M.soil.inference = M.soil.inference or {}
 M.soil.inference.inference = M.soil.inference.inference or {}
 M.soil.inference.inference.types = M.soil.inference.inference.types or {}
 M.soil.inference.inference.types.Attachment = { fields = { { name = "name", type = "string" }, { name = "mime-type", type = "string" }, { name = "data", type = "list<u8>" }, { name = "extracted-text", type = "option<string>" } } }
+M.soil.inference.inference.types.Capability = { CHAT = "chat", TOOLS = "tools", VISION = "vision", EMBEDDINGS = "embeddings", RERANK = "rerank", TRANSCRIPTION = "transcription", SPEECH = "speech" }
 M.soil.inference.inference.types.Chunk = { fields = { { name = "data", type = "list<u8>" }, { name = "done", type = "bool" } } }
 M.soil.inference.inference.types.CompletionStream = { resource = true }
+M.soil.inference.inference.types.EmbedRequest = { fields = { { name = "model", type = "string" }, { name = "inputs", type = "list<string>" }, { name = "dimensions", type = "option<u32>" }, { name = "prompt-cache-key", type = "option<string>" } } }
+M.soil.inference.inference.types.EmbedResponse = { fields = { { name = "model", type = "string" }, { name = "vectors", type = "list<list<f32>>" }, { name = "usage", type = "option<embed-usage>" } } }
+M.soil.inference.inference.types.EmbedUsage = { fields = { { name = "prompt-tokens", type = "u32" }, { name = "total-tokens", type = "u32" } } }
 M.soil.inference.inference.types.Error = { DENIED = "denied", NOT_READY = "not-ready", OVER_BUDGET = "over-budget", INVALID = "invalid", UNAVAILABLE = "unavailable", AUTH = "auth", IO = "io", UNSUPPORTED = "unsupported" }
 M.soil.inference.inference.types.InferenceState = { fields = { { name = "ready", type = "bool" }, { name = "provider", type = "string" }, { name = "model", type = "string" } } }
 M.soil.inference.inference.types.Message = { fields = { { name = "role", type = "role" }, { name = "content", type = "option<string>" }, { name = "name", type = "option<string>" }, { name = "tool-call-id", type = "option<string>" }, { name = "tool-calls", type = "list<tool-call>" }, { name = "attachments", type = "list<attachment>" }, { name = "reasoning", type = "option<string>" } } }
-M.soil.inference.inference.types.Model = { fields = { { name = "id", type = "string" }, { name = "provider", type = "string" }, { name = "context-window", type = "option<u32>" } } }
+M.soil.inference.inference.types.Model = { fields = { { name = "id", type = "string" }, { name = "provider", type = "string" }, { name = "context-window", type = "option<u32>" }, { name = "tier", type = "option<string>" }, { name = "capabilities", type = "list<capability>" }, { name = "embedding-dimensions", type = "option<u32>" } } }
 M.soil.inference.inference.types.Request = { fields = { { name = "model", type = "string" }, { name = "messages", type = "list<message>" }, { name = "tools", type = "list<tool>" }, { name = "max-output-tokens", type = "option<u32>" }, { name = "temperature", type = "option<f32>" }, { name = "prompt-cache-key", type = "option<string>" } } }
 M.soil.inference.inference.types.Response = { fields = { { name = "model", type = "string" }, { name = "message", type = "message" }, { name = "finish-reason", type = "option<string>" }, { name = "usage", type = "option<usage>" } } }
 M.soil.inference.inference.types.Role = { SYSTEM = "system", USER = "user", ASSISTANT = "assistant", TOOL = "tool" }
+M.soil.inference.inference.types.Segment = { fields = { { name = "text", type = "string" }, { name = "start-ms", type = "u32" }, { name = "end-ms", type = "u32" }, { name = "speaker", type = "option<string>" }, { name = "words", type = "list<word>" }, { name = "confidence", type = "option<f32>" } } }
 M.soil.inference.inference.types.Tool = { fields = { { name = "name", type = "string" }, { name = "description", type = "string" }, { name = "parameters", type = "string" } } }
 M.soil.inference.inference.types.ToolCall = { fields = { { name = "id", type = "string" }, { name = "name", type = "string" }, { name = "arguments", type = "string" } } }
+M.soil.inference.inference.types.TranscribeRequest = { fields = { { name = "model", type = "string" }, { name = "sample-rate", type = "u32" }, { name = "pcm16", type = "list<u8>" }, { name = "language", type = "option<string>" }, { name = "prompt", type = "option<string>" }, { name = "timestamps", type = "bool" }, { name = "diarize", type = "bool" } } }
+M.soil.inference.inference.types.TranscribeResponse = { fields = { { name = "model", type = "string" }, { name = "text", type = "string" }, { name = "language", type = "option<string>" }, { name = "duration-ms", type = "option<u32>" }, { name = "segments", type = "list<segment>" } } }
 M.soil.inference.inference.types.Usage = { fields = { { name = "prompt-tokens", type = "u32" }, { name = "completion-tokens", type = "u32" }, { name = "total-tokens", type = "u32" } } }
+M.soil.inference.inference.types.VoiceEmbeddingRequest = { fields = { { name = "model", type = "string" }, { name = "checkpoint", type = "string" }, { name = "sample-rate", type = "u32" }, { name = "dimensions", type = "option<u32>" }, { name = "pcm16", type = "list<u8>" } } }
+M.soil.inference.inference.types.VoiceEmbeddingResponse = { fields = { { name = "model", type = "string" }, { name = "embedding", type = "list<f32>" }, { name = "usage", type = "option<embed-usage>" } } }
+M.soil.inference.inference.types.Word = { fields = { { name = "text", type = "string" }, { name = "start-ms", type = "u32" }, { name = "end-ms", type = "u32" }, { name = "speaker", type = "option<string>" }, { name = "confidence", type = "option<f32>" } } }
 M.soil.inference.inference.CompletionStream = M.soil.inference.inference.CompletionStream or {}
 -- WIT: [method]completion-stream.cancel -> result<_, error>
 function M.soil.inference.inference.CompletionStream:cancel(args)
-  return dispatch("soil:inference@0.2.0/inference", "completion-stream.cancel", args, self)
+  return dispatch("soil:inference@0.3.0/inference", "completion-stream.cancel", args, self)
 end
 --- Read the next chunk. `none` means the timeout elapsed without data.
 -- WIT: [method]completion-stream.next -> result<option<chunk>, error>
 function M.soil.inference.inference.CompletionStream:next(args)
-  return dispatch("soil:inference@0.2.0/inference", "completion-stream.next", args, self)
+  return dispatch("soil:inference@0.3.0/inference", "completion-stream.next", args, self)
 end
 --- Non-streaming completion.
 -- WIT: complete -> result<response, error>
 function M.soil.inference.inference.complete(args)
-  return dispatch("soil:inference@0.2.0/inference", "complete", args)
+  return dispatch("soil:inference@0.3.0/inference", "complete", args)
+end
+--- Non-streaming text embeddings. The host scrubs every input before it
+--- leaves the process and returns vectors in input order.
+-- WIT: embed -> result<embed-response, error>
+function M.soil.inference.inference.embed(args)
+  return dispatch("soil:inference@0.3.0/inference", "embed", args)
 end
 --- List models visible to this host/profile.
 -- WIT: models -> result<list<model>, error>
 function M.soil.inference.inference.models(args)
-  return dispatch("soil:inference@0.2.0/inference", "models", args)
+  return dispatch("soil:inference@0.3.0/inference", "models", args)
 end
 --- Open a streaming completion. The returned resource is bounded by the host
 --- session and must be cancelled or dropped when the guest is done.
 -- WIT: open-stream -> result<own<completion-stream>, error>
 function M.soil.inference.inference.open_stream(args)
-  return dispatch("soil:inference@0.2.0/inference", "open-stream", args)
+  return dispatch("soil:inference@0.3.0/inference", "open-stream", args)
 end
 -- WIT: state -> result<inference-state, error>
 function M.soil.inference.inference.state(args)
-  return dispatch("soil:inference@0.2.0/inference", "state", args)
+  return dispatch("soil:inference@0.3.0/inference", "state", args)
+end
+--- Non-streaming speech-to-text. PCM16 goes to the host's STT route, never to
+--- the chat route. Segments and words stay in provider order.
+-- WIT: transcribe -> result<transcribe-response, error>
+function M.soil.inference.inference.transcribe(args)
+  return dispatch("soil:inference@0.3.0/inference", "transcribe", args)
+end
+--- Non-streaming speaker embedding. This is an audio path, deliberately
+--- separate from text `embed`: it sends PCM16, not scrubbed text.
+-- WIT: voice-embed -> result<voice-embedding-response, error>
+function M.soil.inference.inference.voice_embed(args)
+  return dispatch("soil:inference@0.3.0/inference", "voice-embed", args)
 end
 M.soil.inference = M.soil.inference.inference
 M.soil.input = M.soil.input or {}
@@ -1073,6 +1121,7 @@ M.soil.records.records.types.CasResult = { fields = { { name = "applied", type =
 M.soil.records.records.types.Entry = { fields = { { name = "key", type = "key" }, { name = "schema", type = "string" }, { name = "revision", type = "u64" }, { name = "updated-at-ms", type = "u64" }, { name = "origin", type = "string" }, { name = "deleted", type = "bool" }, { name = "body", type = "list<u8>" } } }
 M.soil.records.records.types.Error = { DENIED = "denied", NOT_FOUND = "not-found", OVER_BUDGET = "over-budget", INVALID = "invalid", STALE = "stale", IO = "io", UNSUPPORTED = "unsupported" }
 M.soil.records.records.types.Key = { fields = { { name = "collection", type = "string" }, { name = "id", type = "string" } } }
+M.soil.records.records.types.PackedPage = { fields = { { name = "entries", type = "list<u8>" }, { name = "next", type = "option<string>" } } }
 M.soil.records.records.types.Page = { fields = { { name = "entries", type = "list<entry>" }, { name = "next", type = "option<string>" } } }
 M.soil.records.records.types.Version = { fields = { { name = "revision", type = "u64" }, { name = "origin", type = "string" } } }
 --- Merge remote changes with last-writer-wins. This never calls back into
@@ -1114,6 +1163,12 @@ end
 -- WIT: scan -> result<page, error>
 function M.soil.records.records.scan(args)
   return dispatch("soil:records@0.1.0/records", "scan", args)
+end
+--- Scan live records packed into one buffer. Same cursor and limit rules as
+--- `scan`, but the entries are framed bytes rather than a list of records.
+-- WIT: scan-packed -> result<packed-page, error>
+function M.soil.records.records.scan_packed(args)
+  return dispatch("soil:records@0.1.0/records", "scan-packed", args)
 end
 --- Create or replace a local record. The host assigns `revision` and
 --- `origin`; the returned entry is authoritative.
@@ -1333,6 +1388,38 @@ function M.soil.storage.storage.write(args)
   return dispatch("soil:storage@1.0.0/storage", "write", args)
 end
 M.soil.storage = M.soil.storage.storage
+M.soil.streams = M.soil.streams or {}
+M.soil.streams.duplex = M.soil.streams.duplex or {}
+M.soil.streams.duplex.types = M.soil.streams.duplex.types or {}
+M.soil.streams.duplex.types.Error = { DENIED = "denied", INVALID = "invalid", CLOSED = "closed", OVER_BUDGET = "over-budget", UNAVAILABLE = "unavailable", IO = "io" }
+M.soil.streams.duplex.types.Info = { fields = { { name = "protocol", type = "string" }, { name = "peer", type = "option<string>" }, { name = "principal", type = "option<string>" }, { name = "media-type", type = "option<string>" } } }
+M.soil.streams.duplex.types.Session = { resource = true }
+M.soil.streams.duplex.Session = M.soil.streams.duplex.Session or {}
+-- WIT: [method]session.close -> result<_, error>
+function M.soil.streams.duplex.Session:close(args)
+  return dispatch("soil:streams@0.1.0/duplex", "session.close", args, self)
+end
+-- WIT: [method]session.info -> info
+function M.soil.streams.duplex.Session:info(args)
+  return dispatch("soil:streams@0.1.0/duplex", "session.info", args, self)
+end
+--- `none` is end of stream. A read never waits forever; the host may
+--- return `none` when the peer is gone or the session was closed.
+-- WIT: [method]session.read -> result<option<list<u8>>, error>
+function M.soil.streams.duplex.Session:read(args)
+  return dispatch("soil:streams@0.1.0/duplex", "session.read", args, self)
+end
+-- WIT: [method]session.write -> result<u64, error>
+function M.soil.streams.duplex.Session:write(args)
+  return dispatch("soil:streams@0.1.0/duplex", "session.write", args, self)
+end
+--- Take the next authenticated session for `protocol`, or `none` when the
+--- queue is empty. This is a poll, not a listener.
+-- WIT: accept -> result<option<own<session>>, error>
+function M.soil.streams.duplex.accept(args)
+  return dispatch("soil:streams@0.1.0/duplex", "accept", args)
+end
+M.soil.streams = M.soil.streams.duplex
 M.soil.surface_import = M.soil.surface_import or {}
 M.soil.surface_import.surface = M.soil.surface_import.surface or {}
 M.soil.surface_import.surface.types = M.soil.surface_import.surface.types or {}
@@ -1535,6 +1622,26 @@ M.soil.vfs_mut.vfs_mut = M.soil.vfs_mut.vfs_mut or {}
 M.soil.vfs_mut.vfs_mut.types = M.soil.vfs_mut.vfs_mut.types or {}
 M.soil.vfs_mut.vfs_mut.types.Error = { DENIED = "denied", NOT_FOUND = "not-found", ALREADY_EXISTS = "already-exists", NOT_DIRECTORY = "not-directory", NOT_EMPTY = "not-empty", CONFLICT = "conflict", OVER_BUDGET = "over-budget", INVALID = "invalid", IO = "io", STALE = "stale" }
 M.soil.vfs_mut.vfs_mut.types.WriteResult = { fields = { { name = "path", type = "string" }, { name = "version", type = "u64" }, { name = "content-id", type = "string" }, { name = "size", type = "u64" }, { name = "mode", type = "u32" } } }
+M.soil.vfs_mut.vfs_mut.types.Writer = { resource = true }
+M.soil.vfs_mut.vfs_mut.Writer = M.soil.vfs_mut.vfs_mut.Writer or {}
+-- WIT: [method]writer.abort -> result<_, error>
+function M.soil.vfs_mut.vfs_mut.Writer:abort(args)
+  return dispatch("soil:vfs-mut@0.1.0/vfs-mut", "writer.abort", args, self)
+end
+-- WIT: [method]writer.finish -> result<write-result, error>
+function M.soil.vfs_mut.vfs_mut.Writer:finish(args)
+  return dispatch("soil:vfs-mut@0.1.0/vfs-mut", "writer.finish", args, self)
+end
+-- WIT: [method]writer.write -> result<u64, error>
+function M.soil.vfs_mut.vfs_mut.Writer:write(args)
+  return dispatch("soil:vfs-mut@0.1.0/vfs-mut", "writer.write", args, self)
+end
+--- Open a streaming writer. `expected-size` is an advisory quota; the host
+--- may still enforce a smaller per-principal limit.
+-- WIT: begin-write -> result<own<writer>, error>
+function M.soil.vfs_mut.vfs_mut.begin_write(args)
+  return dispatch("soil:vfs-mut@0.1.0/vfs-mut", "begin-write", args)
+end
 --- Change permission bits without touching content. A mode belongs to the
 --- entry, not to a version of the bytes, so this adds no version.
 -- WIT: chmod -> result<write-result, error>

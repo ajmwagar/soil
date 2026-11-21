@@ -11,6 +11,7 @@ use http_body::Body;
 use http_body_util::{BodyExt, Full};
 use hyper::{server::conn::http1, service::service_fn};
 use tokio::net::TcpListener;
+use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
 use wasmtime::{
     Config, Engine, Store,
     component::{Component, HasSelf, Linker},
@@ -19,7 +20,7 @@ use wasmtime_wasi_http::{
     WasiHttpView,
     io::TokioIo,
     p2::{
-        bindings::{ProxyPre, http::types::Scheme},
+        bindings::{Proxy, ProxyPre, http::types::Scheme},
         body::HyperOutgoingBody,
     },
 };
@@ -36,6 +37,75 @@ pub struct HttpService {
     pre: ProxyPre<WasiHost>,
     builder: WasiHostBuilder,
     spore: String,
+    /// Opt-in: reuse instantiated stores so guest statics (and therefore any
+    /// cache the Spore keeps) survive across requests. `None` keeps the
+    /// isolation of one fresh instance per request.
+    pool: Option<Arc<WarmPool>>,
+}
+
+/// A bounded set of already-instantiated Spore instances.
+///
+/// A `wasi:http` guest may be called more than once. Reusing an instance is
+/// what lets a Spore cache derived state in its own linear memory; the cost is
+/// that state must be reset by the guest between requests. The pool never
+/// exceeds `max` live instances, and one instance is in flight for at most one
+/// request at a time.
+struct WarmPool {
+    pre: ProxyPre<WasiHost>,
+    builder: WasiHostBuilder,
+    idle: AsyncMutex<Vec<WarmInstance>>,
+    permits: Arc<Semaphore>,
+    max: usize,
+}
+
+struct WarmInstance {
+    store: Store<WasiHost>,
+    proxy: Proxy,
+}
+
+impl WarmPool {
+    fn new(pre: ProxyPre<WasiHost>, builder: WasiHostBuilder, max: usize) -> Self {
+        Self {
+            pre,
+            builder,
+            idle: AsyncMutex::new(Vec::with_capacity(max)),
+            permits: Arc::new(Semaphore::new(max)),
+            max,
+        }
+    }
+
+    async fn instantiate(&self) -> Result<WarmInstance> {
+        let mut store = Store::new(self.pre.engine(), self.builder.build()?);
+        let proxy = self.pre.instantiate_async(&mut store).await?;
+        Ok(WarmInstance { store, proxy })
+    }
+
+    /// Instantiate `max` instances before the first request, so the warm path
+    /// does not pay component start-up.
+    async fn warm(&self) -> Result<()> {
+        let mut idle = self.idle.lock().await;
+        while idle.len() < self.max {
+            idle.push(self.instantiate().await?);
+        }
+        Ok(())
+    }
+
+    /// Take one instance, or create one when the pool is still filling.
+    async fn checkout(&self) -> Result<(WarmInstance, OwnedSemaphorePermit)> {
+        let permit = Arc::clone(&self.permits)
+            .acquire_owned()
+            .await
+            .map_err(|_| anyhow::anyhow!("warm instance pool is closed"))?;
+        let warm = match self.idle.lock().await.pop() {
+            Some(warm) => warm,
+            None => self.instantiate().await?,
+        };
+        Ok((warm, permit))
+    }
+
+    async fn checkin(&self, warm: WarmInstance) {
+        self.idle.lock().await.push(warm);
+    }
 }
 
 impl HttpService {
@@ -52,6 +122,31 @@ impl HttpService {
     #[must_use]
     pub fn readiness(&self) -> crate::host::Readiness {
         self.builder.readiness()
+    }
+
+    /// Reuse up to `instances` warm Spore instances across requests.
+    ///
+    /// This is opt-in and only for guests that keep per-request state in the
+    /// call, not in globals they forget to reset. It makes an in-guest cache
+    /// possible; it does not make one safe by itself.
+    #[must_use]
+    pub fn with_pool(mut self, instances: usize) -> Self {
+        if instances > 0 {
+            self.pool = Some(Arc::new(WarmPool::new(
+                self.pre.clone(),
+                self.builder.clone(),
+                instances,
+            )));
+        }
+        self
+    }
+
+    /// Instantiate the pool before serving. A no-op when pooling is off.
+    pub async fn warm(&self) -> Result<()> {
+        match &self.pool {
+            Some(pool) => pool.warm().await,
+            None => Ok(()),
+        }
     }
 
     pub fn from_bytes(bytes: &[u8], builder: WasiHostBuilder) -> Result<Self> {
@@ -101,11 +196,17 @@ impl HttpService {
             super::host::WasiHost,
             HasSelf<super::host::WasiHost>,
         >(&mut linker, |state| state)?;
-        crate::stream::add_to_linker(&mut linker)?;        if builder.has_vfs() {
+        crate::stream::add_to_linker(&mut linker)?;
+        if builder.has_codec() {
+            crate::codec_host::add_to_linker::<WasiHost>(&mut linker)
+                .context("link soil:codec")?;
+        }
+        if builder.has_vfs() {
             crate::vfs_host::add_to_linker::<WasiHost>(&mut linker).context("link soil:vfs")?;
             crate::vfs_host::add_mutation_to_linker::<WasiHost>(&mut linker)
                 .context("link soil:vfs-mut")?;
-        }        if builder.has_records() {
+        }
+        if builder.has_records() {
             crate::records_host::add_to_linker(&mut linker).context("link soil:records")?;
         }
         if builder.has_http() {
@@ -125,6 +226,7 @@ impl HttpService {
             pre,
             builder,
             spore,
+            pool: None,
         })
     }
 
@@ -197,6 +299,9 @@ impl HttpService {
         B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<wasmtime_wasi_http::Error>,
     {
+        if let Some(pool) = &self.pool {
+            return Self::try_handle_pooled(Arc::clone(pool), request, context).await;
+        }
         let mut store = Store::new(self.pre.engine(), self.builder.build()?);
         store.data_mut().set_http_context(context);
         let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -237,6 +342,68 @@ impl HttpService {
                 },
                 None => bail!("guest task vanished"),
             },
+        }
+    }
+
+    /// One request through a reusable instance.
+    ///
+    /// The response head is returned as soon as the guest sets it; the instance
+    /// goes back to the pool only after the guest call (including body writes)
+    /// finishes. A guest that keeps writing after handing over the head still
+    /// owns the instance, and the permit, until it is done.
+    async fn try_handle_pooled<B>(
+        pool: Arc<WarmPool>,
+        request: hyper::Request<B>,
+        context: HttpContext,
+    ) -> Result<hyper::Response<HyperOutgoingBody>>
+    where
+        B: Body<Data = Bytes> + Send + 'static,
+        B::Error: Into<wasmtime_wasi_http::Error>,
+    {
+        let (mut warm, permit) = pool.checkout().await?;
+        warm.store.data_mut().set_http_context(context);
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let request = warm
+            .store
+            .data_mut()
+            .http()
+            .new_incoming_request(Scheme::Http, request)?;
+        let outparam = warm.store.data_mut().http().new_response_outparam(sender)?;
+        let WarmInstance { mut store, proxy } = warm;
+        let task = tokio::spawn(async move {
+            let result = proxy
+                .wasi_http_incoming_handler()
+                .call_handle(&mut store, request, outparam)
+                .await;
+            (store, proxy, result, permit)
+        });
+
+        match receiver.await {
+            Ok(Ok(response)) => {
+                // The head is ready. Return it now and let the guest finish the
+                // body; the instance returns to the pool only after that.
+                let pool = Arc::clone(&pool);
+                tokio::spawn(async move {
+                    let abort = task.abort_handle();
+                    match tokio::time::timeout(std::time::Duration::from_secs(30), task).await {
+                        Ok(Ok((store, proxy, Ok(()), permit))) => {
+                            pool.checkin(WarmInstance { store, proxy }).await;
+                            drop(permit);
+                        }
+                        Ok(_) => {}
+                        Err(_) => abort.abort(),
+                    }
+                });
+                Ok(response)
+            }
+            Ok(Err(error)) => {
+                let _ = task.await;
+                bail!("guest returned {error:?}");
+            }
+            Err(_) => {
+                let _ = task.await;
+                bail!("guest never set a response")
+            }
         }
     }
 }

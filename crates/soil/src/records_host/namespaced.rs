@@ -155,6 +155,10 @@ impl NamespacedRecordsHost {
     }
 }
 
+fn put_u32(out: &mut Vec<u8>, value: usize) {
+    out.extend_from_slice(&(value as u32).to_le_bytes());
+}
+
 impl records::Host for NamespacedRecordsHost {
     fn get(&mut self, key: records::Key) -> Result<records::Entry, records::Error> {
         let namespace = self.namespace(&key.collection, false)?;
@@ -221,6 +225,29 @@ impl records::Host for NamespacedRecordsHost {
             }
         }
         Err(records::Error::OverBudget)
+    }
+
+    fn scan_packed(
+        &mut self,
+        collection: String,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> Result<records::PackedPage, records::Error> {
+        // Reuse `scan` for namespacing, cursor and limit semantics; only the
+        // boundary shape is different.
+        let page = <Self as records::Host>::scan(self, collection, cursor, limit)?;
+        let mut entries = Vec::new();
+        for entry in page.entries {
+            put_u32(&mut entries, entry.key.id.len());
+            entries.extend_from_slice(entry.key.id.as_bytes());
+            entries.extend_from_slice(&entry.revision.to_le_bytes());
+            put_u32(&mut entries, entry.body.len());
+            entries.extend_from_slice(&entry.body);
+        }
+        Ok(records::PackedPage {
+            entries,
+            next: page.next,
+        })
     }
 
     fn upsert(&mut self, entry: records::Entry) -> Result<records::Entry, records::Error> {

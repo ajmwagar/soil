@@ -78,6 +78,8 @@ pub struct WasiHostBuilder {
     metrics_granted: bool,
     /// Optional `soil:inference` provider. Absent answers `unsupported`.
     inference: Option<Arc<Mutex<soil_inference_host::InferenceHost>>>,
+    /// Optional native codec sessions.
+    pub(crate) codec: Option<Arc<Mutex<crate::codec_host::CodecHost>>>,
     /// Optional VFS. The same host serves `soil:vfs`, `soil:vfs-mut`,
     /// `soil:vfs-cid` and `soil:index`.
     vfs: Option<VfsHost>,
@@ -279,6 +281,7 @@ impl WasiHostBuilder {
             soil_http: self.http.clone(),
             metrics: self.metrics_granted.then(|| Arc::clone(&self.metrics)),
             inference: self.inference.clone(),
+            codec: self.codec.clone(),
             vfs: self.vfs.clone(),
             streams: self.streams.clone(),
         })
@@ -310,6 +313,15 @@ impl WasiHostBuilder {
         self
     }
 
+    pub fn codec(mut self, host: crate::codec_host::CodecHost) -> Self {
+        self.codec = Some(Arc::new(Mutex::new(host)));
+        self
+    }
+
+    pub fn has_codec(&self) -> bool {
+        self.codec.is_some()
+    }
+
     /// Convenience for hosts that only need a single preopen.
     pub fn preopen_read_only(self, host: impl AsRef<Path>, guest: impl Into<String>) -> Self {
         self.preopen_dir(host.as_ref(), guest, FsPerms::ReadOnly)
@@ -330,7 +342,7 @@ pub struct WasiHost {
     /// `Some` only when the manifest granted `soil:metrics`.
     metrics: Option<Arc<Metrics>>,
     inference: Option<Arc<Mutex<soil_inference_host::InferenceHost>>>,
-    vfs: Option<VfsHost>,
+    pub(crate) codec: Option<Arc<Mutex<crate::codec_host::CodecHost>>>,     vfs: Option<VfsHost>,
     streams: Option<Arc<StreamHub>>,
 }
 
@@ -691,6 +703,15 @@ impl records::Host for WasiHost {
         self.with_records(|book| records::Host::scan(book, collection, cursor, limit))
     }
 
+    fn scan_packed(
+        &mut self,
+        collection: String,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> std::result::Result<records::PackedPage, records::Error> {
+        self.with_records(|book| records::Host::scan_packed(book, collection, cursor, limit))
+    }
+
     fn upsert(
         &mut self,
         entry: records::Entry,
@@ -767,6 +788,17 @@ impl inference_api::Host for WasiHost {
         };
         let mut host = host.lock().map_err(|_| inference_api::Error::Io)?;
         inference_api::Host::voice_embed(&mut *host, request)
+    }
+
+    fn transcribe(
+        &mut self,
+        request: inference_api::TranscribeRequest,
+    ) -> std::result::Result<inference_api::TranscribeResponse, inference_api::Error> {
+        let Some(host) = &self.inference else {
+            return Err(inference_api::Error::Unsupported);
+        };
+        let mut host = host.lock().map_err(|_| inference_api::Error::Io)?;
+        inference_api::Host::transcribe(&mut *host, request)
     }
 
     fn open_stream(
