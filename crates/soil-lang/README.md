@@ -17,7 +17,7 @@ backends. This is the language side of Soil; the host and capabilities live in
   `car`, `cdr`, `cons`, `cond`) compiled to Wasm.
 - `witgen.rs` — WIT -> `.soil` binding stubs.
 - `bindings/` — generated Soil capability bindings.
-- `stdlib/prelude.soil` — list, JSON, records, and time helpers.
+- `stdlib/prelude.soil` — list, JSON, records, time, and inference helpers.
 - `boot/boot.soil` — the first evaluator written in Soil: environments,
   binding, special forms, application, and a primitive table. This is the seed
   for Phase 7 self-hosting, not the finished bootstrap.

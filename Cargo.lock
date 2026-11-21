@@ -7527,6 +7527,7 @@ dependencies = [
  "rustyline",
  "serde_json",
  "soil",
+ "soil-inference-host",
  "tempfile",
  "wasm-encoder 0.263.0",
  "wasmtime",

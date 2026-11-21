@@ -15,6 +15,7 @@ pub struct NativeHost {
     vfs: VfsHost,
     records: SoilRecordsHost,
     time: SystemTimeHost,
+    inference: Option<soil_inference_host::InferenceHost>,
 }
 
 impl NativeHost {
@@ -27,6 +28,7 @@ impl NativeHost {
             vfs: VfsHost::open(workspace_root)?,
             records: SoilRecordsHost::open(records_root, book)?,
             time: SystemTimeHost,
+            inference: None,
         })
     }
 
@@ -68,6 +70,9 @@ impl Host for NativeHost {
             "soil:time" => self.time.granted(interface, function),
             "soil:records" => self.records.granted(interface, function),
             "soil:vfs" => matches!(function, "ls" | "stat" | "read"),
+            "soil:inference" => {
+                self.inference.is_some() && matches!(function, "complete" | "models")
+            }
             _ => false,
         }
     }
@@ -82,6 +87,7 @@ impl Host for NativeHost {
             "soil:time" => self.time.call(interface, function, args),
             "soil:records" => self.records.call(interface, function, args),
             "soil:vfs" => self.call_vfs(function, args),
+            "soil:inference" => self.call_inference(function, args),
             other => Err(format!("unknown interface `{other}`")),
         }
     }
@@ -190,4 +196,286 @@ fn err(code: &str) -> Value {
         Value::Symbol("err".into()),
         Value::Symbol(code.into()),
     ])
+}
+
+// --- soil:inference -------------------------------------------------------
+
+impl NativeHost {
+    pub fn with_inference(
+        mut self,
+        config_path: impl AsRef<std::path::Path>,
+        profile: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        self.inference = Some(soil_inference_host::InferenceHost::open(
+            config_path.as_ref(),
+            profile,
+        )?);
+        Ok(self)
+    }
+
+    fn call_inference(
+        &mut self,
+        function: &str,
+        args: &[Value],
+    ) -> std::result::Result<Value, String> {
+        let Some(host) = self.inference.as_mut() else {
+            return Err("soil:inference is not configured".into());
+        };
+        use soil_inference_host::api::Host as InferenceHostTrait;
+        match function {
+            "complete" => {
+                let request = args
+                    .first()
+                    .ok_or_else(|| "complete needs a request".to_string())?;
+                let request = inference_request(request)?;
+                match InferenceHostTrait::complete(host, request) {
+                    Ok(response) => Ok(ok(inference_response(response))),
+                    Err(error) => Ok(err(inference_error(error))),
+                }
+            }
+            "models" => match InferenceHostTrait::models(host) {
+                Ok(models) => Ok(ok(Value::List(
+                    models.into_iter().map(inference_model).collect(),
+                ))),
+                Err(error) => Ok(err(inference_error(error))),
+            },
+            other => Err(format!("unknown soil:inference function `{other}`")),
+        }
+    }
+}
+
+fn inference_request(
+    value: &Value,
+) -> std::result::Result<soil_inference_host::api::Request, String> {
+    use soil_inference_host::api;
+    let messages = list(value, "messages")
+        .iter()
+        .map(inference_message)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(api::Request {
+        model: string(value, "model"),
+        messages,
+        tools: list(value, "tools")
+            .iter()
+            .map(inference_tool)
+            .collect::<std::result::Result<Vec<_>, _>>()?,
+        max_output_tokens: integer(value, "max-output-tokens").map(|value| value as u32),
+        temperature: number(value, "temperature").map(|value| value as f32),
+        prompt_cache_key: optional_string(value, "prompt-cache-key"),
+    })
+}
+
+fn inference_message(
+    value: &Value,
+) -> std::result::Result<soil_inference_host::api::Message, String> {
+    use soil_inference_host::api;
+    Ok(api::Message {
+        role: match string(value, "role").as_str() {
+            "system" => api::Role::System,
+            "user" => api::Role::User,
+            "assistant" => api::Role::Assistant,
+            "tool" => api::Role::Tool,
+            other => return Err(format!("invalid inference role `{other}`")),
+        },
+        content: optional_string(value, "content"),
+        name: optional_string(value, "name"),
+        tool_call_id: optional_string(value, "tool-call-id"),
+        tool_calls: list(value, "tool-calls")
+            .iter()
+            .map(inference_tool_call)
+            .collect::<std::result::Result<Vec<_>, _>>()?,
+        attachments: list(value, "attachments")
+            .iter()
+            .map(inference_attachment)
+            .collect::<std::result::Result<Vec<_>, _>>()?,
+        reasoning: optional_string(value, "reasoning"),
+    })
+}
+
+fn inference_tool(value: &Value) -> std::result::Result<soil_inference_host::api::Tool, String> {
+    Ok(soil_inference_host::api::Tool {
+        name: string(value, "name"),
+        description: string(value, "description"),
+        parameters: string(value, "parameters"),
+    })
+}
+
+fn inference_tool_call(
+    value: &Value,
+) -> std::result::Result<soil_inference_host::api::ToolCall, String> {
+    Ok(soil_inference_host::api::ToolCall {
+        id: string(value, "id"),
+        name: string(value, "name"),
+        arguments: string(value, "arguments"),
+    })
+}
+
+fn inference_attachment(
+    value: &Value,
+) -> std::result::Result<soil_inference_host::api::Attachment, String> {
+    Ok(soil_inference_host::api::Attachment {
+        name: string(value, "name"),
+        mime_type: string(value, "mime-type"),
+        data: bytes(value, "data")?,
+        extracted_text: optional_string(value, "extracted-text"),
+    })
+}
+
+fn inference_response(value: soil_inference_host::api::Response) -> Value {
+    Value::List(vec![
+        pair("model", Value::String(value.model)),
+        pair("message", inference_message_value(value.message)),
+        pair(
+            "finish-reason",
+            value.finish_reason.map(Value::String).unwrap_or(Value::Nil),
+        ),
+        pair(
+            "usage",
+            value
+                .usage
+                .map(|usage| {
+                    Value::List(vec![
+                        pair("prompt-tokens", Value::Int(usage.prompt_tokens as i64)),
+                        pair(
+                            "completion-tokens",
+                            Value::Int(usage.completion_tokens as i64),
+                        ),
+                        pair("total-tokens", Value::Int(usage.total_tokens as i64)),
+                    ])
+                })
+                .unwrap_or(Value::Nil),
+        ),
+    ])
+}
+
+fn inference_message_value(value: soil_inference_host::api::Message) -> Value {
+    Value::List(vec![
+        pair(
+            "role",
+            Value::Keyword(
+                match value.role {
+                    soil_inference_host::api::Role::System => "system",
+                    soil_inference_host::api::Role::User => "user",
+                    soil_inference_host::api::Role::Assistant => "assistant",
+                    soil_inference_host::api::Role::Tool => "tool",
+                }
+                .into(),
+            ),
+        ),
+        pair(
+            "content",
+            value.content.map(Value::String).unwrap_or(Value::Nil),
+        ),
+        pair("name", value.name.map(Value::String).unwrap_or(Value::Nil)),
+        pair(
+            "tool-call-id",
+            value.tool_call_id.map(Value::String).unwrap_or(Value::Nil),
+        ),
+        pair(
+            "tool-calls",
+            Value::List(
+                value
+                    .tool_calls
+                    .into_iter()
+                    .map(|call| {
+                        Value::List(vec![
+                            pair("id", Value::String(call.id)),
+                            pair("name", Value::String(call.name)),
+                            pair("arguments", Value::String(call.arguments)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        pair("attachments", Value::Nil),
+        pair(
+            "reasoning",
+            value.reasoning.map(Value::String).unwrap_or(Value::Nil),
+        ),
+    ])
+}
+
+fn inference_model(value: soil_inference_host::api::Model) -> Value {
+    Value::List(vec![
+        pair("id", Value::String(value.id)),
+        pair("provider", Value::String(value.provider)),
+        pair(
+            "context-window",
+            value
+                .context_window
+                .map(|value| Value::Int(value as i64))
+                .unwrap_or(Value::Nil),
+        ),
+        pair("tier", value.tier.map(Value::String).unwrap_or(Value::Nil)),
+        pair("capabilities", Value::List(vec![])),
+        pair(
+            "embedding-dimensions",
+            value
+                .embedding_dimensions
+                .map(|value| Value::Int(value as i64))
+                .unwrap_or(Value::Nil),
+        ),
+    ])
+}
+
+fn inference_error(error: soil_inference_host::api::Error) -> &'static str {
+    use soil_inference_host::api::Error;
+    match error {
+        Error::Denied => "denied",
+        Error::NotReady => "not-ready",
+        Error::OverBudget => "over-budget",
+        Error::Invalid => "invalid",
+        Error::Unavailable => "unavailable",
+        Error::Auth => "auth",
+        Error::Io => "io",
+        Error::Unsupported => "unsupported",
+    }
+}
+
+fn list<'a>(value: &'a Value, name: &str) -> &'a [Value] {
+    field(value, name)
+        .and_then(Value::as_list)
+        .unwrap_or_default()
+}
+
+fn string(value: &Value, name: &str) -> String {
+    optional_string(value, name).unwrap_or_default()
+}
+
+fn optional_string(value: &Value, name: &str) -> Option<String> {
+    match field(value, name)? {
+        Value::String(text) | Value::Symbol(text) | Value::Keyword(text) => Some(text.clone()),
+        _ => None,
+    }
+}
+
+fn integer(value: &Value, name: &str) -> Option<i64> {
+    field(value, name)
+        .and_then(Value::as_f64)
+        .map(|value| value as i64)
+}
+
+fn number(value: &Value, name: &str) -> Option<f64> {
+    field(value, name).and_then(Value::as_f64)
+}
+
+fn bytes(value: &Value, name: &str) -> std::result::Result<Vec<u8>, String> {
+    let items = list(value, name);
+    items
+        .iter()
+        .map(|item| match item {
+            Value::Int(byte) if (0..=255).contains(byte) => Ok(*byte as u8),
+            _ => Err(format!("`{name}` must be bytes")),
+        })
+        .collect()
+}
+
+fn field<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
+    value.as_list()?.iter().find_map(|item| {
+        let pair = item.as_list()?;
+        let key = pair
+            .first()
+            .and_then(|value| value.as_keyword().or_else(|| value.as_symbol()))?;
+        (key == name).then(|| pair.get(1)).flatten()
+    })
 }

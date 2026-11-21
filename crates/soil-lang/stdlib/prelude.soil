@@ -106,3 +106,22 @@
 (defun caddr (x) (car (cdr (cdr x))))
 (defun cadar (x) (car (cdr (car x))))
 (defun caddar (x) (car (cdr (cdr (car x)))))
+
+; Inference helpers. The host owns provider, model, and credentials.
+(defun inference/message (role text)
+  (list (list :role role)
+        (list :content text)
+        (list :name nil)
+        (list :tool-call-id nil)
+        (list :tool-calls nil)
+        (list :attachments nil)
+        (list :reasoning nil)))
+
+(defun inference/chat (model text)
+  (soil:inference/complete
+    (list (list :model model)
+          (list :messages (list (inference/message :user text)))
+          (list :tools nil)
+          (list :max-output-tokens 1024)
+          (list :temperature 0.2)
+          (list :prompt-cache-key nil))))

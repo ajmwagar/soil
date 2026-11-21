@@ -1,0 +1,247 @@
+(define-package "soil:inference@0.3.0" :base "soil:inference" :version "0.3.0")
+
+(define-enum soil:inference/role system user assistant tool)
+
+(define-enum soil:inference/capability chat tools vision embeddings rerank transcription speech)
+
+(define-record soil:inference/tool-call
+  (id string)
+  (name string)
+  (arguments string)
+)
+
+(define-record soil:inference/tool
+  (name string)
+  (description string)
+  (parameters string)
+)
+
+(define-record soil:inference/attachment
+  (name string)
+  (mime-type string)
+  (data (list u8))
+  (extracted-text (option string))
+)
+
+(define-record soil:inference/message
+  (role soil:inference/role)
+  (content (option string))
+  (name (option string))
+  (tool-call-id (option string))
+  (tool-calls (list soil:inference/tool-call))
+  (attachments (list soil:inference/attachment))
+  (reasoning (option string))
+)
+
+(define-record soil:inference/model
+  (id string)
+  (provider string)
+  (context-window (option u32))
+  (tier (option string))
+  (capabilities (list soil:inference/capability))
+  (embedding-dimensions (option u32))
+)
+
+(define-record soil:inference/usage
+  (prompt-tokens u32)
+  (completion-tokens u32)
+  (total-tokens u32)
+)
+
+(define-record soil:inference/request
+  (model string)
+  (messages (list soil:inference/message))
+  (tools (list soil:inference/tool))
+  (max-output-tokens (option u32))
+  (temperature (option f32))
+  (prompt-cache-key (option string))
+)
+
+(define-record soil:inference/response
+  (model string)
+  (message soil:inference/message)
+  (finish-reason (option string))
+  (usage (option soil:inference/usage))
+)
+
+(define-record soil:inference/embed-request
+  (model string)
+  (inputs (list string))
+  (dimensions (option u32))
+  (prompt-cache-key (option string))
+)
+
+(define-record soil:inference/embed-usage
+  (prompt-tokens u32)
+  (total-tokens u32)
+)
+
+(define-record soil:inference/embed-response
+  (model string)
+  (vectors (list (list f32)))
+  (usage (option soil:inference/embed-usage))
+)
+
+(define-record soil:inference/voice-embedding-request
+  (model string)
+  (checkpoint string)
+  (sample-rate u32)
+  (dimensions (option u32))
+  (pcm16 (list u8))
+)
+
+(define-record soil:inference/voice-embedding-response
+  (model string)
+  (embedding (list f32))
+  (usage (option soil:inference/embed-usage))
+)
+
+(define-record soil:inference/transcribe-request
+  (model string)
+  (sample-rate u32)
+  (pcm16 (list u8))
+  (language (option string))
+  (prompt (option string))
+  (timestamps bool)
+  (diarize bool)
+)
+
+(define-record soil:inference/word
+  (text string)
+  (start-ms u32)
+  (end-ms u32)
+  (speaker (option string))
+  (confidence (option f32))
+)
+
+(define-record soil:inference/segment
+  (text string)
+  (start-ms u32)
+  (end-ms u32)
+  (speaker (option string))
+  (words (list soil:inference/word))
+  (confidence (option f32))
+)
+
+(define-record soil:inference/transcribe-response
+  (model string)
+  (text string)
+  (language (option string))
+  (duration-ms (option u32))
+  (segments (list soil:inference/segment))
+)
+
+(define-record soil:inference/chunk
+  (data (list u8))
+  (done bool)
+)
+
+(define-enum soil:inference/error denied not-ready over-budget invalid unavailable auth io unsupported)
+
+(define-record soil:inference/inference-state
+  (ready bool)
+  (provider string)
+  (model string)
+)
+
+(define-resource soil:inference/completion-stream)
+
+(define-capability soil:inference/[method]completion-stream.next
+  :interface "soil:inference"
+  :function "[method]completion-stream.next"
+  :grant "soil:inference"
+  :version "0.3.0"
+  :params ((self (unsupported "handle")) (timeout-ms u32))
+  :result (result (option soil:inference/chunk) soil:inference/error))
+
+(defun soil:inference/[method]completion-stream.next (self timeout-ms)
+  (host-call "soil:inference" "[method]completion-stream.next" (list self timeout-ms)))
+
+(define-capability soil:inference/[method]completion-stream.cancel
+  :interface "soil:inference"
+  :function "[method]completion-stream.cancel"
+  :grant "soil:inference"
+  :version "0.3.0"
+  :params ((self (unsupported "handle")))
+  :result (result unit soil:inference/error))
+
+(defun soil:inference/[method]completion-stream.cancel (self)
+  (host-call "soil:inference" "[method]completion-stream.cancel" (list self)))
+
+(define-capability soil:inference/models
+  :interface "soil:inference"
+  :function "models"
+  :grant "soil:inference"
+  :version "0.3.0"
+  :params ()
+  :result (result (list soil:inference/model) soil:inference/error))
+
+(defun soil:inference/models ()
+  (host-call "soil:inference" "models" nil))
+
+(define-capability soil:inference/complete
+  :interface "soil:inference"
+  :function "complete"
+  :grant "soil:inference"
+  :version "0.3.0"
+  :params ((request soil:inference/request))
+  :result (result soil:inference/response soil:inference/error))
+
+(defun soil:inference/complete (request)
+  (host-call "soil:inference" "complete" (list request)))
+
+(define-capability soil:inference/embed
+  :interface "soil:inference"
+  :function "embed"
+  :grant "soil:inference"
+  :version "0.3.0"
+  :params ((request soil:inference/embed-request))
+  :result (result soil:inference/embed-response soil:inference/error))
+
+(defun soil:inference/embed (request)
+  (host-call "soil:inference" "embed" (list request)))
+
+(define-capability soil:inference/voice-embed
+  :interface "soil:inference"
+  :function "voice-embed"
+  :grant "soil:inference"
+  :version "0.3.0"
+  :params ((request soil:inference/voice-embedding-request))
+  :result (result soil:inference/voice-embedding-response soil:inference/error))
+
+(defun soil:inference/voice-embed (request)
+  (host-call "soil:inference" "voice-embed" (list request)))
+
+(define-capability soil:inference/transcribe
+  :interface "soil:inference"
+  :function "transcribe"
+  :grant "soil:inference"
+  :version "0.3.0"
+  :params ((request soil:inference/transcribe-request))
+  :result (result soil:inference/transcribe-response soil:inference/error))
+
+(defun soil:inference/transcribe (request)
+  (host-call "soil:inference" "transcribe" (list request)))
+
+(define-capability soil:inference/open-stream
+  :interface "soil:inference"
+  :function "open-stream"
+  :grant "soil:inference"
+  :version "0.3.0"
+  :params ((request soil:inference/request))
+  :result (result (unsupported "handle") soil:inference/error))
+
+(defun soil:inference/open-stream (request)
+  (host-call "soil:inference" "open-stream" (list request)))
+
+(define-capability soil:inference/state
+  :interface "soil:inference"
+  :function "state"
+  :grant "soil:inference"
+  :version "0.3.0"
+  :params ()
+  :result (result soil:inference/inference-state soil:inference/error))
+
+(defun soil:inference/state ()
+  (host-call "soil:inference" "state" nil))
+

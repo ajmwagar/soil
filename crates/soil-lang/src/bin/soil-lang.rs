@@ -12,6 +12,8 @@ fn main() -> Result<()> {
     let mut call: Option<String> = Some("main".to_string());
     let mut records_root: Option<PathBuf> = None;
     let mut workspace_root: Option<PathBuf> = None;
+    let mut inference_config: Option<PathBuf> = None;
+    let mut inference_profile: Option<String> = None;
     let mut book = "soil".to_string();
     let mut repl = false;
     let mut args = std::env::args().skip(1);
@@ -48,11 +50,24 @@ fn main() -> Result<()> {
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("--book needs a name"))?;
             }
+            "--inference-config" => {
+                inference_config =
+                    Some(PathBuf::from(args.next().ok_or_else(|| {
+                        anyhow::anyhow!("--inference-config needs a path")
+                    })?));
+            }
+            "--inference-profile" => {
+                inference_profile = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("--inference-profile needs a name"))?,
+                );
+            }
             "--repl" => repl = true,
             "-h" | "--help" => {
                 println!(
                     "usage: soil-lang [--call NAME | --no-call] [--repl] [--prelude FILE] \
-                     [--records-root DIR] [--book NAME] [--workspace-root DIR] FILE..."
+                     [--records-root DIR] [--book NAME] [--workspace-root DIR] \
+                     [--inference-config FILE] [--inference-profile NAME] FILE..."
                 );
                 return Ok(());
             }
@@ -68,16 +83,34 @@ fn main() -> Result<()> {
     }
 
     let host: Box<dyn Host> = match (workspace_root, records_root) {
-        (Some(workspace), Some(records)) => Box::new(NativeHost::open(workspace, records, book)?),
+        (Some(workspace), Some(records)) => {
+            let mut native = NativeHost::open(workspace, records, book)?;
+            if let Some(config) = inference_config {
+                native = native.with_inference(config, inference_profile.as_deref())?;
+            } else if inference_profile.is_some() {
+                bail!("--inference-profile requires --inference-config");
+            }
+            Box::new(native)
+        }
         (Some(_), None) => bail!("--workspace-root requires --records-root"),
-        (None, Some(records)) => Box::new(HostChain::new(vec![
-            Box::new(SystemTimeHost),
-            Box::new(SoilRecordsHost::open(records, book)?),
-        ])),
-        (None, None) => Box::new(HostChain::new(vec![
-            Box::new(SystemTimeHost),
-            Box::new(FakeHost::new()),
-        ])),
+        (None, Some(records)) => {
+            if inference_config.is_some() {
+                bail!("--inference-config requires --workspace-root");
+            }
+            Box::new(HostChain::new(vec![
+                Box::new(SystemTimeHost),
+                Box::new(SoilRecordsHost::open(records, book)?),
+            ]))
+        }
+        (None, None) => {
+            if inference_config.is_some() {
+                bail!("--inference-config requires --workspace-root and --records-root");
+            }
+            Box::new(HostChain::new(vec![
+                Box::new(SystemTimeHost),
+                Box::new(FakeHost::new()),
+            ]))
+        }
     };
     let mut runtime = Runtime::new(host);
 
