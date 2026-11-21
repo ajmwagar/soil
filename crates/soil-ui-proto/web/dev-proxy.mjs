@@ -108,16 +108,47 @@ const server = http.createServer(async (request, response) => {
     return;
   }
 
-  // Static example pages used by the inline workbench. `/examples` without a
-  // file is the API listing, so only intercept paths with a trailing file.
+  // Static site assets: the inline example iframes, generated API docs, and
+  // the agent-facing routes. Everything else is the live Soil host.
+  const staticRoot = path.join(here, "../../../sites/soil-lang/dist");
+  let staticPath = null;
   if (pathname.startsWith("/examples/")) {
-    const file = path.join(here, "../../../sites/soil-lang/dist", pathname);
-    if (fs.existsSync(file) && fs.statSync(file).isFile()) {
+    staticPath = path.join(staticRoot, pathname);
+  } else if (
+    pathname.startsWith("/docs/") ||
+    pathname === "/llms.txt" ||
+    pathname === "/llms-full.txt" ||
+    pathname === "/docs.json" ||
+    pathname === "/sitemap.xml" ||
+    pathname === "/robots.txt"
+  ) {
+    staticPath = path.join(staticRoot, pathname);
+  }
+  if (staticPath) {
+    if (pathname.endsWith("/")) staticPath = path.join(staticPath, "index.html");
+    if (
+      staticPath.startsWith(staticRoot) &&
+      fs.existsSync(staticPath) &&
+      fs.statSync(staticPath).isFile()
+    ) {
+      const extension = path.extname(staticPath);
+      const type =
+        extension === ".html"
+          ? "text/html; charset=utf-8"
+          : extension === ".md"
+            ? "text/markdown; charset=utf-8"
+            : extension === ".xml"
+              ? "application/xml; charset=utf-8"
+              : extension === ".txt"
+                ? "text/plain; charset=utf-8"
+                : extension === ".json"
+                  ? "application/json; charset=utf-8"
+                  : "application/octet-stream";
       response.writeHead(200, {
-        "content-type": "text/html; charset=utf-8",
+        "content-type": type,
         "cache-control": "no-store",
       });
-      response.end(fs.readFileSync(file));
+      response.end(fs.readFileSync(staticPath));
       return;
     }
   }

@@ -6,7 +6,7 @@ Preview it full-screen through the dev proxy:
 
 ```sh
 # 1. Rust host (no rebuild needed for the site source)
-target/debug/soil-ui-proto --source sites/soil-lang/soil-lang.soil --port 7882
+.bin/soil-ui-proto --source sites/soil-lang/soil-lang.soil --port 7882
 
 # 2. Serve the current web assets from disk and proxy the API
 SOIL_UI_UPSTREAM=http://127.0.0.1:7882 SOIL_UI_PORT=7883 \
@@ -27,7 +27,43 @@ Build the static page and every example through the Soil standard library:
 # sites/soil-lang/dist/examples/*.html
 ```
 
-Cargo is frozen for this step: the script uses an existing `target/debug/soil-lang`
-and fails rather than building. The output is plain HTML with server-rendered
-syntax highlighting. `dist/` is generated and checked in for deployment; the
-live component path is the dev proxy at http://127.0.0.1:7883/?bare=1.
+Cargo is frozen for this step: the script prefers `.bin/soil-lang` (then
+`target/debug/soil-lang`) and fails rather than building. The output is plain
+HTML with server-rendered syntax highlighting. `dist/` is generated and checked
+in for deployment; the live component path is the dev proxy at
+http://127.0.0.1:7883/?bare=1.
+
+## Self-documenting API
+
+`;;;` comments immediately above `defun`/`defmacro`/`defspore` are the source of
+truth. The projection lives in Soil:
+
+- `crates/soil-lang/stdlib/doc.soil` extracts comments and renders Markdown,
+  `llms.txt`, and the human-readable HTML pages.
+- `sites/soil-lang/docs.sh` feeds the extractor stack-sized source windows and
+  writes the generated files. `build.sh` runs it automatically.
+
+```sh
+./sites/soil-lang/docs.sh
+```
+
+Generated routes:
+
+```
+dist/docs/              human-readable API pages
+dist/docs/*.md          raw Markdown for agents
+dist/llms.txt           llms.txt index
+dist/llms-full.txt      full concatenated Markdown
+dist/docs.json          Andes navigation manifest
+dist/sitemap.xml
+dist/robots.txt
+```
+
+The live dev proxy serves `/docs/`, `/docs/*.md`, `/llms.txt`,
+`/llms-full.txt`, `/sitemap.xml`, and `/robots.txt` from `dist/`.
+
+`docs.json` points at `sites/soil-lang/dist/docs/*.md` relative to the Soil
+checkout. Andes stays in its own repository
+([`ajmwagar/andes`](https://github.com/ajmwagar/andes)); it is not vendored here.
+Tend should consume Andes as a git dependency and point its `repoRoot` at this
+checkout.

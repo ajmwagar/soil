@@ -22,3 +22,6 @@
 
 (defun test/last-of ()
   (= (last-of (list 1 2 3)) 3))
+
+(defun test/append ()
+  (= (append (list 1 2) (list 3 4)) (list 1 2 3 4)))

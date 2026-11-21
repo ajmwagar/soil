@@ -32,6 +32,7 @@ fn runtime(root: &Path) -> Runtime {
         "stdlib/prelude.soil",
         "stdlib/ui.soil",
         "stdlib/highlight.soil",
+        "stdlib/doc.soil",
         "bindings/soil-time.soil",
         "bindings/soil-records.soil",
         "boot/boot.soil",

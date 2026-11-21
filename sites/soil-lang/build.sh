@@ -38,4 +38,5 @@ for slug in counter todo calculator tictactoe tabs form; do
     > "sites/soil-lang/dist/examples/$slug.html"
 done
 
+./sites/soil-lang/docs.sh
 echo "wrote sites/soil-lang/dist/"

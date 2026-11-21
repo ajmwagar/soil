@@ -165,8 +165,10 @@
                     (drop-while 'highlight-symbol-char? characters)
                     (last-of run))))))))))
 
+;;; Tokenize Soil source and return UI form nodes for syntax highlighting.
 (defun highlight-soil (code)
   (highlight-scan (string-chars (str code)) ""))
 
+;;; Return a `<pre>` form containing highlighted Soil source.
 (defun code-block (code)
   (el "pre" (list (attr :class "code")) (highlight-soil code)))

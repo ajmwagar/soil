@@ -1,0 +1,15 @@
+# Soil
+
+> Soil is a small homoiconic Lisp with typed host capabilities. These API
+> docs are generated from `;;;` doc comments in the standard library.
+
+## Documentation
+
+- [Prelude](https://soil-lang.org/docs/prelude.md): Lists, records, JSON, and the small helpers every Soil program uses.
+- [UI forms](https://soil-lang.org/docs/ui.md): Forms, escaping, and HTML rendering for the four-function UI contract.
+- [Highlighter](https://soil-lang.org/docs/highlight.md): A small Soil tokenizer used by code blocks and the landing page.
+
+## Optional
+
+- [Full documentation](https://soil-lang.org/llms-full.txt)
+- [Sitemap](https://soil-lang.org/sitemap.xml)

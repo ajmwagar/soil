@@ -61,6 +61,7 @@
                   (a "#why" "" (list (txt "Why Soil")))
                   (a "#substrate" "" (list (txt "Substrate")))
                   (a "#learn" "" (list (txt "Learn")))
+                  (a "docs/" "" (list (txt "API")))
                   (a "#examples" "" (list (txt "Examples")))
                   (a "#spores" "" (list (txt "Spores")))
                   (a "#community" "" (list (txt "Community")))))
