@@ -122,25 +122,303 @@
       (el "span" (list (attr :class "stat-value")) (list (txt value)))
       (el "span" (list (attr :class "stat-label")) (list (txt label))))))
 
-(defun header (issues)
-  (el "header" (list (attr :class "marbles-head"))
+(defun portfolio-progress (snapshot)
+  (field (field (field snapshot :portfolio) :totals) :progress))
+
+(defun header (snapshot issues)
+  (let ((progress (portfolio-progress snapshot)))
+    (el "header" (list (attr :class "marbles-head"))
+      (list
+        (el "div" (list (attr :class "brand-row"))
+          (list
+            (el "div" nil
+              (list
+                (el "p" (list (attr :class "kicker")) (list (txt "MARBLES")))
+                (el "h1" nil (list (txt "The work graph, on one wall.")))
+                (el "p" (list (attr :class "lede"))
+                  (list (txt "A read-only projection of the Marbles reports: burndown, portfolio, goals, and the ready queue. Rendered by Soil on the host; there is no client application.")))))
+            (el "div" (list (attr :class "pill")) (list (txt "SSR · no JS")))))
+        (el "nav" (list (attr :class "jump"))
+          (list
+            (el "a" (list (attr :href "#burndown")) (list (txt "Burndown")))
+            (el "a" (list (attr :href "#portfolio")) (list (txt "Portfolio")))
+            (el "a" (list (attr :href "#queue")) (list (txt "Queue")))))
+        (el "div" (list (attr :class "stats"))
+          (list
+            (stat "issues" (field progress :total) "total")
+            (stat "open" (field progress :open) "ready")
+            (stat "in flight" (field progress :in_progress) "active")
+            (stat "review" (field progress :review) "review")
+            (stat "blocked" (field progress :blocked) "blocked")
+            (stat "closed" (field progress :closed) "closed")))))))
+
+(defun fmt-not-dot? (character)
+  (not (= character ".")))
+
+(defun fmt-2 (value)
+  (if (nil? value)
+      "—"
+      (let ((text (str value)))
+    (let ((chars (string-chars text)))
+      (let ((before (take-while 'fmt-not-dot? chars)))
+        (if (= (length before) (length chars))
+            text
+            (let ((after (drop (+ (length before) 1) chars)))
+              (str (string-join before "")
+                   "."
+                   (string-join (take 2 after) "")))))))))
+
+(defun list-max (xs)
+  (cond
+    ((nil? xs) 0)
+    ((nil? (rest xs)) (first xs))
+    (else
+      (let ((rest-max (list-max (rest xs))))
+        (if (> (first xs) rest-max) (first xs) rest-max)))))
+
+(defun point-scope (point)
+  (field point :scope))
+
+(defun chart-max (points)
+  (let ((value (list-max (map 'point-scope points))))
+    (if (<= value 0) 1 value)))
+
+(defun chart-x (index count width)
+  (if (<= count 1)
+      0
+      (/ (* index width) (- count 1))))
+
+(defun chart-y (value max height)
+  (let ((y (- height (/ (* value height) max))))
+    (if (< y 0) 0 y)))
+
+(defun chart-point (point index count max width height key)
+  (str
+    (chart-x index count width) ","
+    (chart-y (field point key) max height)))
+
+(defun chart-points (points index count max width height key)
+  (if (nil? points)
+      nil
+      (cons
+        (chart-point (first points) index count max width height key)
+        (chart-points (rest points) (+ index 1) count max width height key))))
+
+(defun chart-line (points max key class)
+  (el "polyline"
     (list
-      (el "div" (list (attr :class "brand-row"))
+      (attr :points
+        (string-join
+          (chart-points points 0
+            (if (nil? points) 1 (length points))
+            max 720 200 key)
+          " "))
+      (attr :fill "none")
+      (attr :class class))
+    nil))
+
+(defun chart-grid (y)
+  (el "line"
+    (list
+      (attr :x1 "0") (attr :x2 "720")
+      (attr :y1 y) (attr :y2 y)
+      (attr :class "chart-grid"))
+    nil))
+
+(defun burndown-chart (points)
+  (let ((max (chart-max points)))
+    (let ((actual (chart-line points max :remaining "chart-actual"))
+          (ideal (chart-line points max :ideal_remaining "chart-ideal")))
+      (el "svg"
+        (list
+          (attr :class "chart")
+          (attr :viewBox "0 0 720 200")
+          (attr :role "img")
+          (attr :aria-label "Burndown chart"))
+        (list
+          (chart-grid "0")
+          (chart-grid "50")
+          (chart-grid "100")
+          (chart-grid "150")
+          (chart-grid "200")
+          actual
+          ideal)))))
+
+(defun chart-axis (points)
+  (el "div" (list (attr :class "chart-axis"))
+    (list
+      (el "span" nil (list (txt (field (first points) :date))))
+      (el "span" nil (list (txt (field (last-of points) :date)))))))
+
+(defun fact (label value tone)
+  (el "div" (list (attr :class (str "fact " tone)))
+    (list
+      (el "span" (list (attr :class "fact-value")) (list (txt value)))
+      (el "span" (list (attr :class "fact-label")) (list (txt label))))))
+
+(defun burndown-section (burndown)
+  (let ((points (field burndown :points)))
+    (el "section" (list (attr :class "section") (attr :id "burndown"))
+      (list
+        (el "div" (list (attr :class "section-head"))
+          (list
+            (el "div" nil
+              (list
+                (el "p" (list (attr :class "kicker")) (list (txt "BURNDOWN")))
+                (el "h2" nil (list (txt "Remaining work over the window.")))
+                (el "p" (list (attr :class "section-sub"))
+                  (list (txt "Scope and closes from the same issue page the portfolio uses. Ideal burns the total scope evenly across the window.")))))
+            (el "span" (list (attr :class "pill"))
+              (list (txt (str (field burndown :days) " days"))))))
+        (el "div" (list (attr :class "burndown-grid"))
+          (list
+            (el "div" (list (attr :class "chart-card"))
+              (list
+                (burndown-chart points)
+                (chart-axis points)))
+            (el "div" (list (attr :class "burndown-facts"))
+              (list
+                (fact "scope" (field burndown :scope) "total")
+                (fact "done" (field burndown :done) "closed")
+                (fact "remaining" (field burndown :remaining) "blocked")
+                (fact "burn / day" (fmt-2 (field burndown :burn_per_day)) "active")
+                (fact "projected days" (fmt-2 (field burndown :projected_days_to_zero)) "review")))))))))
+
+(defun count-noun (count singular plural)
+  (str count " " (if (= count 1) singular plural)))
+
+(defun percent-text (progress)
+  (let ((percent (field progress :percent_done)))
+    (if (nil? percent) "0" (str percent))))
+
+(defun progress-bar (progress)
+  (let ((percent (field progress :percent_done)))
+    (el "div" (list (attr :class "progress"))
+      (list
+        (el "span"
+          (list (attr :style (str "width:" (if (nil? percent) 0 percent) "%")))
+          nil)))))
+
+(defun project-row (project)
+  (let ((progress (field project :progress)))
+    (el "article" (list (attr :class "project"))
+      (list
+        (el "div" (list (attr :class "project-head"))
+          (list
+            (el "div" nil
+              (list
+                (el "h3" nil (list (txt (field project :slug))))
+                (el "p" nil (list (txt (field project :prefix))))))
+            (el "span" (list (attr :class "project-percent"))
+              (list (txt (str (percent-text progress) "%"))))))
+        (progress-bar progress)
+        (el "div" (list (attr :class "project-facts"))
+          (list
+            (el "span" nil (list (txt (str "total " (field progress :total)))))
+            (el "span" nil (list (txt (str "open " (field progress :open)))))
+            (el "span" nil (list (txt (str "wip " (field progress :in_progress)))))
+            (el "span" nil (list (txt (str "review " (field progress :review)))))
+            (el "span" nil (list (txt (str "blocked " (field progress :blocked)))))
+            (el "span" nil (list (txt (str "ready " (field project :ready)))))
+            (el "span" nil (list (txt (str "stale " (field project :stale)))))))))))
+
+(defun folder-projects (folder)
+  (field folder :projects))
+
+(defun folder-project-rows (folders)
+  (if (nil? folders)
+      nil
+      (append
+        (map 'project-row (field (first folders) :projects))
+        (folder-project-rows (rest folders)))))
+
+(defun portfolio-head (totals)
+  (el "div" (list (attr :class "section-head"))
+    (list
+      (el "div" nil
+        (list
+          (el "p" (list (attr :class "kicker")) (list (txt "PORTFOLIO")))
+          (el "h2" nil (list (txt "Folder -> project -> goal rollup.")))
+          (el "p" (list (attr :class "section-sub"))
+            (list (txt "Progress, ready work, and staleness across the projects in this store.")))))
+      (el "span" (list (attr :class "pill"))
+        (list (txt (count-noun (field totals :projects) "project" "projects")))))))
+
+(defun portfolio-total-facts (progress totals)
+  (el "div" (list (attr :class "portfolio-totals"))
+    (list
+      (fact "issues" (field progress :total) "total")
+      (fact "done" (field progress :closed) "closed")
+      (fact "ready" (field totals :ready) "ready")
+      (fact "stale" (field totals :stale) "blocked"))))
+
+(defun portfolio-projects (portfolio)
+  (el "div" (list (attr :class "projects"))
+    (append
+      (map 'project-row (field portfolio :unfiled))
+      (folder-project-rows (field portfolio :folders)))))
+
+(defun portfolio-section (snapshot)
+  (let ((portfolio (field snapshot :portfolio)))
+    (let ((totals (field portfolio :totals)))
+      (let ((progress (field totals :progress)))
+        (el "section" (list (attr :class "section") (attr :id "portfolio"))
+          (list
+            (portfolio-head totals)
+            (portfolio-total-facts progress totals)
+            (portfolio-projects portfolio)))))))
+
+(defun goal-card (goal)
+  (let ((progress (field goal :progress)))
+    (el "article" (list (attr :class "goal"))
+      (list
+        (el "div" (list (attr :class "goal-head"))
+          (list
+            (el "div" nil
+              (list
+                (el "span" (list (attr :class "goal-id")) (list (txt (field goal :id))))
+                (el "h3" nil (list (txt (field goal :title))))))
+            (el "span" (list (attr :class "project-percent"))
+              (list (txt (str (percent-text progress) "%"))))))
+        (progress-bar progress)
+        (el "div" (list (attr :class "project-facts"))
+          (list
+            (el "span" nil (list (txt (str (field progress :closed) " closed"))))
+            (el "span" nil (list (txt (str (field progress :open) " open"))))
+            (el "span" nil (list (txt (str (field progress :total) " total"))))))))))
+
+(defun goals-section (goals)
+  (el "section" (list (attr :class "section") (attr :id "goals"))
+    (list
+      (el "div" (list (attr :class "section-head"))
         (list
           (el "div" nil
             (list
-              (el "p" (list (attr :class "kicker")) (list (txt "MARBLES")))
-              (el "h1" nil (list (txt "The work graph, on one wall.")))
-              (el "p" (list (attr :class "lede"))
-                (list (txt "A read-only projection of `marbles list --json`. Rendered by Soil on the host; there is no client application.")))))
-          (el "div" (list (attr :class "pill")) (list (txt "SSR · no JS")))))
-      (el "div" (list (attr :class "stats"))
+              (el "p" (list (attr :class "kicker")) (list (txt "GOALS")))
+              (el "h2" nil (list (txt "Goals are containers, not work.")))
+              (el "p" (list (attr :class "section-sub"))
+                (list (txt "Progress counts each goal's descendants, not the goal itself.")))))
+          (el "span" (list (attr :class "pill"))
+            (list (txt (count-noun (issue-count goals) "goal" "goals"))))))
+      (if (nil? goals)
+          (el "p" (list (attr :class "lane-empty")) (list (txt "No goals in this snapshot.")))
+          (el "div" (list (attr :class "goals"))
+            (map 'goal-card goals))))))
+
+(defun view (state)
+  (let ((issues (field state :issues)))
+    (let ((ready (filter 'issue-ready? issues))
+          (active (filter 'issue-active? issues))
+          (review (filter 'issue-review? issues))
+          (blocked (filter 'issue-blocked? issues))
+          (closed (filter 'issue-closed? issues)))
+      (el "div" (list (attr :class "marbles"))
         (list
-          (stat "ready" (count-if 'issue-ready? issues) "ready")
-          (stat "in flight" (count-if 'issue-active? issues) "active")
-          (stat "review" (count-if 'issue-review? issues) "review")
-          (stat "blocked" (count-if 'issue-blocked? issues) "blocked")
-          (stat "closed" (count-if 'issue-closed? issues) "closed"))))))
+          (header state issues)
+          (burndown-section (field state :burndown))
+          (portfolio-section state)
+          (goals-section (field state :goals))
+          (section-queue ready active review blocked closed))))))
 
 (defun rail-card (title body)
   (el "section" (list (attr :class "rail-card"))
@@ -148,38 +426,41 @@
       (el "h2" nil (list (txt title)))
       (el "p" nil (list (txt body))))))
 
-(defun view (state)
-  (let ((ready (filter 'issue-ready? state))
-        (active (filter 'issue-active? state))
-        (review (filter 'issue-review? state))
-        (blocked (filter 'issue-blocked? state))
-        (closed (filter 'issue-closed? state)))
-    (el "div" (list (attr :class "marbles"))
-      (list
-        (header state)
-        (el "main" (list (attr :class "marble-board"))
-          (list
-            (el "div" (list (attr :class "queue"))
-              (list
-                (lane "Ready now" "unblocked, unclaimed, past grace" ready
-                  "Nothing is ready. Either the fleet is working or the graph is blocked.")
-                (lane "In flight" "claimed work with a live lease" active
-                  "No agent holds a lease right now.")
-                (lane "Review" "PR open; not done until merged" review
-                  "Nothing is waiting for review.")
-                (lane "Blocked" "dependency edges still open" blocked
-                  "No blockers in this snapshot.")))
-            (el "aside" (list (attr :class "rail"))
-              (list
-                (rail-card "Recently closed"
-                  (if (nil? closed)
-                      "No closed work in this snapshot."
-                      (str (issue-count closed)
-                           " closed issues are outside the active lanes.")))
-                (rail-card "How this renders"
-                  "The host reads the Marbles JSON and hands Soil one snapshot. `view` returns forms, `render-html` emits the page. A browser receives HTML and CSS only.")
-                (rail-card "Next slice"
-                  "`claim`, `review`, and `close` become forms that post intents back to the host. The read path stays a pure function.")))))))))
+(defun section-queue (ready active review blocked closed)
+  (el "section" (list (attr :class "section") (attr :id "queue"))
+    (list
+      (el "div" (list (attr :class "section-head"))
+        (list
+          (el "div" nil
+            (list
+              (el "p" (list (attr :class "kicker")) (list (txt "QUEUE")))
+              (el "h2" nil (list (txt "What the fleet can pick up next.")))
+              (el "p" (list (attr :class "section-sub"))
+                (list (txt "The same readiness rules as `marbles ready`, grouped for reading.")))))
+          (el "span" (list (attr :class "pill")) (list (txt "read-only")))))
+      (el "div" (list (attr :class "marble-board"))
+        (list
+          (el "div" (list (attr :class "queue"))
+            (list
+              (lane "Ready now" "unblocked, unclaimed, past grace" ready
+                "Nothing is ready. Either the fleet is working or the graph is blocked.")
+              (lane "In flight" "claimed work with a live lease" active
+                "No agent holds a lease right now.")
+              (lane "Review" "PR open; not done until merged" review
+                "Nothing is waiting for review.")
+              (lane "Blocked" "dependency edges still open" blocked
+                "No blockers in this snapshot.")))
+          (el "aside" (list (attr :class "rail"))
+            (list
+              (rail-card "Recently closed"
+                (if (nil? closed)
+                    "No closed work in this snapshot."
+                    (str (issue-count closed)
+                         " closed issues are outside the active lanes.")))
+              (rail-card "How this renders"
+                "The host reads the Marbles JSON and hands Soil one snapshot. `view` returns forms, `render-html` emits the page. A browser receives HTML and CSS only.")
+              (rail-card "Next slice"
+                "`claim`, `review`, and `close` become forms that post intents back to the host. The read path stays a pure function."))))))))
 
 (defun styles ()
   (str
@@ -230,4 +511,78 @@
     ".rail-card { border: 1px solid var(--line); border-radius: 16px; padding: 18px; background: rgba(16,20,29,.72); }\n"
     ".rail-card h2 { margin: 0 0 8px; font-size: 14px; letter-spacing: -.01em; }\n"
     ".rail-card p { margin: 0; color: var(--muted); font-size: 12.5px; }\n"
-    "@media (max-width: 840px) { .rail { flex-basis: 100%; } }\n"))
+    ".jump { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 18px; font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
+"
+    ".jump a { color: var(--muted); text-decoration: none; border-bottom: 1px solid transparent; padding-bottom: 3px; }
+"
+    ".jump a:hover { color: var(--ink); border-bottom-color: var(--accent); }
+"
+    ".section { padding: 34px 0 8px; border-top: 1px solid var(--line); margin-top: 30px; }
+"
+    ".section-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; flex-wrap: wrap; margin-bottom: 18px; }
+"
+    ".section-head h2 { margin: 0; font-size: clamp(22px, 3vw, 32px); line-height: 1.1; letter-spacing: -.035em; }
+"
+    ".section-sub { margin: 8px 0 0; color: var(--muted); max-width: 68ch; font-size: 13px; }
+"
+    ".burndown-grid { display: flex; gap: 18px; align-items: stretch; flex-wrap: wrap; }
+"
+    ".chart-card { flex: 1 1 680px; border: 1px solid var(--line); border-radius: 18px; padding: 16px 18px 12px; background: rgba(16,20,29,.72); }
+"
+    ".chart { display: block; width: 100%; height: 220px; overflow: visible; }
+"
+    ".chart-grid { stroke: rgba(255,255,255,.08); stroke-width: 1; }
+"
+    ".chart-actual { stroke: var(--accent); stroke-width: 2.5; }
+"
+    ".chart-ideal { stroke: #8db4ff; stroke-width: 1.5; stroke-dasharray: 5 5; opacity: .75; }
+"
+    ".chart-axis { display: flex; justify-content: space-between; color: var(--muted); font: 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 4px 2px 0; }
+"
+    ".burndown-facts { flex: 0 1 260px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-content: start; }
+"
+    ".fact { border: 1px solid var(--line); border-radius: 12px; padding: 12px 13px; background: rgba(255,255,255,.025); border-top: 2px solid var(--line); }
+"
+    ".fact-value { display: block; font: 700 24px/1.05 ui-sans-serif, system-ui, sans-serif; letter-spacing: -.03em; }
+"
+    ".fact-label { display: block; margin-top: 5px; color: var(--muted); font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .1em; }
+"
+    ".fact.total { border-top-color: #8db4ff; }
+"
+    ".fact.ready { border-top-color: var(--accent); }
+"
+    ".fact.active { border-top-color: #e3b341; }
+"
+    ".fact.review { border-top-color: #a78bff; }
+"
+    ".fact.blocked { border-top-color: var(--danger); }
+"
+    ".fact.closed { border-top-color: #3fb950; }
+"
+    ".portfolio-totals { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+"
+    ".portfolio-totals .fact { flex: 1 1 120px; }
+"
+    ".projects { display: flex; flex-direction: column; gap: 10px; }
+"
+    ".project, .goal { border: 1px solid var(--line); border-radius: 14px; padding: 15px 17px; background: rgba(16,20,29,.72); }
+"
+    ".project-head, .goal-head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+"
+    ".project h3, .goal h3 { margin: 0; font-size: 15px; letter-spacing: -.01em; }
+"
+    ".project p { margin: 2px 0 0; color: var(--muted); font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+"
+    ".project-percent { color: var(--accent); font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+"
+    ".progress { height: 6px; margin: 11px 0 9px; border-radius: 999px; background: rgba(255,255,255,.07); overflow: hidden; }
+"
+    ".progress span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), #8db4ff); }
+"
+    ".project-facts { display: flex; flex-wrap: wrap; gap: 11px; color: var(--muted); font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+"
+    ".goals { display: flex; flex-direction: column; gap: 10px; }
+"
+    ".goal-id { color: var(--muted); font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+"
+    "@media (max-width: 840px) { .rail { flex-basis: 100%; } .burndown-facts { flex-basis: 100%; grid-template-columns: repeat(3, 1fr); } }\n"))
