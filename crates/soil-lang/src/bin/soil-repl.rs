@@ -19,6 +19,8 @@ use rustyline::{Context, Editor, Helper};
 use soil_lang::sexp::{Value, parse_document};
 use soil_lang::{FakeHost, HostChain, Runtime, SystemTimeHost};
 
+const REPL_SOIL: &str = include_str!("../../repl/repl.soil");
+
 struct ReplHelper {
     commands: Vec<String>,
     functions: Rc<RefCell<Vec<String>>>,
@@ -102,6 +104,7 @@ fn main() -> Result<()> {
     if let Some(prelude) = prelude {
         runtime.load_file(&prelude)?;
     }
+    runtime.load(REPL_SOIL)?;
 
     let commands = vec![
         ":load".into(),
@@ -187,22 +190,30 @@ impl Session {
         };
         let source = std::fs::read_to_string(path)?;
         let document = parse_document(&source)?;
-        let mut changed = 0;
+        let old = alist(&self.forms);
+        let new = alist(
+            &document
+                .forms
+                .iter()
+                .map(|form| (form.id.clone(), form.value.clone()))
+                .collect(),
+        );
+        let changed = self.runtime.call("repl/changed", &[old, new])?;
+        let ids = changed.as_list().unwrap_or_default();
+        let mut count = 0;
         let mut next = HashMap::new();
         for form in document.forms {
-            let previous = self.forms.get(&form.id);
-            let is_changed = previous != Some(&form.value);
-            if is_changed {
+            if ids.iter().any(|id| id.as_str() == Some(form.id.as_str())) {
                 let text = &source[form.span.start..form.span.end];
                 match self.runtime.load(text) {
-                    Ok(_) => changed += 1,
+                    Ok(_) => count += 1,
                     Err(error) => eprintln!("{}: {error:#}", form.id),
                 }
             }
             next.insert(form.id, form.value);
         }
         self.forms = next;
-        println!("reloaded {changed} form(s) from {}", path.display());
+        println!("reloaded {count} form(s) from {}", path.display());
         Ok(())
     }
 
@@ -213,39 +224,63 @@ impl Session {
         }
         let (command, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
         let rest = rest.trim();
-        match command {
-            ":quit" | ":q" => return false,
-            ":help" | ":h" => {
-                println!(
-                    ":load FILE   load a file into the image\n\
-                     :reload      re-eval changed forms in the current file\n\
-                     :eval FORM   evaluate one form\n\
-                     :time FORM   evaluate and report elapsed time\n\
-                     :inspect F   evaluate and print the value\n\
-                     :source      print the current source path\n\
-                     :quit        leave"
-                );
+        let action = match self.runtime.call(
+            "repl/command",
+            &[Value::String(command.into()), Value::String(rest.into())],
+        ) {
+            Ok(action) => action,
+            Err(error) => {
+                eprintln!("{error:#}");
+                return true;
             }
-            ":load" => {
-                if rest.is_empty() {
-                    eprintln!(":load needs a file");
-                } else if let Err(error) = self.load(Path::new(rest)) {
-                    eprintln!("{error:#}");
+        };
+        let items = action.as_list().unwrap_or_default();
+        let verb = items.first().and_then(Value::as_keyword).unwrap_or("");
+        let arg = items.get(1);
+        match verb {
+            "quit" => return false,
+            "print" => {
+                if let Some(text) = arg.and_then(Value::as_str) {
+                    println!("{text}");
                 }
             }
-            ":reload" => {
+            "error" => {
+                if let Some(text) = arg.and_then(Value::as_str) {
+                    eprintln!("{text}");
+                }
+            }
+            "load" => {
+                if let Some(path) = arg.and_then(Value::as_str) {
+                    if let Err(error) = self.load(Path::new(path)) {
+                        eprintln!("{error:#}");
+                    }
+                }
+            }
+            "reload" => {
                 if let Err(error) = self.reload() {
                     eprintln!("{error:#}");
                 }
             }
-            ":eval" => self.eval(rest, false),
-            ":time" => self.eval(rest, true),
-            ":inspect" => self.eval(rest, false),
-            ":source" => match &self.current {
+            "eval" => {
+                if let Some(source) = arg.and_then(Value::as_str) {
+                    self.eval(source, false);
+                }
+            }
+            "time" => {
+                if let Some(source) = arg.and_then(Value::as_str) {
+                    self.eval(source, true);
+                }
+            }
+            "inspect" => {
+                if let Some(source) = arg.and_then(Value::as_str) {
+                    self.eval(source, false);
+                }
+            }
+            "source" => match &self.current {
                 Some(path) => println!("{}", path.display()),
                 None => println!("no source file"),
             },
-            other => eprintln!("unknown command `{other}`; try :help"),
+            _ => eprintln!("invalid REPL action: {action}"),
         }
         true
     }
@@ -294,4 +329,15 @@ fn history_path() -> Option<PathBuf> {
         let _ = std::fs::create_dir_all(parent);
     }
     Some(path)
+}
+
+fn alist(forms: &HashMap<String, Value>) -> Value {
+    let mut entries: Vec<_> = forms.iter().collect();
+    entries.sort_by(|left, right| left.0.cmp(right.0));
+    Value::List(
+        entries
+            .into_iter()
+            .map(|(id, value)| Value::List(vec![Value::String(id.clone()), value.clone()]))
+            .collect(),
+    )
 }

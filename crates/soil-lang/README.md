@@ -49,9 +49,8 @@ cargo run -p soil-lang --bin soil-repl -- \
 Readline editing, persistent history, function/command completion, `:load`,
 `:reload`, `:eval`, `:time`, `:inspect`, `:source`, and `:quit`.
 
-The Rust binary is currently the terminal host and command loop. The target is
-to move command/reload policy into a `repl.soil` module and leave Rust with the
-line editor, image primitives, history, and clock.
+`repl/repl.soil` owns command parsing, help, and changed-form policy. Rust keeps
+the line editor, history, image primitives, file I/O, and clock.
 
 ## Edit -> eval harness
 

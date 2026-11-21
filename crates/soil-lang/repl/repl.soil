@@ -1,0 +1,42 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; REPL command policy, written in Soil.
+; Rust owns the terminal, history, image, and file I/O. This file decides what
+; a command means and which forms changed.
+
+(defun repl/help ()
+  (str ":load FILE   load a file into the image\n"
+       ":reload      re-eval changed forms in the current file\n"
+       ":eval FORM   evaluate one form\n"
+       ":time FORM   evaluate and report elapsed time\n"
+       ":inspect F   evaluate and print the value\n"
+       ":source      print the current source path\n"
+       ":quit        leave"))
+
+(defun repl/command (command rest)
+  (cond
+    ((or (eq command ":quit") (eq command ":q")) (list :quit))
+    ((or (eq command ":help") (eq command ":h")) (list :print (repl/help)))
+    ((eq command ":load")
+     (if (= rest "")
+         (list :error ":load needs a file")
+         (list :load rest)))
+    ((eq command ":reload") (list :reload))
+    ((eq command ":eval") (list :eval rest))
+    ((eq command ":time") (list :time rest))
+    ((eq command ":inspect") (list :inspect rest))
+    ((eq command ":source") (list :source))
+    (else (list :error (str "unknown command " command "; try :help")))))
+
+(defun repl/lookup (id forms)
+  (cond
+    ((nil? forms) nil)
+    ((eq (first (first forms)) id) (first (rest (first forms))))
+    (else (repl/lookup id (rest forms)))))
+
+(defun repl/changed (old new)
+  (if (nil? new)
+      nil
+      (let ((entry (first new)))
+        (if (= (repl/lookup (first entry) old) (first (rest entry)))
+            (repl/changed old (rest new))
+            (cons (first entry) (repl/changed old (rest new)))))))
