@@ -40,6 +40,7 @@ sources = [
     ("prelude", "Prelude", "Lists, records, JSON, and the small helpers every Soil program uses."),
     ("ui", "UI forms", "Forms, escaping, and HTML rendering for the four-function UI contract."),
     ("highlight", "Highlighter", "A small Soil tokenizer used by code blocks and the landing page."),
+    ("cli", "CLI", "A data-driven command spec, argv parser, help renderer, and man-page generator."),
 ]
 
 def chunks(text, limit=18):

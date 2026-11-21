@@ -8,3 +8,4 @@
 - [Prelude](prelude.md): Lists, records, JSON, and the small helpers every Soil program uses.
 - [UI forms](ui.md): Forms, escaping, and HTML rendering for the four-function UI contract.
 - [Highlighter](highlight.md): A small Soil tokenizer used by code blocks and the landing page.
+- [CLI](cli.md): A data-driven command spec, argv parser, help renderer, and man-page generator.

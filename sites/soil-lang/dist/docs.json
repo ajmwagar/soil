@@ -29,6 +29,12 @@
           "slug": "highlight",
           "file": "sites/soil-lang/dist/docs/highlight.md",
           "description": "A small Soil tokenizer used by code blocks and the landing page."
+        },
+        {
+          "title": "CLI",
+          "slug": "cli",
+          "file": "sites/soil-lang/dist/docs/cli.md",
+          "description": "A data-driven command spec, argv parser, help renderer, and man-page generator."
         }
       ]
     }
