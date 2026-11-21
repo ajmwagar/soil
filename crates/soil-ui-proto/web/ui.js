@@ -189,13 +189,20 @@ async function probeHot() {
   return hotAvailable;
 }
 
-function componentCss(css) {
-  return (
+function componentCss(css, chrome = false) {
+  let out =
     css.replace(/:root/g, ":host") +
     "\n:host { display: block; height: 100%; }\n" +
     ".component-body { height: 100%; }\n" +
-    ".component-body .app { min-height: 100% !important; }\n"
-  );
+    ".component-body .app { min-height: 100% !important; }\n";
+  if (!chrome) {
+    out +=
+      ".component-body .app { background: transparent !important; padding: 0 !important; }\n" +
+      ".component-body .topbar { display: none !important; }\n" +
+      ".component-body .stage { margin: 0 !important; max-width: none !important; }\n" +
+      ".component-body .card { border: 0 !important; border-radius: 0 !important; box-shadow: none !important; background: transparent !important; padding: 20px !important; max-width: none !important; }\n";
+  }
+  return out;
 }
 
 async function renderComponent(component, action) {
@@ -208,7 +215,7 @@ async function renderComponent(component, action) {
     return;
   }
   component.state = data.state;
-  component.style.textContent = componentCss(data.css);
+  component.style.textContent = componentCss(data.css, component.chrome);
   component.tree = patch(component.tree, data.tree);
   if (!component.tree) component.body.replaceChildren();
   else if (component.tree.parentNode !== component.body) {
@@ -217,7 +224,7 @@ async function renderComponent(component, action) {
   highlightCode(component.body);
 }
 
-async function mountComponent(figure, slug) {
+async function mountComponent(figure, slug, options = undefined) {
   const response = await fetch(`/view?name=${encodeURIComponent(slug)}`, {
     cache: "no-store",
   });
@@ -227,15 +234,16 @@ async function mountComponent(figure, slug) {
   const host = document.createElement("div");
   host.className = "component-live";
   const shadow = host.attachShadow({ mode: "open" });
+  const chrome = options?.chrome === true;
   const style = document.createElement("style");
-  style.textContent = componentCss(data.css);
+  style.textContent = componentCss(data.css, chrome);
   const body = document.createElement("div");
   body.className = "component-body";
   const tree = mount(data.tree);
   if (tree) body.appendChild(tree);
   shadow.append(style, body);
 
-  const component = { name: slug, state: data.state, style, body, tree, host };
+  const component = { name: slug, state: data.state, style, body, tree, host, chrome };
 
   shadow.addEventListener("click", (event) => {
     const target =
@@ -292,7 +300,7 @@ async function mountCarousel() {
     const dot = dots[(index + dots.length) % dots.length];
     if (!dot) return;
     frame.querySelector(":scope > .component-live")?.remove();
-    await mountComponent(frame, dot.dataset.carouselSlug);
+    await mountComponent(frame, dot.dataset.carouselSlug, { chrome: true });
     const caption = frame.querySelector("figcaption");
     if (caption) caption.textContent = dot.dataset.carouselTitle ?? dot.dataset.carouselSlug;
     dots.forEach((item, at) =>
