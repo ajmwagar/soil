@@ -39,6 +39,19 @@ cargo run -p soil-lang --bin soil-lang -- \
 ((:devices (("az09:1" (:in-use 0.85)) ...)) (:person (:present 0.9)))
 ```
 
+## Edit -> eval harness
+
+The smallest live loop is a file-backed image:
+
+```sh
+cargo run -p soil-lang --bin soil-harness -- \
+  --prelude stdlib/prelude.soil \
+  --source examples/harness.soil --watch
+```
+
+Edit `examples/harness.soil`, save, and the harness reloads it into the same
+image and calls `main`. This is deliberately before VFS, git, and CID.
+
 ## Compile
 
 WIT bindings:
