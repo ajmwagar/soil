@@ -11,6 +11,8 @@ const status = document.getElementById("status");
 const apply = document.getElementById("apply");
 const examples = document.getElementById("examples");
 const filename = document.getElementById("filename");
+const query = new URLSearchParams(location.search);
+const bare = query.has("bare");
 
 let mounted = null;
 let currentState = null;
@@ -146,7 +148,7 @@ function actionFromElement(element) {
 }
 
 async function render(action = "") {
-  if (!currentName) return;
+  if (!currentName && !bare) return;
   const response = await fetch(viewUrl(action), { cache: "no-store" });
   const data = await response.json();
   if (!response.ok) {
@@ -255,6 +257,11 @@ source.addEventListener("keydown", (event) => {
 
 (async () => {
   try {
+    if (bare) {
+      document.body.classList.add("bare");
+      await render();
+      return;
+    }
     await loadExamples();
     const initial = examples.value || "counter";
     await selectExample(initial);

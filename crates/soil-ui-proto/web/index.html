@@ -85,6 +85,9 @@
       overflow: auto;
     }
     #status.error { color: #ff9a9a; }
+    body.bare .shell { grid-template-columns: 1fr; }
+    body.bare .editor { display: none; }
+    body.bare #root { min-height: 100vh; }
     @media (max-width: 860px) {
       .shell { grid-template-columns: 1fr; }
       .editor { position: static; height: 55vh; border-left: 0; border-top: 1px solid rgba(255,255,255,.08); }
