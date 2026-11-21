@@ -209,6 +209,17 @@ impl Runtime {
                         &self.eval(require(items, 1, "not")?, env)?,
                     ))),
                     "begin" | "do" => self.eval_body(&items[1..], env),
+                    "read" => {
+                        let source = self.eval(require(items, 1, "read")?, env)?;
+                        let source = source
+                            .as_str()
+                            .ok_or_else(|| anyhow!("read expects a string"))?;
+                        Ok(Value::List(parse_all(source)?))
+                    }
+                    "eval" => {
+                        let form = self.eval(require(items, 1, "eval")?, env)?;
+                        self.eval(&form, env)
+                    }
                     "host-call" => self.eval_host_call(items, env),
                     "list" => Ok(Value::List(self.eval_args(&items[1..], env)?)),
                     "field" | "get" => {
