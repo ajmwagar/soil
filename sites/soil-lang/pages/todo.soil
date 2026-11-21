@@ -3,5 +3,5 @@
   (println
     (render-page
       "TODO — Soil"
-      (str (styles) (example-styles))
-      (example-page "TODO" "Forms, keyed rows, and JSON action payloads." (view (initial-state))))))
+      (styles)
+      (view (initial-state)))))

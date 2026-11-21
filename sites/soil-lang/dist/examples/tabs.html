@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tabs — Soil</title>
 <style>
+body { margin: 0; }
 :root {
   color-scheme: dark;
   --ink: #e9ecf2;
@@ -101,18 +102,11 @@
 .panel { min-height: 150px; padding: 22px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.025); }
 .panel h2 { margin: 0 0 8px; font-size: 20px; }
 .panel p { margin: 0; color: var(--muted); max-width: 56ch; }
-.example-shell { min-height: 100vh; background: #090b10; color: #eef1f7; font: 15px/1.55 ui-sans-serif, system-ui, sans-serif; }
-.example-bar { position: sticky; top: 0; z-index: 50; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px clamp(18px, 4vw, 40px); border-bottom: 1px solid rgba(255,255,255,.09); background: rgba(9,11,16,.82); backdrop-filter: blur(14px); }
-.example-bar a { color: #c8f169; text-decoration: none; font-size: 12px; font-weight: 700; }
-.example-bar a:hover { color: #eef1f7; }
-.example-title { color: #9aa2b5; font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; }
-.example-note { padding: 10px clamp(18px, 4vw, 40px); border-bottom: 1px solid rgba(255,255,255,.06); color: #6c7488; font-size: 12.5px; }
-.example-body .app { min-height: calc(100vh - 92px); }
 
 </style>
 </head>
 <body>
-<div class="example-shell"><header class="example-bar"><a href="/">← Soil</a><span class="example-title">Tabs</span><a href="https://github.com/mycelium-linux/soil">GitHub</a></header><div class="example-note">Conditional rendering and active styling.</div><main class="example-body"><div class="app"><header class="topbar"><div class="brand">SOIL<span class="brand-sub">tabs</span></div><div class="pill">overview</div></header><main class="stage"><section class="card"><p class="eyebrow">TABS</p><div class="tabs"><button class="tab active" data-op="tab" data-tab="overview">Overview</button><button class="tab" data-op="tab" data-tab="activity">Activity</button><button class="tab" data-op="tab" data-tab="settings">Settings</button></div><section class="panel"><h2>Overview</h2><p>One state value selects a panel. The active tab is just a string.</p></section></section></main></div></main></div>
+<div class="app"><header class="topbar"><div class="brand">SOIL<span class="brand-sub">tabs</span></div><div class="pill">overview</div></header><main class="stage"><section class="card"><p class="eyebrow">TABS</p><div class="tabs"><button class="tab active" data-op="tab" data-tab="overview">Overview</button><button class="tab" data-op="tab" data-tab="activity">Activity</button><button class="tab" data-op="tab" data-tab="settings">Settings</button></div><section class="panel"><h2>Overview</h2><p>One state value selects a panel. The active tab is just a string.</p></section></section></main></div>
 </body>
 </html>
 

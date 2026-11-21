@@ -3,5 +3,5 @@
   (println
     (render-page
       "Counter — Soil"
-      (str (styles) (example-styles))
-      (example-page "Counter" "State, actions, and real CSS." (view (initial-state))))))
+      (styles)
+      (view (initial-state)))))

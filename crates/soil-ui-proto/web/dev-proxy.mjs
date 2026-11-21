@@ -30,6 +30,20 @@ const server = http.createServer(async (request, response) => {
   if (pathname === "/") return asset("index.html", "text/html; charset=utf-8", response);
   if (pathname === "/ui.js") return asset("ui.js", "text/javascript; charset=utf-8", response);
 
+  // Static example pages used by the inline workbench. `/examples` without a
+  // file is the API listing, so only intercept paths with a trailing file.
+  if (pathname.startsWith("/examples/")) {
+    const file = path.join(here, "../../../sites/soil-lang/dist", pathname);
+    if (fs.existsSync(file) && fs.statSync(file).isFile()) {
+      response.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+      });
+      response.end(fs.readFileSync(file));
+      return;
+    }
+  }
+
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
   const body = chunks.length ? Buffer.concat(chunks) : undefined;

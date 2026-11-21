@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Calculator — Soil</title>
 <style>
+body { margin: 0; }
 :root {
   color-scheme: dark;
   --ink: #e9ecf2;
@@ -112,18 +113,11 @@
 .key.op { color: var(--accent); }
 .key.equals { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .key.zero { grid-column: span 4; }
-.example-shell { min-height: 100vh; background: #090b10; color: #eef1f7; font: 15px/1.55 ui-sans-serif, system-ui, sans-serif; }
-.example-bar { position: sticky; top: 0; z-index: 50; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px clamp(18px, 4vw, 40px); border-bottom: 1px solid rgba(255,255,255,.09); background: rgba(9,11,16,.82); backdrop-filter: blur(14px); }
-.example-bar a { color: #c8f169; text-decoration: none; font-size: 12px; font-weight: 700; }
-.example-bar a:hover { color: #eef1f7; }
-.example-title { color: #9aa2b5; font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; }
-.example-note { padding: 10px clamp(18px, 4vw, 40px); border-bottom: 1px solid rgba(255,255,255,.06); color: #6c7488; font-size: 12.5px; }
-.example-body .app { min-height: calc(100vh - 92px); }
 
 </style>
 </head>
 <body>
-<div class="example-shell"><header class="example-bar"><a href="/">← Soil</a><span class="example-title">Calculator</span><a href="https://github.com/mycelium-linux/soil">GitHub</a></header><div class="example-note">A numeric state machine with a grid layout.</div><main class="example-body"><div class="app"><header class="topbar"><div class="brand">SOIL<span class="brand-sub">calculator</span></div><div class="pill">state machine</div></header><main class="stage"><section class="card calc-card"><p class="eyebrow">CALCULATOR</p><output class="display">0</output><div class="keys"><button class="key fn" data-op="clear" data-value="">C</button><button class="key fn" data-op="negate" data-value="">±</button><button class="key op" data-op="op" data-value="/">÷</button><button class="key op" data-op="op" data-value="*">×</button><button class="key" data-op="digit" data-value="7">7</button><button class="key" data-op="digit" data-value="8">8</button><button class="key" data-op="digit" data-value="9">9</button><button class="key op" data-op="op" data-value="-">−</button><button class="key" data-op="digit" data-value="4">4</button><button class="key" data-op="digit" data-value="5">5</button><button class="key" data-op="digit" data-value="6">6</button><button class="key op" data-op="op" data-value="+">+</button><button class="key" data-op="digit" data-value="1">1</button><button class="key" data-op="digit" data-value="2">2</button><button class="key" data-op="digit" data-value="3">3</button><button class="key equals" data-op="equals" data-value="">=</button><button class="key zero" data-op="digit" data-value="0">0</button></div></section></main></div></main></div>
+<div class="app"><header class="topbar"><div class="brand">SOIL<span class="brand-sub">calculator</span></div><div class="pill">state machine</div></header><main class="stage"><section class="card calc-card"><p class="eyebrow">CALCULATOR</p><output class="display">0</output><div class="keys"><button class="key fn" data-op="clear" data-value="">C</button><button class="key fn" data-op="negate" data-value="">±</button><button class="key op" data-op="op" data-value="/">÷</button><button class="key op" data-op="op" data-value="*">×</button><button class="key" data-op="digit" data-value="7">7</button><button class="key" data-op="digit" data-value="8">8</button><button class="key" data-op="digit" data-value="9">9</button><button class="key op" data-op="op" data-value="-">−</button><button class="key" data-op="digit" data-value="4">4</button><button class="key" data-op="digit" data-value="5">5</button><button class="key" data-op="digit" data-value="6">6</button><button class="key op" data-op="op" data-value="+">+</button><button class="key" data-op="digit" data-value="1">1</button><button class="key" data-op="digit" data-value="2">2</button><button class="key" data-op="digit" data-value="3">3</button><button class="key equals" data-op="equals" data-value="">=</button><button class="key zero" data-op="digit" data-value="0">0</button></div></section></main></div>
 </body>
 </html>
 

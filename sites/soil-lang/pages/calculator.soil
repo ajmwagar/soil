@@ -3,5 +3,5 @@
   (println
     (render-page
       "Calculator — Soil"
-      (str (styles) (example-styles))
-      (example-page "Calculator" "A numeric state machine with a grid layout." (view (initial-state))))))
+      (styles)
+      (view (initial-state)))))

@@ -3,5 +3,5 @@
   (println
     (render-page
       "Form — Soil"
-      (str (styles) (example-styles))
-      (example-page "Form" "Named inputs, validation, and a success state." (view (initial-state))))))
+      (styles)
+      (view (initial-state)))))

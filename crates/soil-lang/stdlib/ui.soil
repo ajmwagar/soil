@@ -97,7 +97,7 @@
     "<meta charset=\"utf-8\">\n"
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
     "<title>" (html-escape title) "</title>\n"
-    "<style>\n" styles "\n</style>\n"
+    "<style>\nbody { margin: 0; }\n" styles "\n</style>\n"
     "</head>\n"
     "<body>\n" (render-html body) "\n</body>\n"
     "</html>\n"))

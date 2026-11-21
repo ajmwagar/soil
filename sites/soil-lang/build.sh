@@ -27,7 +27,6 @@ for slug in counter todo calculator tictactoe tabs form; do
     crates/soil-lang/stdlib/highlight.soil \
     examples/ui/prelude.soil \
     "examples/ui/$slug.soil" \
-    sites/soil-lang/example-page.soil \
     "sites/soil-lang/pages/$slug.soil" \
     > "sites/soil-lang/dist/examples/$slug.html"
 done

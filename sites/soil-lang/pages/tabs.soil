@@ -3,5 +3,5 @@
   (println
     (render-page
       "Tabs — Soil"
-      (str (styles) (example-styles))
-      (example-page "Tabs" "Conditional rendering and active styling." (view (initial-state))))))
+      (styles)
+      (view (initial-state)))))

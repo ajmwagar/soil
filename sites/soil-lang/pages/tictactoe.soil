@@ -3,5 +3,5 @@
   (println
     (render-page
       "Tic-tac-toe — Soil"
-      (str (styles) (example-styles))
-      (example-page "Tic-tac-toe" "Lists, immutable updates, and win detection." (view (initial-state))))))
+      (styles)
+      (view (initial-state)))))

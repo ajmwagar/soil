@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Form — Soil</title>
 <style>
+body { margin: 0; }
 :root {
   color-scheme: dark;
   --ink: #e9ecf2;
@@ -96,18 +97,11 @@
 .form-card form { margin-top: 18px; }
 .form-card .btn { justify-self: start; margin-top: 4px; }
 .error { margin: 0 0 14px; padding: 10px 12px; border: 1px solid rgba(255,120,120,.35); border-radius: 10px; color: var(--danger); background: rgba(255,120,120,.07); }
-.example-shell { min-height: 100vh; background: #090b10; color: #eef1f7; font: 15px/1.55 ui-sans-serif, system-ui, sans-serif; }
-.example-bar { position: sticky; top: 0; z-index: 50; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px clamp(18px, 4vw, 40px); border-bottom: 1px solid rgba(255,255,255,.09); background: rgba(9,11,16,.82); backdrop-filter: blur(14px); }
-.example-bar a { color: #c8f169; text-decoration: none; font-size: 12px; font-weight: 700; }
-.example-bar a:hover { color: #eef1f7; }
-.example-title { color: #9aa2b5; font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; }
-.example-note { padding: 10px clamp(18px, 4vw, 40px); border-bottom: 1px solid rgba(255,255,255,.06); color: #6c7488; font-size: 12.5px; }
-.example-body .app { min-height: calc(100vh - 92px); }
 
 </style>
 </head>
 <body>
-<div class="example-shell"><header class="example-bar"><a href="/">← Soil</a><span class="example-title">Form</span><a href="https://github.com/mycelium-linux/soil">GitHub</a></header><div class="example-note">Named inputs, validation, and a success state.</div><main class="example-body"><div class="app"><header class="topbar"><div class="brand">SOIL<span class="brand-sub">form</span></div><div class="pill">draft</div></header><main class="stage"><section class="card form-card"><p class="eyebrow">FORM</p><h2 class="title">Join the soil</h2><p class="hint">The inputs are plain HTML. The values arrive in Lisp as an action payload.</p><form class="stack" data-op="submit"><label class="field"><span class="field-label">Name</span><input class="input" name="name" placeholder="Ada Lovelace" autocomplete="off"></label><label class="field"><span class="field-label">Email</span><input class="input" name="email" placeholder="ada@example.com" autocomplete="off"></label><button class="btn primary" type="submit">Submit</button></form></section></main></div></main></div>
+<div class="app"><header class="topbar"><div class="brand">SOIL<span class="brand-sub">form</span></div><div class="pill">draft</div></header><main class="stage"><section class="card form-card"><p class="eyebrow">FORM</p><h2 class="title">Join the soil</h2><p class="hint">The inputs are plain HTML. The values arrive in Lisp as an action payload.</p><form class="stack" data-op="submit"><label class="field"><span class="field-label">Name</span><input class="input" name="name" placeholder="Ada Lovelace" autocomplete="off"></label><label class="field"><span class="field-label">Email</span><input class="input" name="email" placeholder="ada@example.com" autocomplete="off"></label><button class="btn primary" type="submit">Submit</button></form></section></main></div>
 </body>
 </html>
 

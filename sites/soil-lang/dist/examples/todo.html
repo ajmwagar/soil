@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TODO — Soil</title>
 <style>
+body { margin: 0; }
 :root {
   color-scheme: dark;
   --ink: #e9ecf2;
@@ -115,18 +116,11 @@
 .icon-btn.danger:hover { color: var(--danger); }
 .todo-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; }
 .empty { margin: 18px 0; padding: 28px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 12px; }
-.example-shell { min-height: 100vh; background: #090b10; color: #eef1f7; font: 15px/1.55 ui-sans-serif, system-ui, sans-serif; }
-.example-bar { position: sticky; top: 0; z-index: 50; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px clamp(18px, 4vw, 40px); border-bottom: 1px solid rgba(255,255,255,.09); background: rgba(9,11,16,.82); backdrop-filter: blur(14px); }
-.example-bar a { color: #c8f169; text-decoration: none; font-size: 12px; font-weight: 700; }
-.example-bar a:hover { color: #eef1f7; }
-.example-title { color: #9aa2b5; font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; }
-.example-note { padding: 10px clamp(18px, 4vw, 40px); border-bottom: 1px solid rgba(255,255,255,.06); color: #6c7488; font-size: 12.5px; }
-.example-body .app { min-height: calc(100vh - 92px); }
 
 </style>
 </head>
 <body>
-<div class="example-shell"><header class="example-bar"><a href="/">← Soil</a><span class="example-title">TODO</span><a href="https://github.com/mycelium-linux/soil">GitHub</a></header><div class="example-note">Forms, keyed rows, and JSON action payloads.</div><main class="example-body"><div class="app"><header class="topbar"><div class="brand">SOIL<span class="brand-sub">todo</span></div><div class="pill">2 left</div></header><main class="stage"><section class="card todo-card"><p class="eyebrow">TODO</p><form class="row add-row" data-op="add"><input class="input" name="text" placeholder="What needs doing?" autocomplete="off"><button class="btn primary" type="submit">Add</button></form><ul class="todo-list"><li class="todo-item" data-key="1"><button class="toggle" data-op="toggle" data-id="1" title="Mark done">○</button><span class="todo-text">Read the Soil roadmap</span><button class="icon-btn danger" data-op="delete" data-id="1" title="Delete">×</button></li><li class="todo-item" data-key="2"><button class="toggle done" data-op="toggle" data-id="2" title="Mark active">✓</button><span class="todo-text done">Build the TODO app</span><button class="icon-btn danger" data-op="delete" data-id="2" title="Delete">×</button></li><li class="todo-item" data-key="3"><button class="toggle" data-op="toggle" data-id="3" title="Mark done">○</button><span class="todo-text">Make every example live-editable</span><button class="icon-btn danger" data-op="delete" data-id="3" title="Delete">×</button></li></ul><footer class="todo-footer"><span class="muted">2 remaining · 1 done</span><button class="btn ghost" data-op="clear">Clear completed</button></footer></section></main></div></main></div>
+<div class="app"><header class="topbar"><div class="brand">SOIL<span class="brand-sub">todo</span></div><div class="pill">2 left</div></header><main class="stage"><section class="card todo-card"><p class="eyebrow">TODO</p><form class="row add-row" data-op="add"><input class="input" name="text" placeholder="What needs doing?" autocomplete="off"><button class="btn primary" type="submit">Add</button></form><ul class="todo-list"><li class="todo-item" data-key="1"><button class="toggle" data-op="toggle" data-id="1" title="Mark done">○</button><span class="todo-text">Read the Soil roadmap</span><button class="icon-btn danger" data-op="delete" data-id="1" title="Delete">×</button></li><li class="todo-item" data-key="2"><button class="toggle done" data-op="toggle" data-id="2" title="Mark active">✓</button><span class="todo-text done">Build the TODO app</span><button class="icon-btn danger" data-op="delete" data-id="2" title="Delete">×</button></li><li class="todo-item" data-key="3"><button class="toggle" data-op="toggle" data-id="3" title="Mark done">○</button><span class="todo-text">Make every example live-editable</span><button class="icon-btn danger" data-op="delete" data-id="3" title="Delete">×</button></li></ul><footer class="todo-footer"><span class="muted">2 remaining · 1 done</span><button class="btn ghost" data-op="clear">Clear completed</button></footer></section></main></div>
 </body>
 </html>
 

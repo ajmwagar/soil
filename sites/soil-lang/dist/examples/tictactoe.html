@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tic-tac-toe — Soil</title>
 <style>
+body { margin: 0; }
 :root {
   color-scheme: dark;
   --ink: #e9ecf2;
@@ -103,18 +104,11 @@
 .cell:disabled { cursor: default; }
 .cell.X { color: var(--accent); }
 .cell.O { color: #8db4ff; }
-.example-shell { min-height: 100vh; background: #090b10; color: #eef1f7; font: 15px/1.55 ui-sans-serif, system-ui, sans-serif; }
-.example-bar { position: sticky; top: 0; z-index: 50; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px clamp(18px, 4vw, 40px); border-bottom: 1px solid rgba(255,255,255,.09); background: rgba(9,11,16,.82); backdrop-filter: blur(14px); }
-.example-bar a { color: #c8f169; text-decoration: none; font-size: 12px; font-weight: 700; }
-.example-bar a:hover { color: #eef1f7; }
-.example-title { color: #9aa2b5; font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; }
-.example-note { padding: 10px clamp(18px, 4vw, 40px); border-bottom: 1px solid rgba(255,255,255,.06); color: #6c7488; font-size: 12.5px; }
-.example-body .app { min-height: calc(100vh - 92px); }
 
 </style>
 </head>
 <body>
-<div class="example-shell"><header class="example-bar"><a href="/">← Soil</a><span class="example-title">Tic-tac-toe</span><a href="https://github.com/mycelium-linux/soil">GitHub</a></header><div class="example-note">Lists, immutable updates, and win detection.</div><main class="example-body"><div class="app"><header class="topbar"><div class="brand">SOIL<span class="brand-sub">tic-tac-toe</span></div><div class="pill">in progress</div></header><main class="stage"><section class="card ttt-card"><p class="eyebrow">TIC-TAC-TOE</p><p class="status">X to move</p><div class="board"><button class="cell" data-key="0" data-op="play" data-index="0"></button><button class="cell" data-key="1" data-op="play" data-index="1"></button><button class="cell" data-key="2" data-op="play" data-index="2"></button><button class="cell" data-key="3" data-op="play" data-index="3"></button><button class="cell" data-key="4" data-op="play" data-index="4"></button><button class="cell" data-key="5" data-op="play" data-index="5"></button><button class="cell" data-key="6" data-op="play" data-index="6"></button><button class="cell" data-key="7" data-op="play" data-index="7"></button><button class="cell" data-key="8" data-op="play" data-index="8"></button></div><div class="row"><button class="btn ghost" data-op="reset">New game</button></div></section></main></div></main></div>
+<div class="app"><header class="topbar"><div class="brand">SOIL<span class="brand-sub">tic-tac-toe</span></div><div class="pill">in progress</div></header><main class="stage"><section class="card ttt-card"><p class="eyebrow">TIC-TAC-TOE</p><p class="status">X to move</p><div class="board"><button class="cell" data-key="0" data-op="play" data-index="0"></button><button class="cell" data-key="1" data-op="play" data-index="1"></button><button class="cell" data-key="2" data-op="play" data-index="2"></button><button class="cell" data-key="3" data-op="play" data-index="3"></button><button class="cell" data-key="4" data-op="play" data-index="4"></button><button class="cell" data-key="5" data-op="play" data-index="5"></button><button class="cell" data-key="6" data-op="play" data-index="6"></button><button class="cell" data-key="7" data-op="play" data-index="7"></button><button class="cell" data-key="8" data-op="play" data-index="8"></button></div><div class="row"><button class="btn ghost" data-op="reset">New game</button></div></section></main></div>
 </body>
 </html>
 
