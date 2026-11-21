@@ -6,7 +6,7 @@ backends. This is the language side of Soil; the host and capabilities live in
 
 ## What is here
 
-- `sexp.rs` — S-expression reader (`'x`, `nil`, comments).
+- `sexp.rs` — S-expression reader (`'x`, `nil`, comments). `parse_document` retains top-level spans, comments, and stable form ids; nested trivia is the next slice.
 - `eval.rs` — closed interpreter with `host-call`.
 - `records_host.rs` / `time_host.rs` — generic in-process Soil hosts.
 - `core.rs` / `wasm.rs` — numeric core and Wasm backend.
@@ -60,6 +60,7 @@ cargo run -p soil-lang --bin soil-c -- \
 cargo test -p soil-lang
 ```
 
+`tests/document.rs` pins top-level spans/comments/ids and canonical round-trip.
 `tests/boot.rs` runs the Soil bootstrap evaluator on arithmetic, `if`, `cond`,
 `let`, lambdas, environments, and lists.
 `tests/jmc.rs` runs McCarthy's `eval.` in the interpreter.

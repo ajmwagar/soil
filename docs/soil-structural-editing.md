@@ -65,8 +65,9 @@ the external decoder.
 
 ## Parsing and canonicalization
 
-- Parsed forms carry spans and comments. Auto-inserted closers have synthetic
-  or empty spans and are marked generated.
+- Parsed top-level forms carry spans and comments today. Auto-inserted closers
+  have synthetic or empty spans and are marked generated. Nested trivia is the
+  next reader slice.
 - `print(canonical)` emits balanced text from the tree; `print(original)`
   preserves source spans and comments.
 - After `End`, the tree is canonicalized once. No repair pass is needed for

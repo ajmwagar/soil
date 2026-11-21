@@ -104,6 +104,122 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Byte range in the source that produced a form or comment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+/// A comment retained by the document reader.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Comment {
+    pub text: String,
+    pub span: Span,
+}
+
+/// One top-level form with its source identity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Form {
+    pub value: Value,
+    pub span: Span,
+    pub comments: Vec<Comment>,
+    pub id: String,
+}
+
+/// A source document that keeps top-level spans and comments.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Document {
+    pub source: String,
+    pub forms: Vec<Form>,
+    pub trailing_comments: Vec<Comment>,
+}
+
+impl Document {
+    pub fn form_at(&self, offset: usize) -> Option<&Form> {
+        self.forms
+            .iter()
+            .find(|form| form.span.start <= offset && offset < form.span.end)
+    }
+
+    pub fn form_by_id(&self, id: &str) -> Option<&Form> {
+        self.forms.iter().find(|form| form.id == id)
+    }
+
+    /// Byte-for-byte original source.
+    pub fn print_original(&self) -> &str {
+        &self.source
+    }
+}
+
+/// Read top-level forms while retaining their spans and leading comments.
+///
+/// Nested comments are still consumed by the value reader; this is the first
+/// lossless slice. The canonical printer is lossless for top-level comments.
+pub fn parse_document(input: &str) -> Result<Document, ParseError> {
+    let mut parser = Parser {
+        bytes: input.as_bytes(),
+        pos: 0,
+    };
+    let mut forms = Vec::new();
+    let mut pending = Vec::new();
+
+    loop {
+        parser.skip_ws_collect(&mut pending);
+        if parser.pos >= parser.bytes.len() {
+            break;
+        }
+        let start = parser.pos;
+        let value = parser.parse_value()?;
+        let end = parser.pos;
+        forms.push(Form {
+            id: form_id(&value, forms.len()),
+            value,
+            span: Span { start, end },
+            comments: std::mem::take(&mut pending),
+        });
+    }
+
+    Ok(Document {
+        source: input.to_string(),
+        forms,
+        trailing_comments: pending,
+    })
+}
+
+/// Canonical top-level printer. Comments are emitted before their form.
+pub fn print_document(document: &Document) -> String {
+    let mut output = String::new();
+    for form in &document.forms {
+        for comment in &form.comments {
+            output.push_str(&comment.text);
+            output.push('\n');
+        }
+        output.push_str(&form.value.to_string());
+        output.push('\n');
+    }
+    for comment in &document.trailing_comments {
+        output.push_str(&comment.text);
+        output.push('\n');
+    }
+    output
+}
+
+fn form_id(value: &Value, index: usize) -> String {
+    let Some(items) = value.as_list() else {
+        return format!("form:{index}");
+    };
+    let head = items.first().and_then(Value::as_symbol);
+    let name = items.get(1).and_then(Value::as_symbol);
+    match (head, name) {
+        (Some("defun" | "def" | "defmacro" | "defspore"), Some(name)) => {
+            format!("{}:{name}", head.unwrap())
+        }
+        (Some(head), _) => format!("{head}:{index}"),
+        _ => format!("form:{index}"),
+    }
+}
+
 pub fn parse_all(input: &str) -> Result<Vec<Value>, ParseError> {
     let mut parser = Parser {
         bytes: input.as_bytes(),
@@ -136,14 +252,28 @@ impl<'a> Parser<'a> {
     }
 
     fn skip_ws(&mut self) {
+        self.skip_ws_collect(&mut Vec::new());
+    }
+
+    fn skip_ws_collect(&mut self, comments: &mut Vec<Comment>) {
         while let Some(&byte) = self.bytes.get(self.pos) {
             if byte == b';' {
+                let start = self.pos;
                 while let Some(&comment_byte) = self.bytes.get(self.pos) {
                     self.pos += 1;
                     if comment_byte == b'\n' {
                         break;
                     }
                 }
+                comments.push(Comment {
+                    text: String::from_utf8_lossy(&self.bytes[start..self.pos])
+                        .trim_end()
+                        .to_string(),
+                    span: Span {
+                        start,
+                        end: self.pos,
+                    },
+                });
             } else if byte.is_ascii_whitespace() {
                 self.pos += 1;
             } else {
