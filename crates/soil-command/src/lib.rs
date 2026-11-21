@@ -642,9 +642,9 @@ pub struct RunOutput {
 pub struct CommandRunner {
     engine: Engine,
     records: Option<RecordsBinding>,
-    /// The bus a command may publish on. Only linked for a command that
-    /// declares `soil:unibus`; without a bus the import fails at start-up
-    /// rather than answering `unavailable` on the first publish.
+    /// The bus a command may publish on. Linked (possibly as an unavailable
+    /// bus) for a command that declares `soil:unibus`, so a missing hub costs
+    /// a publish, not the command run.
     bus: Option<Arc<dyn ::soil::Bus>>,
     components: Mutex<BTreeMap<PathBuf, Arc<wasmtime::component::Component>>>,
 }
@@ -701,9 +701,15 @@ impl CommandRunner {
         // command that lists `soil:unibus` in `requires` gets the interface,
         // and one that does not cannot reach the bus even if the host has one.
         let bus = if entry.requires.iter().any(|cap| cap == "soil:unibus") {
-            self.bus
-                .clone()
-                .map(|bus| ::soil::unibus::BusHost::new(Some(bus)))
+            // A declared capability is always linked. Without a configured hub
+            // the host answers `unavailable`; a command that publishes after
+            // its write still succeeds and can retry later.
+            Some(
+                self.bus
+                    .clone()
+                    .map(|bus| ::soil::unibus::BusHost::new(Some(bus)))
+                    .unwrap_or_else(|| ::soil::unibus::BusHost::new(None)),
+            )
         } else {
             None
         };
