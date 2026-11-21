@@ -113,7 +113,8 @@
             (list (txt (issue-count issues))))))
       (if (nil? issues)
           (el "p" (list (attr :class "lane-empty")) (list (txt empty-text)))
-          (map 'issue-card issues)))))
+          (el "div" (list (attr :class "lane-body"))
+            (map 'issue-card issues))))))
 
 (defun stat (label value tone)
   (el "div" (list (attr :class (str "stat " tone)))
