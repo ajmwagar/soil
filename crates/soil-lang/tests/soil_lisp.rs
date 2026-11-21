@@ -34,6 +34,7 @@ fn runtime(root: &Path) -> Runtime {
         "stdlib/highlight.soil",
         "stdlib/doc.soil",
         "stdlib/cli.soil",
+        "bindings/wasi-cli.generated.soil",
         "bindings/soil-time.soil",
         "bindings/soil-records.soil",
         "boot/boot.soil",

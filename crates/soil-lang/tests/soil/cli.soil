@@ -76,3 +76,6 @@
       (string-contains? man ".TH \"marbles\" \"1\"")
       (string-contains? man ".SH NAME")
       (string-contains? man "\\- a small issue tracker"))))
+
+(defun test/cli-argv-empty ()
+  (= (length (argv)) 0))

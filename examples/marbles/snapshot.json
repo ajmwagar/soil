@@ -1,4 +1,5 @@
 {
+  "schema": "marbles.snapshot/1",
   "burndown": {
     "days": 30,
     "scope": 54,
@@ -436,5 +437,90 @@
         "ack": "no delivery expected"
       }
     }
-  ]
+  ],
+  "scope": {
+    "kind": "project",
+    "slug": "marbles",
+    "title": "marbles"
+  },
+  "goal_show": {
+    "tree": [
+      "marbles-zqc7 [open] Customer work product lives inside the sandbox (goal, p2)",
+      "  marbles-kj4q [open] Computer: durable shared home and lifecycle (epic, p1)",
+      "    marbles-8x2m [in_progress] Add a read-only Marbles board rendered by Soil (task, p1)",
+      "    marbles-2r7c [review] Define the snapshot contract for host-provided task data (task, p2)",
+      "  marbles-kjn5 [open] Sandbox-native Marbles: work graph inside the computer (epic, p1)"
+    ]
+  },
+  "gantt": {
+    "plan": "marbles",
+    "started_at": 1795268234,
+    "nodes": [
+      {
+        "id": "marbles-8x2m",
+        "key": "marbles-8x2m",
+        "title": "Add a read-only Marbles board rendered by Soil",
+        "status": "in_progress",
+        "estimate": 120,
+        "estimate_source": "metadata",
+        "start_min": 0,
+        "finish_min": 120,
+        "slack_min": 0,
+        "critical": true,
+        "start_at": 1795268234,
+        "finish_at": 1795275434
+      },
+      {
+        "id": "marbles-2r7c",
+        "key": "marbles-2r7c",
+        "title": "Define the snapshot contract for host-provided task data",
+        "status": "review",
+        "estimate": 90,
+        "estimate_source": "metadata",
+        "start_min": 60,
+        "finish_min": 150,
+        "slack_min": 30,
+        "critical": false,
+        "start_at": 1795271834,
+        "finish_at": 1795277234
+      },
+      {
+        "id": "marbles-5c1a",
+        "key": "marbles-5c1a",
+        "title": "Port the claim race into the Soil CLI",
+        "status": "open",
+        "estimate": 180,
+        "estimate_source": "default",
+        "start_min": 120,
+        "finish_min": 300,
+        "slack_min": 0,
+        "critical": true,
+        "start_at": 1795275434,
+        "finish_at": 1795286234
+      },
+      {
+        "id": "marbles-9k3p",
+        "key": "marbles-9k3p",
+        "title": "Close with merge evidence, not a status write",
+        "status": "open",
+        "estimate": 60,
+        "estimate_source": "default",
+        "start_min": 300,
+        "finish_min": 360,
+        "slack_min": 0,
+        "critical": true,
+        "start_at": 1795286234,
+        "finish_at": 1795289834
+      }
+    ],
+    "critical_path": [
+      "marbles-8x2m",
+      "marbles-5c1a",
+      "marbles-9k3p"
+    ],
+    "critical_path_minutes": 360,
+    "total_minutes": 360,
+    "current_concurrency": 1,
+    "peak_concurrency": 2
+  }
 }

@@ -14,6 +14,7 @@ fn main() -> Result<()> {
     let mut workspace_root: Option<PathBuf> = None;
     let mut book = "soil".to_string();
     let mut repl = false;
+    let mut program_args: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
 
     while let Some(arg) = args.next() {
@@ -49,10 +50,14 @@ fn main() -> Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("--book needs a name"))?;
             }
             "--repl" => repl = true,
+            "--" => {
+                program_args.extend(args.by_ref());
+                break;
+            }
             "-h" | "--help" => {
                 println!(
                     "usage: soil-lang [--call NAME | --no-call] [--repl] [--prelude FILE] \
-                     [--records-root DIR] [--book NAME] [--workspace-root DIR] FILE..."
+                     [--records-root DIR] [--book NAME] [--workspace-root DIR] FILE... [-- ARG...]"
                 );
                 return Ok(());
             }
@@ -63,7 +68,7 @@ fn main() -> Result<()> {
     if files.is_empty() && prelude.is_none() && !repl {
         bail!(
             "usage: soil-lang [--call NAME | --no-call] [--repl] [--prelude FILE] \
-             [--records-root DIR] [--book NAME] [--workspace-root DIR] FILE..."
+             [--records-root DIR] [--book NAME] [--workspace-root DIR] FILE... [-- ARG...]"
         );
     }
 
@@ -80,6 +85,7 @@ fn main() -> Result<()> {
         ])),
     };
     let mut runtime = Runtime::new(host);
+    runtime.set_args(program_args);
 
     if let Some(prelude) = prelude {
         runtime.load_file(prelude)?;

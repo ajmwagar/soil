@@ -24,6 +24,7 @@ struct Function {
 pub struct Runtime {
     functions: HashMap<String, Function>,
     host: Box<dyn Host>,
+    args: Vec<String>,
 }
 
 pub trait Host {
@@ -74,7 +75,14 @@ impl Runtime {
         Self {
             functions: HashMap::new(),
             host,
+            args: Vec::new(),
         }
+    }
+
+    /// Arguments the host handed this program, excluding the interpreter's own
+    /// flags and source files. The `argv` form exposes them to Soil.
+    pub fn set_args(&mut self, args: Vec<String>) {
+        self.args = args;
     }
 
     pub fn has_function(&self, name: &str) -> bool {
@@ -205,6 +213,9 @@ impl Runtime {
                     "begin" | "do" => self.eval_body(&items[1..], env),
                     "host-call" => self.eval_host_call(items, env),
                     "list" => Ok(Value::List(self.eval_args(&items[1..], env)?)),
+                    "argv" => Ok(Value::List(
+                        self.args.iter().cloned().map(Value::String).collect(),
+                    )),
                     "field" | "get" => {
                         let record = self.eval(require(items, 1, "field")?, env)?;
                         let name = self.eval(require(items, 2, "field")?, env)?;

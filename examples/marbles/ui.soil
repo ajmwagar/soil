@@ -122,35 +122,76 @@
       (el "span" (list (attr :class "stat-value")) (list (txt value)))
       (el "span" (list (attr :class "stat-label")) (list (txt label))))))
 
+(defun scope (snapshot)
+  (field snapshot :scope))
+
+(defun scope-label (snapshot)
+  (let ((scope (scope snapshot)))
+    (if (nil? scope)
+        "store"
+        (let ((kind (field scope :kind))
+              (slug (field scope :slug)))
+          (if (nil? slug) kind (str kind " " slug))))))
+
 (defun portfolio-progress (snapshot)
-  (field (field (field snapshot :portfolio) :totals) :progress))
+  (let ((project (selected-project snapshot)))
+    (if (nil? project)
+        (field (field (field snapshot :portfolio) :totals) :progress)
+        (field project :progress))))
+
+(defun portfolio-ready (snapshot)
+  (let ((project (selected-project snapshot)))
+    (if (nil? project)
+        (field (field (field snapshot :portfolio) :totals) :ready)
+        (field project :ready))))
+
+(defun portfolio-stale (snapshot)
+  (let ((project (selected-project snapshot)))
+    (if (nil? project)
+        (field (field (field snapshot :portfolio) :totals) :stale)
+        (field project :stale))))
+
+(defun scope-pill (snapshot)
+  (el "div" (list (attr :class "scope-pill"))
+    (list
+      (el "span" (list (attr :class "scope-kind")) (list (txt (scope-label snapshot))))
+      (el "span" (list (attr :class "scope-mode")) (list (txt "SSR · no JS"))))))
+
+(defun header-brand (snapshot)
+  (el "div" (list (attr :class "brand-row"))
+    (list
+      (el "div" nil
+        (list
+          (el "p" (list (attr :class "kicker")) (list (txt "MARBLES")))
+          (el "h1" nil (list (txt "The work graph, on one wall.")))
+          (el "p" (list (attr :class "lede"))
+            (list (txt "A read-only projection of the Marbles reports: burndown, portfolio, goals, and the ready queue. Rendered by Soil on the host; there is no client application.")))))
+      (scope-pill snapshot))))
+
+(defun header-nav ()
+  (el "nav" (list (attr :class "jump"))
+    (list
+      (el "a" (list (attr :href "#burndown")) (list (txt "Burndown")))
+      (el "a" (list (attr :href "#portfolio")) (list (txt "Portfolio")))
+      (el "a" (list (attr :href "#queue")) (list (txt "Queue"))))))
+
+(defun header-stats (progress)
+  (el "div" (list (attr :class "stats"))
+    (list
+      (stat "issues" (field progress :total) "total")
+      (stat "open" (field progress :open) "ready")
+      (stat "in flight" (field progress :in_progress) "active")
+      (stat "review" (field progress :review) "review")
+      (stat "blocked" (field progress :blocked) "blocked")
+      (stat "closed" (field progress :closed) "closed"))))
 
 (defun header (snapshot issues)
   (let ((progress (portfolio-progress snapshot)))
     (el "header" (list (attr :class "marbles-head"))
       (list
-        (el "div" (list (attr :class "brand-row"))
-          (list
-            (el "div" nil
-              (list
-                (el "p" (list (attr :class "kicker")) (list (txt "MARBLES")))
-                (el "h1" nil (list (txt "The work graph, on one wall.")))
-                (el "p" (list (attr :class "lede"))
-                  (list (txt "A read-only projection of the Marbles reports: burndown, portfolio, goals, and the ready queue. Rendered by Soil on the host; there is no client application.")))))
-            (el "div" (list (attr :class "pill")) (list (txt "SSR · no JS")))))
-        (el "nav" (list (attr :class "jump"))
-          (list
-            (el "a" (list (attr :href "#burndown")) (list (txt "Burndown")))
-            (el "a" (list (attr :href "#portfolio")) (list (txt "Portfolio")))
-            (el "a" (list (attr :href "#queue")) (list (txt "Queue")))))
-        (el "div" (list (attr :class "stats"))
-          (list
-            (stat "issues" (field progress :total) "total")
-            (stat "open" (field progress :open) "ready")
-            (stat "in flight" (field progress :in_progress) "active")
-            (stat "review" (field progress :review) "review")
-            (stat "blocked" (field progress :blocked) "blocked")
-            (stat "closed" (field progress :closed) "closed")))))))
+        (header-brand snapshot)
+        (header-nav)
+        (header-stats progress)))))
 
 (defun fmt-not-dot? (character)
   (not (= character ".")))
@@ -284,6 +325,73 @@
                 (fact "burn / day" (fmt-2 (field burndown :burn_per_day)) "active")
                 (fact "projected days" (fmt-2 (field burndown :projected_days_to_zero)) "review")))))))))
 
+(defun gantt-total (gantt)
+  (let ((total (field gantt :total_minutes)))
+    (if (or (nil? total) (<= total 0)) 1 total)))
+
+(defun gantt-node-total (node gantt)
+  (gantt-total gantt))
+
+(defun gantt-left (node total)
+  (/ (* (field node :start_min) 100) total))
+
+(defun gantt-width (node total)
+  (let ((width (- (field node :finish_min) (field node :start_min))))
+    (if (<= width 0) 2 (/ (* width 100) total))))
+
+(defun gantt-row (node gantt)
+  (let ((total (gantt-total gantt)))
+    (el "div" (list (attr :class (if (field node :critical) "gantt-row critical" "gantt-row")))
+      (list
+        (el "div" (list (attr :class "gantt-label"))
+          (list
+            (el "span" (list (attr :class "gantt-key")) (list (txt (field node :key))))
+            (el "span" (list (attr :class "gantt-title")) (list (txt (field node :title))))))
+        (el "div" (list (attr :class "gantt-track"))
+          (list
+            (el "span"
+              (list
+                (attr :style
+                  (str "left:" (gantt-left node total) "%;width:"
+                       (gantt-width node total) "%")))
+              nil)))
+        (el "span" (list (attr :class "gantt-est"))
+          (list (txt (str (field node :estimate) "m"))))))))
+
+(defun gantt-rows (nodes gantt)
+  (map-with 'gantt-row gantt nodes))
+
+(defun gantt-section (gantt)
+  (el "section" (list (attr :class "section") (attr :id "plan"))
+    (list
+      (el "div" (list (attr :class "section-head"))
+        (list
+          (el "div" nil
+            (list
+              (el "p" (list (attr :class "kicker")) (list (txt "PLAN")))
+              (el "h2" nil (list (txt "The scheduled path through the work.")))
+              (el "p" (list (attr :class "section-sub"))
+                (list (txt "Marbles plan gantt: estimates, starts, finishes, slack, and the critical path.")))))
+          (el "span" (list (attr :class "pill"))
+            (list (txt (str (field gantt :total_minutes) " min"))))))
+      (el "div" (list (attr :class "gantt-meta"))
+        (list
+          (el "span" nil (list (txt (str "plan " (field gantt :plan)))))
+          (el "span" nil (list (txt (str "critical " (field gantt :critical_path_minutes) " min"))))
+          (el "span" nil (list (txt (str "peak " (field gantt :peak_concurrency) " concurrent"))))
+          (el "span" nil (list (txt (str "running " (field gantt :current_concurrency)))))))
+      (el "div" (list (attr :class "gantt"))
+        (list
+          (el "div" (list (attr :class "gantt-scale"))
+            (list
+              (el "span" nil (list (txt "0")))
+              (el "span" nil (list (txt (str (field gantt :total_minutes) "m"))))))
+          (gantt-rows (field gantt :nodes) gantt)
+          (el "p" (list (attr :class "gantt-path"))
+            (list
+              (txt (str "critical path: "
+                        (string-join (field gantt :critical_path) " -> "))))))))))
+
 (defun count-noun (count singular plural)
   (str count " " (if (= count 1) singular plural)))
 
@@ -332,41 +440,74 @@
         (map 'project-row (field (first folders) :projects))
         (folder-project-rows (rest folders)))))
 
-(defun portfolio-head (totals)
-  (el "div" (list (attr :class "section-head"))
-    (list
-      (el "div" nil
-        (list
-          (el "p" (list (attr :class "kicker")) (list (txt "PORTFOLIO")))
-          (el "h2" nil (list (txt "Folder -> project -> goal rollup.")))
-          (el "p" (list (attr :class "section-sub"))
-            (list (txt "Progress, ready work, and staleness across the projects in this store.")))))
-      (el "span" (list (attr :class "pill"))
-        (list (txt (count-noun (field totals :projects) "project" "projects")))))))
+(defun project-list (portfolio)
+  (append
+    (field portfolio :unfiled)
+    (folder-projects-list (field portfolio :folders))))
 
-(defun portfolio-total-facts (progress totals)
-  (el "div" (list (attr :class "portfolio-totals"))
-    (list
-      (fact "issues" (field progress :total) "total")
-      (fact "done" (field progress :closed) "closed")
-      (fact "ready" (field totals :ready) "ready")
-      (fact "stale" (field totals :stale) "blocked"))))
+(defun folder-projects-list (folders)
+  (if (nil? folders)
+      nil
+      (append
+        (field (first folders) :projects)
+        (folder-projects-list (rest folders)))))
 
-(defun portfolio-projects (portfolio)
+(defun project-by-slug (slug projects)
+  (cond
+    ((nil? projects) nil)
+    ((= (field (first projects) :slug) slug) (first projects))
+    (else (project-by-slug slug (rest projects)))))
+
+(defun selected-project (snapshot)
+  (let ((scope (scope snapshot)))
+    (let ((slug (field scope :slug)))
+      (if (nil? slug)
+          nil
+          (project-by-slug slug (project-list (field snapshot :portfolio)))))))
+
+(defun portfolio-visible-projects (snapshot)
+  (let ((project (selected-project snapshot)))
+    (if (nil? project)
+        (project-list (field snapshot :portfolio))
+        (list project))))
+
+(defun portfolio-head (snapshot)
+  (let ((project (selected-project snapshot)))
+    (el "div" (list (attr :class "section-head"))
+      (list
+        (el "div" nil
+          (list
+            (el "p" (list (attr :class "kicker")) (list (txt "PORTFOLIO")))
+            (el "h2" nil (list (txt "Folder -> project -> goal rollup.")))
+            (el "p" (list (attr :class "section-sub"))
+              (list (txt "Progress, ready work, and staleness across the projects in this store.")))))
+        (el "span" (list (attr :class "pill"))
+          (list
+            (txt
+              (if (nil? project)
+                  (count-noun (field (field (field snapshot :portfolio) :totals) :projects)
+                    "project" "projects")
+                  (str "project " (field project :slug))))))))))
+
+(defun portfolio-total-facts (snapshot)
+  (let ((progress (portfolio-progress snapshot)))
+    (el "div" (list (attr :class "portfolio-totals"))
+      (list
+        (fact "issues" (field progress :total) "total")
+        (fact "done" (field progress :closed) "closed")
+        (fact "ready" (portfolio-ready snapshot) "ready")
+        (fact "stale" (portfolio-stale snapshot) "blocked")))))
+
+(defun portfolio-projects (snapshot)
   (el "div" (list (attr :class "projects"))
-    (append
-      (map 'project-row (field portfolio :unfiled))
-      (folder-project-rows (field portfolio :folders)))))
+    (map 'project-row (portfolio-visible-projects snapshot))))
 
 (defun portfolio-section (snapshot)
-  (let ((portfolio (field snapshot :portfolio)))
-    (let ((totals (field portfolio :totals)))
-      (let ((progress (field totals :progress)))
-        (el "section" (list (attr :class "section") (attr :id "portfolio"))
-          (list
-            (portfolio-head totals)
-            (portfolio-total-facts progress totals)
-            (portfolio-projects portfolio)))))))
+  (el "section" (list (attr :class "section") (attr :id "portfolio"))
+    (list
+      (portfolio-head snapshot)
+      (portfolio-total-facts snapshot)
+      (portfolio-projects snapshot))))
 
 (defun goal-card (goal)
   (let ((progress (field goal :progress)))
@@ -387,7 +528,14 @@
             (el "span" nil (list (txt (str (field progress :open) " open"))))
             (el "span" nil (list (txt (str (field progress :total) " total"))))))))))
 
-(defun goals-section (goals)
+(defun goal-tree (goal-show)
+  (let ((lines (field goal-show :tree)))
+    (if (nil? lines)
+        nil
+        (el "pre" (list (attr :class "goal-tree"))
+          (list (txt (string-join lines "\n")))))))
+
+(defun goals-section (goals goal-show)
   (el "section" (list (attr :class "section") (attr :id "goals"))
     (list
       (el "div" (list (attr :class "section-head"))
@@ -403,7 +551,9 @@
       (if (nil? goals)
           (el "p" (list (attr :class "lane-empty")) (list (txt "No goals in this snapshot.")))
           (el "div" (list (attr :class "goals"))
-            (map 'goal-card goals))))))
+            (append
+              (map 'goal-card goals)
+              (list (goal-tree goal-show))))))))
 
 (defun view (state)
   (let ((issues (field state :issues)))
@@ -416,8 +566,9 @@
         (list
           (header state issues)
           (burndown-section (field state :burndown))
+          (if (nil? (field state :gantt)) nil (gantt-section (field state :gantt)))
           (portfolio-section state)
-          (goals-section (field state :goals))
+          (goals-section (field state :goals) (field state :goal_show))
           (section-queue ready active review blocked closed))))))
 
 (defun rail-card (title body)

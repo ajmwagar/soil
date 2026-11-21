@@ -5,7 +5,8 @@ snapshot assembled from the reports the CLI already emits:
 
 - `marbles burndown --json`
 - `marbles portfolio --json`
-- `marbles goal list --json`
+- `marbles goal list --json` and `marbles goal show <id> --json`
+- `marbles plan gantt <plan> --json` when `MARBLES_PLAN` is set
 - `marbles list --json`
 
 `ui.soil` decides every pixel: burndown chart, portfolio rollup, goal progress,
@@ -25,15 +26,27 @@ Cargo is frozen: the script uses `.bin/soil-lang` or `target/debug/soil-lang`.
 The fixture in `snapshot.json` is synthetic but uses the real report field
 shapes.
 
-## Refresh from a real store
+## Refresh from the records store
+
+`mb` is the records-backed command, so this path does not use a fixture:
 
 ```sh
-MARBLES_BIN=/path/to/marbles MARBLES_DIR=/path/to/repo ./examples/marbles/refresh.sh
+MARBLES_DIR=/path/to/repo ./examples/marbles/refresh.sh
 ./examples/marbles/build.sh
 ```
 
-`refresh.sh` reads the four reports for `MARBLES_PROJECT` (default `marbles`)
-and rewrites `snapshot.json`.
+`refresh.sh` runs the four reports from `MARBLES_DIR` (default `.`) and writes
+the resolved scope into `snapshot.json`:
+
+- project scope when a `.marbles/project.toml` is found;
+- store scope with `MARBLES_SCOPE=store`.
+
+`mb list`, `mb goal list`, and `mb burndown` are project-scoped by the shim's
+project discovery. `mb portfolio` is store-wide; the UI selects the project
+rollup named by `scope.slug`. Set `MARBLES_PLAN=<name>` to include the plan
+Gantt; without it the plan section is omitted. See
+[`docs/marbles-scope.md`](../../docs/marbles-scope.md) for the long-term
+contract and explicit `--project`/`--folder`/`--goal` flags.
 
 ## Live host
 
@@ -62,7 +75,8 @@ so source edits hot-reload. Actions are intentionally no-ops for now.
   ideal series.
 - **Portfolio** — folder/project/goal rollup with progress bars, ready work,
   and staleness.
-- **Goals** — descendant progress, not the container issue itself.
+- **Goals** — descendant progress plus the `goal show` tree.
+- **Plan** — Gantt rows, estimates, critical path, concurrency.
 - **Queue** — ready/in-flight/review/blocked lanes and recently closed.
 
 The next slice is the write path: `claim`, `review`, and `close` become forms
