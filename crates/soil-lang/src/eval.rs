@@ -236,6 +236,26 @@ impl Runtime {
                             .collect::<Vec<_>>()
                             .join(""),
                     )),
+                    "exit" => {
+                        let code = self.eval(require(items, 1, "exit")?, env)?;
+                        let code = code
+                            .as_f64()
+                            .ok_or_else(|| anyhow!("exit expects an integer"))?
+                            as i32;
+                        std::process::exit(code);
+                    }
+                    "eprintln" => {
+                        let values = self.eval_args(&items[1..], env)?;
+                        eprintln!(
+                            "{}",
+                            values
+                                .iter()
+                                .map(display_text)
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        );
+                        Ok(Value::Nil)
+                    }
                     "println" => {
                         let values = self.eval_args(&items[1..], env)?;
                         println!(
@@ -388,6 +408,30 @@ impl Runtime {
                         };
                         Ok(Value::String(text.replace(from, to)))
                     }
+                    "string-from-bytes" => {
+                        let value = self.eval(require(items, 1, "string-from-bytes")?, env)?;
+                        let Value::List(bytes) = value else {
+                            bail!("string-from-bytes expects a list of bytes");
+                        };
+                        let bytes = bytes
+                            .iter()
+                            .map(|byte| match byte {
+                                Value::Int(byte) if (0..=255).contains(byte) => Ok(*byte as u8),
+                                _ => bail!("string-from-bytes expects bytes in 0..=255"),
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        Ok(Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+                    }
+                    "getenv" => {
+                        let value = self.eval(require(items, 1, "getenv")?, env)?;
+                        let name = value
+                            .as_str()
+                            .ok_or_else(|| anyhow!("getenv expects a string"))?;
+                        Ok(match std::env::var(name) {
+                            Ok(value) => Value::String(value),
+                            Err(_) => Value::Nil,
+                        })
+                    }
                     "string-chars" => {
                         let text = self.eval(require(items, 1, "string-chars")?, env)?;
                         let Some(text) = text.as_str() else {
@@ -433,6 +477,24 @@ impl Runtime {
                         ))
                     }
                     "+" | "-" | "*" | "/" => self.eval_arithmetic(head, &items[1..], env),
+                    "pow" => {
+                        let base = self.eval(require(items, 1, "pow")?, env)?;
+                        let exponent = self.eval(require(items, 2, "pow")?, env)?;
+                        let base = base
+                            .as_f64()
+                            .ok_or_else(|| anyhow!("pow expects numbers"))?;
+                        let exponent = exponent
+                            .as_f64()
+                            .ok_or_else(|| anyhow!("pow expects numbers"))?;
+                        Ok(Value::Float(base.powf(exponent)))
+                    }
+                    "round" => {
+                        let value = self.eval(require(items, 1, "round")?, env)?;
+                        let value = value
+                            .as_f64()
+                            .ok_or_else(|| anyhow!("round expects a number"))?;
+                        Ok(Value::Float(value.round()))
+                    }
                     "=" | ">" | "<" | ">=" | "<=" => self.eval_comparison(head, &items[1..], env),
                     name if self.functions.contains_key(name) => {
                         let function = self.functions.get(name).cloned().unwrap();

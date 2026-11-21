@@ -86,16 +86,23 @@ impl SoilRecordsHost {
         let cursor = cursor.map(|cursor| Self::scoped(collection, &cursor));
         let records = self
             .store
-            .scan_records(&self.book, cursor.as_deref(), 4096)
+            .scan_records(&self.book, cursor.as_deref(), limit.saturating_add(1))
             .map_err(|error| error.to_string())?;
         let prefix = format!("{collection}:");
-        let entries: Vec<_> = records
+        let mut matching = records
             .into_iter()
-            .filter(|record| collection.is_empty() || record.entity_id.starts_with(&prefix))
-            .take(limit)
-            .map(|record| Self::entry_value(collection, record))
-            .collect();
-        Ok(page_value(entries))
+            .filter(|record| collection.is_empty() || record.entity_id.starts_with(&prefix));
+        let mut entries = Vec::with_capacity(limit);
+        for _ in 0..limit {
+            let Some(record) = matching.next() else { break };
+            entries.push(Self::entry_value(collection, record));
+        }
+        // The cursor is exclusive on the host. The next page starts at the
+        // first matching record we did not return.
+        let next = matching
+            .next()
+            .map(|record| Self::unscoped(collection, &record.entity_id));
+        Ok(page_value(entries, next))
     }
 
     fn get_entry(&self, collection: &str, id: &str) -> std::result::Result<Option<Value>, String> {
@@ -249,10 +256,10 @@ fn pair(name: &str, value: Value) -> Value {
     Value::List(vec![Value::Keyword(name.to_string()), value])
 }
 
-fn page_value(entries: Vec<Value>) -> Value {
+fn page_value(entries: Vec<Value>, next: Option<String>) -> Value {
     Value::List(vec![
         pair("entries", Value::List(entries)),
-        pair("next", Value::Nil),
+        pair("next", next.map(Value::String).unwrap_or(Value::Nil)),
     ])
 }
 

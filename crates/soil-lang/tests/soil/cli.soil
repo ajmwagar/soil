@@ -79,3 +79,6 @@
 
 (defun test/cli-argv-empty ()
   (= (length (argv)) 0))
+
+(defun test/bytes-string ()
+  (= (string-from-bytes (list 104 105)) "hi"))
