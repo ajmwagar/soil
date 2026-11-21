@@ -120,6 +120,61 @@ impl LocalRepo {
         Ok(files)
     }
 
+    pub fn status(&self) -> Result<String> {
+        let output = Command::new("git")
+            .args([
+                "-C",
+                self.root.to_str().unwrap(),
+                "status",
+                "--short",
+                "--branch",
+            ])
+            .output()
+            .context("run git status")?;
+        if !output.status.success() {
+            bail!(
+                "git status: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    pub fn diff(&self) -> Result<String> {
+        let output = Command::new("git")
+            .args(["-C", self.root.to_str().unwrap(), "diff", "HEAD"])
+            .output()
+            .context("run git diff")?;
+        if !output.status.success() {
+            bail!(
+                "git diff: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Reset to `target`, but only if `HEAD` matches `expected` when supplied.
+    pub fn reset(&self, target: &str, expected: Option<&str>, hard: bool) -> Result<String> {
+        let head = self.head()?;
+        if let Some(expected) = expected {
+            if head != expected {
+                bail!("CAS mismatch: expected {expected}, HEAD is {head}");
+            }
+        }
+        let mut command = Command::new("git");
+        command.args(["-C", self.root.to_str().unwrap(), "reset"]);
+        if hard {
+            command.arg("--hard");
+        }
+        command.arg(target);
+        let status = command.status().context("run git reset")?;
+        if !status.success() {
+            bail!("git reset failed");
+        }
+        self.head()
+    }
+
     pub fn blob(&self, oid: &str) -> Result<Vec<u8>> {
         let output = Command::new("git")
             .args(["-C", self.root.to_str().unwrap(), "cat-file", "blob", oid])
@@ -269,6 +324,24 @@ mod tests {
         let prefix = format!("local@{}", &head[..12]);
         assert_eq!(local.mount_commit(&mut vfs, &prefix, &head).unwrap(), 1);
         assert!(vfs.file(&format!("{prefix}/hello.txt")).unwrap().is_some());
+    }
+
+    #[test]
+    fn status_diff_and_reset() {
+        let (dir, local) = repo();
+        std::fs::write(dir.path().join("hello.txt"), b"dirty\n").unwrap();
+        let status = local.status().unwrap();
+        assert!(status.contains("hello.txt"));
+        let diff = local.diff().unwrap();
+        assert!(diff.contains("-hello from local git"));
+        assert!(diff.contains("+dirty"));
+        let head = local.head().unwrap();
+        let reset = local.reset("HEAD", Some(&head), true).unwrap();
+        assert_eq!(reset, head);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("hello.txt")).unwrap(),
+            "hello from local git\n"
+        );
     }
 
     #[test]

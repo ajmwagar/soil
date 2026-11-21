@@ -122,6 +122,28 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Show local checkout status.
+    Status {
+        #[arg(long)]
+        repo: PathBuf,
+    },
+    /// Show local checkout diff against HEAD.
+    Diff {
+        #[arg(long)]
+        repo: PathBuf,
+    },
+    /// Reset a local checkout, with optional expected-HEAD CAS.
+    Reset {
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long, default_value = "HEAD")]
+        to: String,
+        #[arg(long)]
+        expected: Option<String>,
+        /// Discard worktree and index changes.
+        #[arg(long)]
+        hard: bool,
+    },
     /// Apply a patch to a local checkout, commit it, and check expected HEAD.
     Apply {
         #[arg(long)]
@@ -297,6 +319,26 @@ async fn main() -> Result<()> {
                 "mounted {count} files under {prefix} (vfs {})",
                 root.display()
             );
+            Ok(())
+        }
+        Command::Status { repo } => {
+            let local = LocalRepo::open(&repo)?;
+            print!("{}", local.status()?);
+            Ok(())
+        }
+        Command::Diff { repo } => {
+            let local = LocalRepo::open(&repo)?;
+            print!("{}", local.diff()?);
+            Ok(())
+        }
+        Command::Reset {
+            repo,
+            to,
+            expected,
+            hard,
+        } => {
+            let local = LocalRepo::open(&repo)?;
+            println!("{}", local.reset(&to, expected.as_deref(), hard)?);
             Ok(())
         }
         Command::Apply {
