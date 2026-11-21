@@ -125,6 +125,41 @@ function applyCss(css) {
   if (styleElement.textContent !== css) styleElement.textContent = css;
 }
 
+const SOIL_TOKENS = /(;[^\n]*)|("(?:\\.|[^"\\])*")|(:[^\s()";]+)|(#t|#f|\bnil\b)|(-?\b\d+(?:\.\d+)?\b)|(\b(?:defun|defmacro|defspore|let|if|cond|and|or|not|quote|lambda|fn|do|begin|match)\b)|([()])|([^\s()";]+)/g;
+
+function escapeHtml(text) {
+  return text.replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[char]);
+}
+
+function highlightSoil(code) {
+  let out = "";
+  let last = 0;
+  let match;
+  while ((match = SOIL_TOKENS.exec(code))) {
+    if (match.index > last) out += escapeHtml(code.slice(last, match.index));
+    const token = match[0];
+    let className = "tok-symbol";
+    if (match[1]) className = "tok-comment";
+    else if (match[2]) className = "tok-string";
+    else if (match[3]) className = "tok-keyword";
+    else if (match[4]) className = "tok-literal";
+    else if (match[5]) className = "tok-number";
+    else if (match[6]) className = "tok-special";
+    else if (match[7]) className = "tok-paren";
+    else if (code.slice(0, match.index).trimEnd().endsWith("(")) className = "tok-fn";
+    out += `<span class="${className}">${escapeHtml(token)}</span>`;
+    last = match.index + token.length;
+  }
+  return out + escapeHtml(code.slice(last));
+}
+
+function highlightCode(scope) {
+  for (const block of scope.querySelectorAll("pre.code")) {
+    const code = block.textContent;
+    if (code) block.innerHTML = highlightSoil(code);
+  }
+}
+
 function sourceUrl() {
   if (!currentName) return "/source";
   return `/source?name=${encodeURIComponent(currentName)}`;
@@ -158,6 +193,7 @@ async function render(action = "") {
   currentState = data.state;
   applyCss(data.css);
   renderTree(data.tree);
+  highlightCode(root);
   setStatus(`state ${JSON.stringify(currentState)}`);
 }
 

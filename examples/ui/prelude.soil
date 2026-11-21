@@ -92,4 +92,13 @@
     "  font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;\n"
     "  white-space: pre-wrap;\n"
     "}\n"
+    ".tok-comment { color: #6c7488; font-style: italic; }\n"
+    ".tok-string { color: #a9d98d; }\n"
+    ".tok-keyword { color: #8db4ff; }\n"
+    ".tok-literal { color: #f5c451; }\n"
+    ".tok-number { color: #f0a6ca; }\n"
+    ".tok-special { color: #c8f169; font-weight: 700; }\n"
+    ".tok-paren { color: #8a93a8; }\n"
+    ".tok-fn { color: #eef1f7; }\n"
+    ".tok-symbol { color: #d7e0f5; }\n"
     "@media (prefers-reduced-motion: reduce) { .btn { transition: none; } }\n"))
