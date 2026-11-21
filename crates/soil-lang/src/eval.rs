@@ -220,6 +220,16 @@ impl Runtime {
                         let form = self.eval(require(items, 1, "eval")?, env)?;
                         self.eval(&form, env)
                     }
+                    "load" => {
+                        let path = self.eval(require(items, 1, "load")?, env)?;
+                        let path = path
+                            .as_str()
+                            .ok_or_else(|| anyhow!("load expects a path"))?;
+                        let source = std::fs::read_to_string(path)
+                            .with_context(|| format!("load {path}"))?;
+                        self.load(&source)?;
+                        Ok(Value::Nil)
+                    }
                     "host-call" => self.eval_host_call(items, env),
                     "list" => Ok(Value::List(self.eval_args(&items[1..], env)?)),
                     "field" | "get" => {
