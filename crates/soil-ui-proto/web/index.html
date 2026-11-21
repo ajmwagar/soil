@@ -88,6 +88,21 @@
     body.bare .shell { grid-template-columns: 1fr; }
     body.bare .editor { display: none; }
     body.bare #root { min-height: 100vh; }
+    .boot {
+      position: fixed; inset: 0; z-index: 100;
+      display: grid; place-content: center; gap: 14px;
+      background: #090b10; color: #8b93a7; text-align: center;
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .06em; transition: opacity .2s ease;
+    }
+    .boot.hidden { opacity: 0; pointer-events: none; }
+    .spinner {
+      width: 30px; height: 30px; margin: 0 auto;
+      border: 2px solid rgba(255,255,255,.12);
+      border-top-color: #c8f169; border-radius: 50%;
+      animation: soil-spin .8s linear infinite;
+    }
+    @keyframes soil-spin { to { transform: rotate(360deg); } }
     @media (max-width: 860px) {
       .shell { grid-template-columns: 1fr; }
       .editor { position: static; height: 55vh; border-left: 0; border-top: 1px solid rgba(255,255,255,.08); }
@@ -95,6 +110,10 @@
   </style>
 </head>
 <body>
+  <div id="boot" class="boot">
+    <div class="spinner"></div>
+    <p id="boot-text">connecting to soil…</p>
+  </div>
   <div class="shell">
     <div id="root"></div>
     <aside class="editor">

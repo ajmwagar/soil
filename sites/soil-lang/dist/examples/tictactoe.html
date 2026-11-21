@@ -91,6 +91,8 @@ body { margin: 0; }
 .tok-symbol { color: #d7e0f5; }
 @media (prefers-reduced-motion: reduce) { .btn { transition: none; } }
 .ttt-card { max-width: 460px; }
+.mode-row { margin-bottom: 14px; }
+.mode-row .btn { padding: 7px 12px; font-size: 12px; }
 .status { margin: 14px 0 18px; font-size: 18px; font-weight: 600; }
 .board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 18px; }
 .cell {
@@ -108,7 +110,7 @@ body { margin: 0; }
 </style>
 </head>
 <body>
-<div class="app"><header class="topbar"><div class="brand">SOIL<span class="brand-sub">tic-tac-toe</span></div><div class="pill">in progress</div></header><main class="stage"><section class="card ttt-card"><p class="eyebrow">TIC-TAC-TOE</p><p class="status">X to move</p><div class="board"><button class="cell" data-key="0" data-op="play" data-index="0"></button><button class="cell" data-key="1" data-op="play" data-index="1"></button><button class="cell" data-key="2" data-op="play" data-index="2"></button><button class="cell" data-key="3" data-op="play" data-index="3"></button><button class="cell" data-key="4" data-op="play" data-index="4"></button><button class="cell" data-key="5" data-op="play" data-index="5"></button><button class="cell" data-key="6" data-op="play" data-index="6"></button><button class="cell" data-key="7" data-op="play" data-index="7"></button><button class="cell" data-key="8" data-op="play" data-index="8"></button></div><div class="row"><button class="btn ghost" data-op="reset">New game</button></div></section></main></div>
+<div class="app"><header class="topbar"><div class="brand">SOIL<span class="brand-sub">tic-tac-toe</span></div><div class="pill">1 player</div></header><main class="stage"><section class="card ttt-card"><p class="eyebrow">TIC-TAC-TOE</p><div class="row mode-row"><button class="btn primary" data-op="mode" data-mode="1p">1 player</button><button class="btn ghost" data-op="mode" data-mode="2p">2 players</button></div><p class="status">Your move</p><div class="board"><button class="cell" data-key="0" data-op="play" data-index="0"></button><button class="cell" data-key="1" data-op="play" data-index="1"></button><button class="cell" data-key="2" data-op="play" data-index="2"></button><button class="cell" data-key="3" data-op="play" data-index="3"></button><button class="cell" data-key="4" data-op="play" data-index="4"></button><button class="cell" data-key="5" data-op="play" data-index="5"></button><button class="cell" data-key="6" data-op="play" data-index="6"></button><button class="cell" data-key="7" data-op="play" data-index="7"></button><button class="cell" data-key="8" data-op="play" data-index="8"></button></div><div class="row"><button class="btn ghost" data-op="reset">New game</button></div></section></main></div>
 </body>
 </html>
 

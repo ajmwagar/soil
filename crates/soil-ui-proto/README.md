@@ -48,9 +48,10 @@ It serves the two static files from disk and proxies `/view`, `/examples`, and
 `index.html`, and pushes a reload over SSE: the open page re-renders or reloads
 instead of opening a new tab.
 
-The site page mounts `examples/ui/*.soil` as live inline components in Shadow
-DOM. Each component gets its own state, CSS, and event loop; the carousel and
-the grid use the same mount path.
+The site page mounts `examples/ui/*.soil` as live inline widgets in Shadow DOM.
+Each widget gets its own state, CSS, and event loop, and the workbench lays
+them out with flexbox. A boot spinner stays visible while the host is down;
+failed widget mounts keep a spinner and retry.
 
 ## Examples
 

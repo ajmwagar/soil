@@ -4,7 +4,14 @@
 set -eu
 cd "$(dirname "$0")/../.."
 
-BIN=${SOIL_LANG:-target/debug/soil-lang}
+BIN=${SOIL_LANG:-}
+if [ -z "$BIN" ]; then
+  if [ -x .bin/soil-lang ]; then
+    BIN=.bin/soil-lang
+  else
+    BIN=target/debug/soil-lang
+  fi
+fi
 if [ ! -x "$BIN" ]; then
   echo "no soil-lang binary at $BIN; cargo is frozen" >&2
   exit 1

@@ -11,6 +11,8 @@ const status = document.getElementById("status");
 const apply = document.getElementById("apply");
 const examples = document.getElementById("examples");
 const filename = document.getElementById("filename");
+const boot = document.getElementById("boot");
+const bootText = document.getElementById("boot-text");
 const query = new URLSearchParams(location.search);
 const embedMatch = location.pathname.match(/^\/embed\/([^/]+)$/);
 const embedded = embedMatch ? decodeURIComponent(embedMatch[1]) : null;
@@ -22,6 +24,24 @@ let currentName = embedded;
 let styleElement = null;
 let hotAvailable = false;
 let hotConnected = false;
+let retryTimer = null;
+
+function setBoot(text, visible = true) {
+  if (bootText && text) bootText.textContent = text;
+  boot?.classList.toggle("hidden", !visible);
+}
+
+function showHostDown() {
+  setBoot("soil host is not responding — retrying…", true);
+}
+
+function scheduleRetry() {
+  if (retryTimer) return;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    mountComponents().catch(() => {});
+  }, 2000);
+}
 
 function setStatus(text, isError = false) {
   status.textContent = text;
@@ -197,7 +217,8 @@ function componentCss(css, chrome = false) {
     ".component-body .app { min-height: 100% !important; }\n";
   if (!chrome) {
     out +=
-      ".component-body .app { background: transparent !important; padding: 0 !important; }\n" +
+      ".component-body { height: auto; }\n" +
+      ".component-body .app { min-height: 0 !important; background: transparent !important; padding: 0 !important; }\n" +
       ".component-body .topbar { display: none !important; }\n" +
       ".component-body .stage { margin: 0 !important; max-width: none !important; }\n" +
       ".component-body .card { border: 0 !important; border-radius: 0 !important; box-shadow: none !important; background: transparent !important; padding: 20px !important; max-width: none !important; }\n";
@@ -225,11 +246,32 @@ async function renderComponent(component, action) {
 }
 
 async function mountComponent(figure, slug, options = undefined) {
-  const response = await fetch(`/view?name=${encodeURIComponent(slug)}`, {
-    cache: "no-store",
-  });
+  let status = figure.querySelector(":scope > .component-status");
+  if (!status) {
+    status = document.createElement("div");
+    status.className = "component-status";
+    status.innerHTML = '<div class="spinner"></div><span>loading…</span>';
+    figure.querySelector("iframe")?.replaceWith(status);
+    if (!status.parentNode) figure.appendChild(status);
+  }
+  let response;
+  try {
+    response = await fetch(`/view?name=${encodeURIComponent(slug)}`, {
+      cache: "no-store",
+    });
+  } catch (error) {
+    status.innerHTML = '<div class="spinner"></div><span>waiting for host…</span>';
+    showHostDown();
+    scheduleRetry();
+    throw error;
+  }
   const data = await response.json();
-  if (!response.ok) return;
+  if (!response.ok) {
+    status.innerHTML = '<div class="spinner"></div><span>waiting for host…</span>';
+    showHostDown();
+    scheduleRetry();
+    return;
+  }
 
   const host = document.createElement("div");
   host.className = "component-live";
@@ -277,6 +319,7 @@ async function mountComponent(figure, slug, options = undefined) {
       });
   });
 
+  status.remove();
   figure.querySelector("iframe")?.remove();
   figure.appendChild(host);
   highlightCode(body);
@@ -289,78 +332,18 @@ async function mountComponents() {
     await mountComponent(figure, figure.dataset.soilComponent);
   }
 }
-async function mountCarousel() {
-  if (!hotAvailable) return;
-  const frame = document.querySelector("[data-soil-carousel]");
-  if (!frame) return;
-  const dots = [...document.querySelectorAll("[data-carousel-slug]")];
-  if (!dots.length) return;
-
-  const show = async (index) => {
-    const dot = dots[(index + dots.length) % dots.length];
-    if (!dot) return;
-    frame.querySelector(":scope > .component-live")?.remove();
-    await mountComponent(frame, dot.dataset.carouselSlug, { chrome: true });
-    const caption = frame.querySelector("figcaption");
-    if (caption) caption.textContent = dot.dataset.carouselTitle ?? dot.dataset.carouselSlug;
-    dots.forEach((item, at) =>
-      item.classList.toggle("active", item === dot),
-    );
-    frame.__carouselIndex = dots.indexOf(dot);
-  };
-
-  if (!frame.__carousel) {
-    frame.__carousel = true;
-    const active = dots.findIndex((dot) => dot.classList.contains("active"));
-    frame.__carouselIndex = active < 0 ? 0 : active;
-    document.querySelector("[data-carousel=prev]")?.addEventListener("click", () => {
-      show(frame.__carouselIndex - 1).catch((error) => {
-        frame.title = String(error);
-      });
-    });
-    document.querySelector("[data-carousel=next]")?.addEventListener("click", () => {
-      show(frame.__carouselIndex + 1).catch((error) => {
-        frame.title = String(error);
-      });
-    });
-    dots.forEach((dot, index) => {
-      dot.addEventListener("click", () => {
-        show(index).catch((error) => {
-          frame.title = String(error);
-        });
-      });
-    });
-    await show(frame.__carouselIndex);
-  }
-}
-
-async function connectHotReload() {
-  if (!hotAvailable && !(await probeHot())) return;
-  if (hotConnected) return;
-  hotConnected = true;
-  const events = new EventSource("/__reload");
-  events.addEventListener("source", () => {
-    loadSource()
-      .then(render)
-      .catch((error) => setStatus(String(error), true));
-  });
-  events.addEventListener("reload", () => location.reload());
-}
-
-function actionFromElement(element) {
-  if (!element.dataset || !element.dataset.op) return null;
-  const payload = { op: element.dataset.op };
-  for (const [key, value] of Object.entries(element.dataset)) {
-    if (key !== "op") payload[key] = value;
-  }
-  return JSON.stringify(payload);
-}
-
 async function render(action = "") {
   if (!currentName && !bare) return;
-  const response = await fetch(viewUrl(action), { cache: "no-store" });
+  let response;
+  try {
+    response = await fetch(viewUrl(action), { cache: "no-store" });
+  } catch (error) {
+    showHostDown();
+    throw error;
+  }
   const data = await response.json();
   if (!response.ok) {
+    showHostDown();
     setStatus(data.error || "render failed", true);
     return;
   }
@@ -368,9 +351,8 @@ async function render(action = "") {
   applyCss(data.css);
   renderTree(data.tree);
   highlightCode(root);
-  mountComponents()
-    .then(mountCarousel)
-    .catch((error) => setStatus(String(error), true));
+  setBoot("", false);
+  mountComponents().catch((error) => setStatus(String(error), true));
   setStatus(`state ${JSON.stringify(currentState)}`);
 }
 
