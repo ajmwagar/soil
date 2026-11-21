@@ -130,6 +130,11 @@ Phases 1–3 are mostly sequential. Phase 4 can start once Phase 1 has macros an
   - a browser host backed by JS imports.
 - Generated bindings via the existing `witgen`, with a checked-in golden output and a CI diff gate.
 - Capability manifest emitted by `tend` and enforced by hosts: a spore can only call what it declares.
+- **No generic C FFI in the language or WIT.** A C library used by a host
+  becomes a narrow Rust adapter behind a specific WIT capability (`soil:codec`
+  for libopus is the model). A native-only, feature-gated, process-isolated
+  prototyping escape hatch may be added later; it is not a Soil capability,
+  not available to Wasm/browser hosts, and not part of the stable ABI.
 - A conformance spore that exercises: no capability, records, time, inference stub, denied grant, and error mapping.
 
 **Done when**
