@@ -16,6 +16,7 @@ fn run() -> Result<()> {
     let mut repl = false;
     let mut http_origins: Vec<String> = Vec::new();
     let mut http_credential: Option<String> = None;
+    let mut bearer: Option<String> = None;
     let mut geode_socket: Option<PathBuf> = None;
     let mut geode_reference: Option<String> = None;
     let mut geode_purpose: Option<String> = None;
@@ -75,6 +76,14 @@ fn run() -> Result<()> {
                     .map_err(|_| anyhow::anyhow!("--http-credential-env: {name} is not set"))?;
                 http_credential = Some(value);
             }
+            "--bearer-env" => {
+                let name = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--bearer-env needs a variable"))?;
+                let value = std::env::var(&name)
+                    .map_err(|_| anyhow::anyhow!("--bearer-env: {name} is not set"))?;
+                bearer = Some(value);
+            }
             "--geode-socket" => {
                 geode_socket =
                     Some(PathBuf::from(args.next().ok_or_else(|| {
@@ -103,6 +112,7 @@ fn run() -> Result<()> {
                      [--records-root DIR] [--book NAME] [--workspace-root DIR] \
                      [--allow ORIGIN]... \
                      [--http-credential VALUE | --http-credential-env VAR \
+                      | --bearer-env VAR \
                       | --geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] \
                      FILE... [-- ARG...]"
                 );
@@ -118,6 +128,7 @@ fn run() -> Result<()> {
              [--records-root DIR] [--book NAME] [--workspace-root DIR] \
              [--allow ORIGIN]... \
              [--http-credential VALUE | --http-credential-env VAR \
+              | --bearer-env VAR \
               | --geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] \
              FILE... [-- ARG...]"
         );
@@ -130,10 +141,14 @@ fn run() -> Result<()> {
     {
         bail!("--geode-socket, --geode-reference and --geode-purpose are used together");
     }
-    if wants_geode && http_credential.is_some() {
-        bail!("--geode-* and --http-credential are mutually exclusive");
+    if wants_geode && (http_credential.is_some() || bearer.is_some()) {
+        bail!("--geode-* and the other credentials are mutually exclusive");
     }
-    let wants_http = !http_origins.is_empty() || http_credential.is_some() || wants_geode;
+    if http_credential.is_some() && bearer.is_some() {
+        bail!("--http-credential and --bearer-env are mutually exclusive");
+    }
+    let wants_http =
+        !http_origins.is_empty() || http_credential.is_some() || bearer.is_some() || wants_geode;
     if wants_http && http_origins.is_empty() {
         bail!("a credential needs at least one --allow ORIGIN");
     }
@@ -158,6 +173,8 @@ fn run() -> Result<()> {
                 {
                     bail!("--geode-socket is only available on Unix hosts");
                 }
+            } else if let Some(token) = bearer {
+                native = native.with_bearer_http(http_origins, token)?;
             } else if wants_http {
                 native = native.with_http(http_origins, http_credential)?;
             }

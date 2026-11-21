@@ -10,8 +10,8 @@ use std::{sync::Arc, time::Duration};
 #[cfg(unix)]
 use soil::creds::{GeodeCredentials, HostHandle};
 use soil::http_host::{
-    CredentialProvider, Error as HttpError, HttpHost, HttpPolicy, Method as HttpMethod,
-    Request as HttpRequest,
+    BearerCredential, CredentialProvider, Error as HttpError, HttpHost, HttpPolicy,
+    Method as HttpMethod, Request as HttpRequest,
 };
 use soil::vfs_host::vfs::Host as VfsHostTrait;
 use soil::vfs_host::{VfsHost, vfs};
@@ -67,6 +67,21 @@ impl NativeHost {
                     },
                 );
         self.http = Some(HttpHost::new(policy).with_credentials(Arc::new(credentials)));
+        Ok(self)
+    }
+
+    /// Grant `soil:http` for the named origins with one host-owned bearer token.
+    ///
+    /// The guest names the handle `default`; the host injects the
+    /// `authorization` header. The token never enters the Soil program.
+    pub fn with_bearer_http(
+        mut self,
+        origins: impl IntoIterator<Item = String>,
+        token: impl Into<String>,
+    ) -> anyhow::Result<Self> {
+        let policy = HttpPolicy::new(origins, 16 * 1024 * 1024, Duration::from_secs(30))?;
+        let credentials = Arc::new(BearerCredential::new(token));
+        self.http = Some(HttpHost::new(policy).with_credentials(credentials));
         Ok(self)
     }
 
