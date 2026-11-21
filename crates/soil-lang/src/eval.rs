@@ -408,6 +408,29 @@ impl Runtime {
                         };
                         Ok(Value::String(text.replace(from, to)))
                     }
+                    "bytes->string" => {
+                        let value = self.eval(require(items, 1, "bytes->string")?, env)?;
+                        let Value::List(bytes) = value else {
+                            bail!("bytes->string expects a list of bytes");
+                        };
+                        let bytes = bytes
+                            .iter()
+                            .map(|byte| match byte {
+                                Value::Int(byte) if (0..=255).contains(byte) => Ok(*byte as u8),
+                                _ => bail!("bytes->string expects bytes in 0..=255"),
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        Ok(Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+                    }
+                    "string->bytes" => {
+                        let value = self.eval(require(items, 1, "string->bytes")?, env)?;
+                        let text = value
+                            .as_str()
+                            .ok_or_else(|| anyhow!("string->bytes expects a string"))?;
+                        Ok(Value::List(
+                            text.bytes().map(|byte| Value::Int(byte as i64)).collect(),
+                        ))
+                    }
                     "string-from-bytes" => {
                         let value = self.eval(require(items, 1, "string-from-bytes")?, env)?;
                         let Value::List(bytes) = value else {

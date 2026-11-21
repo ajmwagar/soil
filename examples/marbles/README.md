@@ -48,6 +48,24 @@ Gantt; without it the plan section is omitted. See
 [`docs/marbles-scope.md`](../../docs/marbles-scope.md) for the long-term
 contract and explicit `--project`/`--folder`/`--goal` flags.
 
+## Soil CLI (read path)
+
+`examples/marbles/mb.soil` is the start of the Soil `mb` replacement. It reads
+the same records book as the Rust Spore and uses the host's `scan-query`
+projection, so `list --project` does not decode every issue in the book.
+
+```sh
+.bin/soil-lang   --records-root "$HOME/.local/share/fungos/records"   --book personal/avery/marbles   crates/soil-lang/stdlib/prelude.soil   crates/soil-lang/stdlib/cli.soil   crates/soil-lang/bindings/soil-records.soil   crates/soil-lang/bindings/soil-time.soil   crates/soil-lang/bindings/wasi-cli.soil   examples/marbles/mb.soil -- list --project marbles --limit 5
+
+# ready and show also work
+... examples/marbles/mb.soil -- ready --project marbles
+... examples/marbles/mb.soil -- show marbles-an4z
+```
+
+The read path is the REPL-friendly part: load the same files and call
+`(mb-ready result)` or `(mb-list result)` from a Soil session. Writes, claim
+CAS, events, and the full command tree are the next port slice.
+
 ## Live host
 
 The same view runs through the dev host with the snapshot as a prelude:

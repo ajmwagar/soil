@@ -105,6 +105,53 @@ impl SoilRecordsHost {
         Ok(page_value(entries, next))
     }
 
+    fn scan_query_page(
+        &self,
+        collection: &str,
+        field: &str,
+        value: &str,
+        cursor: Option<String>,
+        limit: usize,
+    ) -> std::result::Result<Value, String> {
+        let mut cursor = cursor.map(|cursor| Self::scoped(collection, &cursor));
+        let prefix = format!("{collection}:");
+        let limit = limit.max(1);
+        let mut entries = Vec::with_capacity(limit);
+        let mut next = None;
+        loop {
+            let page = self
+                .store
+                .scan_records(&self.book, cursor.as_deref(), 512)
+                .map_err(|error| error.to_string())?;
+            if page.is_empty() {
+                break;
+            }
+            let page_len = page.len();
+            for record in page {
+                let entity = record.entity_id.clone();
+                if collection.is_empty() || entity.starts_with(&prefix) {
+                    if record
+                        .fields
+                        .get(field)
+                        .and_then(|value| value.as_str())
+                        == Some(value)
+                    {
+                        entries.push(Self::entry_value(collection, record));
+                        if entries.len() == limit {
+                            next = Some(Self::unscoped(collection, &entity));
+                            break;
+                        }
+                    }
+                }
+                cursor = Some(entity);
+            }
+            if entries.len() == limit || page_len < 512 {
+                break;
+            }
+        }
+        Ok(page_value(entries, next))
+    }
+
     fn get_entry(&self, collection: &str, id: &str) -> std::result::Result<Option<Value>, String> {
         self.store
             .get_optional(&self.book, &Self::scoped(collection, id))
@@ -118,7 +165,7 @@ impl Host for SoilRecordsHost {
         interface == "soil:records"
             && matches!(
                 function,
-                "scan" | "get" | "upsert" | "delete" | "changes" | "scan-packed" | "cas"
+                "scan" | "scan-query" | "get" | "upsert" | "delete" | "changes" | "scan-packed" | "cas"
             )
     }
 
@@ -133,6 +180,26 @@ impl Host for SoilRecordsHost {
         }
 
         match function {
+            "scan-query" => {
+                let collection = args
+                    .first()
+                    .map(value_text)
+                    .ok_or_else(|| "scan-query needs a collection".to_string())?;
+                let field = args
+                    .get(1)
+                    .map(value_text)
+                    .ok_or_else(|| "scan-query needs a field".to_string())?;
+                let value = args
+                    .get(2)
+                    .map(value_text)
+                    .ok_or_else(|| "scan-query needs a value".to_string())?;
+                let cursor = args.get(3).and_then(|value| match value {
+                    Value::Nil => None,
+                    value => Some(value_text(value)),
+                });
+                let limit = args.get(4).and_then(Value::as_f64).unwrap_or(50.0) as usize;
+                Ok(ok(self.scan_query_page(&collection, &field, &value, cursor, limit)?))
+            }
             "scan" | "changes" => {
                 let collection = args
                     .first()

@@ -65,6 +65,17 @@
 (defun soil:records/scan (collection cursor limit)
   (host-call "soil:records" "scan" (list collection cursor limit)))
 
+(define-capability soil:records/scan-query
+  :interface "soil:records"
+  :function "scan-query"
+  :grant "soil:records"
+  :version "0.1.0"
+  :params ((collection string) (field string) (value string) (cursor (option string)) (limit u32))
+  :result (result soil:records/page soil:records/error))
+
+(defun soil:records/scan-query (collection field value cursor limit)
+  (host-call "soil:records" "scan-query" (list collection field value cursor limit)))
+
 (define-capability soil:records/scan-packed
   :interface "soil:records"
   :function "scan-packed"
