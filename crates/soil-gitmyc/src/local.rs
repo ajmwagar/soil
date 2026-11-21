@@ -120,6 +120,117 @@ impl LocalRepo {
         Ok(files)
     }
 
+    /// Build a patch from a VFS prefix against a git commit, without touching
+    /// the worktree. The base commit is the index starting point; changed and
+    /// deleted VFS paths are written into a temporary index and diffed.
+    pub fn diff_vfs(&self, vfs: &Vfs, prefix: &str, base: &str) -> Result<String> {
+        use std::io::Write;
+        use std::process::Stdio;
+
+        let base_commit = self.resolve(base)?;
+        let base_entries = self.tree(&base_commit)?;
+        let mut base_oids = std::collections::BTreeMap::new();
+        for entry in &base_entries {
+            base_oids.insert(entry.path.clone(), entry.oid.clone());
+        }
+
+        let prefix = prefix.trim_end_matches('/').to_string();
+        let prefix_slash = format!("{prefix}/");
+        let mut vfs_files = std::collections::BTreeMap::new();
+        for entry in vfs.list(&prefix)? {
+            let Some(path) = entry.path.strip_prefix(&prefix_slash) else {
+                continue;
+            };
+            if path.is_empty() {
+                continue;
+            }
+            let bytes = vfs.content(&entry.content_id)?;
+            vfs_files.insert(path.to_string(), bytes);
+        }
+
+        let index = std::env::temp_dir().join(format!(
+            "gitmyc-index-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        let env = [("GIT_INDEX_FILE", index.to_str().unwrap())];
+
+        run_git(&self.root, &env, &["read-tree", &base_commit])?;
+        for (path, bytes) in &vfs_files {
+            let mut child = Command::new("git")
+                .args([
+                    "-C",
+                    self.root.to_str().unwrap(),
+                    "hash-object",
+                    "-w",
+                    "--stdin",
+                ])
+                .envs(env)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .context("spawn git hash-object")?;
+            child
+                .stdin
+                .as_mut()
+                .context("git hash-object stdin")?
+                .write_all(bytes)?;
+            let output = child.wait_with_output()?;
+            if !output.status.success() {
+                bail!(
+                    "git hash-object: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+            let oid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if base_oids.get(path).map(String::as_str) == Some(oid.as_str()) {
+                continue;
+            }
+            run_git(
+                &self.root,
+                &env,
+                &[
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    &format!("100644,{oid},{path}"),
+                ],
+            )?;
+        }
+
+        for path in base_oids.keys() {
+            if !vfs_files.contains_key(path) {
+                run_git(&self.root, &env, &["update-index", "--force-remove", path])?;
+            }
+        }
+
+        let output = Command::new("git")
+            .args([
+                "-C",
+                self.root.to_str().unwrap(),
+                "diff-index",
+                "--cached",
+                "--binary",
+                "--full-index",
+                &base_commit,
+            ])
+            .envs(env)
+            .output()
+            .context("run git diff-index")?;
+        let _ = std::fs::remove_file(&index);
+        if !output.status.success() {
+            bail!(
+                "git diff-index: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
     pub fn status(&self) -> Result<String> {
         let output = Command::new("git")
             .args([
@@ -270,6 +381,22 @@ impl LocalRepo {
         }
         self.head()
     }
+}
+
+fn run_git(root: &Path, env: &[(&str, &str)], args: &[&str]) -> Result<()> {
+    let output = Command::new("git")
+        .args(["-C", root.to_str().unwrap()])
+        .args(args)
+        .envs(env.iter().copied())
+        .output()
+        .with_context(|| format!("run git {args:?}"))?;
+    if !output.status.success() {
+        bail!(
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

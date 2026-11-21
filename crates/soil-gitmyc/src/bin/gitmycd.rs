@@ -132,6 +132,19 @@ enum Command {
         #[arg(long)]
         repo: PathBuf,
     },
+    /// Diff a VFS prefix against a git commit, without touching the worktree.
+    DiffVfs {
+        #[arg(long)]
+        vfs: String,
+        #[arg(long)]
+        prefix: String,
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long, default_value = "HEAD")]
+        base: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Reset a local checkout, with optional expected-HEAD CAS.
     Reset {
         #[arg(long)]
@@ -329,6 +342,26 @@ async fn main() -> Result<()> {
         Command::Diff { repo } => {
             let local = LocalRepo::open(&repo)?;
             print!("{}", local.diff()?);
+            Ok(())
+        }
+        Command::DiffVfs {
+            vfs,
+            prefix,
+            repo,
+            base,
+            out,
+        } => {
+            let local = LocalRepo::open(&repo)?;
+            let root = vfs_root(&vfs);
+            let vfs_handle = fungos_vfs::Vfs::open_with_role(&root, fungos_vfs::NodeRole::Full)
+                .with_context(|| format!("open vfs {}", root.display()))?;
+            let patch = local.diff_vfs(&vfs_handle, &prefix, &base)?;
+            if let Some(path) = out {
+                std::fs::write(&path, patch)?;
+                println!("{}", path.display());
+            } else {
+                print!("{patch}");
+            }
             Ok(())
         }
         Command::Reset {
