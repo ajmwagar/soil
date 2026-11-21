@@ -25,3 +25,20 @@
 
 (defun test/append ()
   (= (append (list 1 2) (list 3 4)) (list 1 2 3 4)))
+
+(defun test/assoc-all ()
+  (let ((record (list (list :a 1) (list :b 2))))
+    (= (json-encode (assoc-all record (list (list :b 3) (list :c 4))))
+       "{\"a\":1,\"b\":3,\"c\":4}")))
+
+(defun test/json-object ()
+  (= (json-encode (json-object)) "{}"))
+
+(defun test/json-empty-object ()
+  (= (json-encode (json-decode "{}")) "{}"))
+
+(defun test/keyword ()
+  (= (json-encode (list (list (keyword "k") 1))) "{\"k\":1}"))
+
+(defun test/int ()
+  (= (int 3.9) 3))

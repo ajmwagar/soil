@@ -133,11 +133,19 @@
 ;;; Return `record` with `key` bound to `value`; other pairs are preserved.
 (defun assoc (key value record)
   (if (nil? record)
-      nil
+      (list (list key value))
       (let ((pair (first record)))
         (if (= (first pair) key)
             (cons (list key value) (rest record))
             (cons pair (assoc key value (rest record)))))))
+
+;;; Apply a list of `(key value)` pairs to a record, left to right.
+(defun assoc-all (record pairs)
+  (if (nil? pairs)
+      record
+      (assoc-all
+        (assoc (first (first pairs)) (nth 1 (first pairs)) record)
+        (rest pairs))))
 
 ;;; Read `key` from a decoded JSON object.
 (defun json-get (value key)

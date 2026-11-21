@@ -1,60 +1,106 @@
 ; SPDX-License-Identifier: MIT OR Apache-2.0
 ; A Soil port of the records-backed `mb` command.
 ;
-; `soil:records` owns the book. Entity ids are `<type>/<json-key>` and bodies
-; are the Marbles JSON state. Reads use the host's field query so a project
-; answer does not copy every issue body into the interpreter.
-
-(defun mb-spec ()
-  (list
-    (list :name "mb")
-    (list :about "a small issue tracker for fleets of coding agents")
-    (list :version "0.1.0")
-    (list :options
-      (list
-        (list (list :long "json") (list :help "Machine-readable output."))
-        (list (list :long "project") (list :value "slug")
-              (list :help "Scope a query to one project."))))
-    (list :args nil)
-    (list :commands
-      (list
-        (list
-          (list :name "list")
-          (list :about "List issues, excluding closed work by default.")
-          (list :options
-            (list
-              (list (list :long "all") (list :help "Include closed issues."))
-              (list (list :long "id") (list :value "id") (list :help "Only this issue."))
-              (list (list :long "limit") (list :value "n") (list :help "Truncate the answer."))))
-          (list :args nil)
-          (list :commands nil))
-        (list
-          (list :name "ready")
-          (list :about "Open, unblocked, unclaimed, past grace.")
-          (list :options nil)
-          (list :args nil)
-          (list :commands nil))
-        (list
-          (list :name "show")
-          (list :about "Show one issue as a one-element array.")
-          (list :options nil)
-          (list :args
-            (list
-              (list (list :name "id") (list :required #t) (list :help "Issue id."))))
-          (list :commands nil))))))
+; Reads use the host's field query; writes are ordinary record upserts, except
+; claims, which compare the revision and origin they read. Entity ids are
+; `<type>/<json-key>` and bodies are the Marbles JSON state.
 
 (defun mb-fail (message)
   (eprintln (str "mb: " message))
   (exit 1))
 
-(defun entry-body (entry)
-  (json-decode (bytes->string (field entry :body))))
+(defun mb-options ()
+  (list
+    (cli-opt "json" "Machine-readable output.")
+    (cli-opt-value "project" "slug" "Scope a query to one project.")
+    (cli-opt-value "prefix" "prefix" "Project id prefix for create.")
+    (cli-opt-value "actor" "name" "Acting identity.")))
 
-(defun entry-id (entry)
-  (field (field entry :key) :id))
+(defun mb-spec ()
+  (cli-spec "mb" "a small issue tracker for fleets of coding agents" "0.1.0"
+    (mb-options)
+    (list
+      (cli-command-entry "list" "List issues, excluding closed work by default."
+        (list (cli-opt "all" "Include closed issues.")
+              (cli-opt-value "id" "id" "Only this issue.")
+              (cli-opt-value "limit" "n" "Truncate the answer."))
+        nil)
+      (cli-command-entry "ready" "Open, unblocked, unclaimed, past grace." nil nil)
+      (cli-command-entry "show" "Show one issue as a one-element array." nil
+        (list (cli-arg "id" #t "Issue id.")))
+      (cli-command-entry "history" "Show the audit trail for one issue." nil
+        (list (cli-arg "id" #t "Issue id.")))
+      (cli-command-entry "create" "Create an issue."
+        (list (cli-opt-short-value "description" "d" "text" "Description.")
+              (cli-opt-short-value "priority" "p" "n" "Priority (default 2).")
+              (cli-opt-short-value "type" "t" "type" "Issue type (default task).")
+              (cli-opt-value "parent" "id" "Parent issue.")
+              (cli-opt-value "label" "label" "Initial label.")
+              (cli-opt-value "id" "id" "Explicit issue id.")
+              (cli-opt-value "metadata" "json" "Metadata object text.")
+              (cli-opt-value "external-ref" "ref" "External reference.")
+              (cli-opt-value "available-at" "epoch" "Override the creation grace."))
+        (list (cli-arg "title" #t "Issue title.")))
+      (cli-command-entry "update" "Update issue fields."
+        (list (cli-opt-value "title" "text" "New title.")
+              (cli-opt-value "description" "text" "New description.")
+              (cli-opt-value "notes" "text" "Append to the description.")
+              (cli-opt-value "status" "status" "New status.")
+              (cli-opt-value "priority" "n" "New priority.")
+              (cli-opt-value "assignee" "name" "Claim for this actor."))
+        (list (cli-arg "id" #t "Issue id.")))
+      (cli-command-entry "claim" "Take a lease on an issue."
+        (list (cli-opt-value "as" "name" "Claim holder.")
+              (cli-opt-value "ttl" "seconds" "Lease seconds.")
+              (cli-opt "human" "Use the human (business-hours) lease."))
+        (list (cli-arg "id" #t "Issue id.")))
+      (cli-command-entry "touch" "Renew a claim without moving work."
+        (list (cli-opt-value "as" "name" "Claim holder."))
+        (list (cli-arg "id" #t "Issue id.")))
+      (cli-command-entry "release" "Drop a claim."
+        (list (cli-opt-value "as" "name" "Claim holder."))
+        (list (cli-arg "id" #t "Issue id.")))
+      (cli-command-entry "review" "Move work to review; record the PR or commit."
+        (list (cli-opt-value "pr" "url" "Pull request URL.")
+              (cli-opt-value "commit" "sha" "Commit sha."))
+        (list (cli-arg "id" #t "Issue id.")))
+      (cli-command-entry "close" "Close with delivery evidence."
+        (list (cli-opt-value "reason" "text" "Close reason.")
+              (cli-opt-value "pr" "url" "Merged pull request URL.")
+              (cli-opt-value "commit" "sha" "Merge commit sha.")
+              (cli-opt-value "ack" "text" "No delivery expected because ..."))
+        (list (cli-arg "id" #t "Issue id.")))
+      (cli-command-group "dep" "Manage dependency edges." nil
+        (list
+          (cli-command-entry "add" "Make CHILD wait for PARENT." nil
+            (list (cli-arg "child" #t "Blocked issue.") (cli-arg "parent" #t "Blocker.")))
+          (cli-command-entry "rm" "Remove a dependency edge." nil
+            (list (cli-arg "child" #t "Blocked issue.") (cli-arg "parent" #t "Blocker.")))))
+      (cli-command-group "label" "Manage labels." nil
+        (list
+          (cli-command-entry "add" "Add a label." nil
+            (list (cli-arg "id" #t "Issue id.") (cli-arg "label" #t "Label.")))
+          (cli-command-entry "rm" "Remove a label." nil
+            (list (cli-arg "id" #t "Issue id.") (cli-arg "label" #t "Label.")))))
+      (cli-command-entry "stats" "Issue counts by project and status." nil nil))))
 
-(defun entry-type? (entry prefix)
-  (string-contains? (entry-id entry) prefix))
+; ---------------------------------------------------------------------------
+; Records access
+; ---------------------------------------------------------------------------
+
+(defun entity (type key)
+  (str type "/[\"" key "\"]"))
+
+(defun entity2 (type a b)
+  (str type "/[\"" a "\",\"" b "\"]"))
+
+(defun entry-of (id)
+  (let ((result (soil:records/get (record-key "" id))))
+    (if (ok? result) (value result) nil)))
+
+(defun body-of (id)
+  (let ((entry (entry-of id)))
+    (if (nil? entry) nil (entry-body entry))))
 
 (defun query-entries (field value)
   (let ((result (soil:records/scan-query "" field value nil 4096)))
@@ -63,14 +109,64 @@
           (if (or (nil? entries) (= 0 (length entries))) nil entries))
         (mb-fail (str "records query failed: " (field result :err))))))
 
-(defun issue-entries (field value)
-  (filter-with 'entry-type? "issue/" (query-entries field value)))
+(defun typed-bodies (prefix field value)
+  (map 'entry-body (filter-with 'entry-type? prefix (query-entries field value))))
 
-(defun issue-bodies (field value)
-  (map 'entry-body (issue-entries field value)))
+(defun entry-type? (entry prefix)
+  (string-contains? (entry-id entry) prefix))
 
-(defun dependency-bodies (field value)
-  (map 'entry-body (filter-with 'entry-type? "dependency/" (query-entries field value))))
+(defun scan-into (cursor acc)
+  (let ((result (soil:records/scan "" cursor 512)))
+    (if (not (ok? result))
+        (mb-fail (str "records scan failed: " (field result :err)))
+        (let ((page (value result)))
+          (let ((entries (field page :entries)))
+            (let ((next (field page :next)))
+              (let ((acc (append acc entries)))
+                (if (nil? next) acc (scan-into next acc)))))))))
+
+(defun all-entry-bodies (prefix)
+  (map 'entry-body (filter-with 'entry-type? prefix (scan-into nil nil))))
+
+(defun all-issue-bodies ()
+  (all-entry-bodies "issue/"))
+
+(defun issue-body (id)
+  (let ((body (body-of (entity "issue" id))))
+    (if (nil? body) (mb-fail (str "issue not found: " id)) body)))
+
+(defun project-body (slug)
+  (body-of (entity "project" slug)))
+
+(defun project-prefix (slug result)
+  (let ((body (project-body slug)))
+    (if (and (not (nil? body)) (not (nil? (field body :prefix))))
+        (field body :prefix)
+        (let ((prefix (cli-result-option result "prefix")))
+          (if (nil? prefix) slug prefix)))))
+
+(defun ensure-project (slug prefix now)
+  (let ((body (project-body slug)))
+    (let ((body (if (nil? body)
+                    (list (list :slug slug) (list :prefix prefix) (list :root "")
+                          (list :created_at now))
+                    body)))
+      (upsert-record "" (entity "project" slug) "marbles.project@1" body now))))
+
+(defun issue-in-project? (issue project)
+  (or (nil? project) (= (field issue :project) project)))
+
+(defun issue-bodies-for (project)
+  (if (nil? project)
+      (all-issue-bodies)
+      (typed-bodies "issue/" "project" project)))
+
+; ---------------------------------------------------------------------------
+; Read queries
+; ---------------------------------------------------------------------------
+
+(defun dependency-edges (field value)
+  (typed-bodies "dependency/" field value))
 
 (defun find-body (id issues)
   (cond
@@ -82,89 +178,59 @@
   (= (field issue :status) "closed"))
 
 (defun parent-open? (parent)
-  (let ((issue (find-body parent (issue-bodies "id" parent))))
+  (let ((issue (body-of (entity "issue" parent))))
     (and (not (nil? issue)) (not (issue-closed? issue)))))
 
-(defun child-open? (child)
-  (parent-open? child))
-
-(defun dependency-count (id)
-  (let ((edges (dependency-bodies "child" id)))
-    (if (nil? edges)
-        0
-        (let ((open (filter 'parent-open-edge? edges)))
-          (if (nil? open) 0 (length open))))))
-
-(defun parent-open-edge? (edge)
+(defun edge-parent-open? (edge)
   (parent-open? (field edge :parent)))
 
-(defun dependent-count (id)
-  (let ((edges (dependency-bodies "parent" id)))
-    (if (nil? edges)
-        0
-        (let ((open (filter 'child-open-edge? edges)))
+(defun edge-child-open? (edge)
+  (parent-open? (field edge :child)))
+
+(defun dependency-count (id)
+  (let ((edges (dependency-edges "child" id)))
+    (if (nil? edges) 0
+        (let ((open (filter 'edge-parent-open? edges)))
           (if (nil? open) 0 (length open))))))
 
-(defun child-open-edge? (edge)
-  (child-open? (field edge :child)))
-
-(defun record-set (record key value)
-  (cond
-    ((nil? record) (list (list key value)))
-    ((= (first (first record)) key)
-      (cons (list key value) (rest record)))
-    (else
-      (cons (first record) (record-set (rest record) key value)))))
+(defun dependent-count (id)
+  (let ((edges (dependency-edges "parent" id)))
+    (if (nil? edges) 0
+        (let ((open (filter 'edge-child-open? edges)))
+          (if (nil? open) 0 (length open))))))
 
 (defun issue-with-counts (issue)
   (let ((id (field issue :id)))
-    (record-set
-      (record-set issue :dependency_count (dependency-count id))
-      :dependent_count (dependent-count id))))
+    (assoc :dependent_count (dependent-count id)
+      (assoc :dependency_count (dependency-count id) issue))))
 
 (defun issues-with-counts (issues)
   (map 'issue-with-counts issues))
 
+(defun or-empty (xs)
+  (if (nil? xs) (list) xs))
+
 (defun project-filter (result)
   (let ((project (cli-result-option result "project")))
     (if (nil? project) (getenv "MARBLES_PROJECT") project)))
-
-(defun require-project (result)
-  (let ((project (project-filter result)))
-    (if (nil? project)
-        (mb-fail "a project is required (use --project or MARBLES_PROJECT)")
-        project)))
 
 (defun limit-option (result)
   (let ((limit (cli-result-option result "limit")))
     (if (nil? limit) 0 (json-decode limit))))
 
 (defun truncate (limit issues)
-  (if (or (<= limit 0) (nil? issues))
-      issues
-      (take limit issues)))
-
-(defun issue-in-project? (issue project)
-  (= (field issue :project) project))
-
-(defun open-issue? (issue)
-  (not (issue-closed? issue)))
+  (if (or (<= limit 0) (nil? issues)) issues (take limit issues)))
 
 (defun issue-id-option? (issue id)
   (or (nil? id) (= (field issue :id) id)))
 
-(defun list-project (project id all limit)
-  (let ((issues (filter-with 'issue-in-project? project (issue-bodies "project" project))))
-    (let ((visible (filter-with 'issue-id-option? id issues)))
-      (let ((visible (if all visible (filter 'open-issue? visible))))
-        (truncate limit (issues-with-counts visible))))))
+(defun open-issue? (issue)
+  (not (issue-closed? issue)))
 
-(defun mb-list (result)
-  (list-project
-    (require-project result)
-    (cli-result-option result "id")
-    (cli-result-option result "all")
-    (limit-option result)))
+(defun list-project (project id all limit)
+  (let ((issues (issues-with-counts (issue-bodies-for project))))
+    (let ((visible (filter-with 'issue-id-option? id issues)))
+      (truncate limit (if all visible (filter 'open-issue? visible))))))
 
 (defun issue-available? (issue now)
   (let ((available (field issue :available_at)))
@@ -173,57 +239,389 @@
 (defun issue-claimed? (issue now)
   (let ((assignee (field issue :assignee))
         (expires (field issue :expires_at)))
-    (and (not (nil? assignee))
-         (or (nil? expires) (> expires now)))))
+    (and (not (nil? assignee)) (or (nil? expires) (> expires now)))))
 
-(defun ready-issue? (issue context)
-  (let ((now (first context)))
-    (and
-      (= (field issue :status) "open")
-      (= (dependency-count (field issue :id)) 0)
-      (issue-available? issue now)
-      (not (issue-claimed? issue now)))))
+(defun ready-issue? (issue now)
+  (and (= (field issue :status) "open")
+       (= (dependency-count (field issue :id)) 0)
+       (issue-available? issue now)
+       (not (issue-claimed? issue now))))
 
 (defun ready-project (project)
-  (let ((issues (filter-with 'issue-in-project? project (issue-bodies "project" project))))
-    (let ((now (/ (now-ms) 1000)))
-      (issues-with-counts
-        (filter-with 'ready-issue? (list now) issues)))))
+  (let ((now (now-seconds)))
+    (issues-with-counts
+      (filter-with 'ready-issue? now (issue-bodies-for project)))))
 
-(defun mb-ready (result)
-  (ready-project (require-project result)))
+; ---------------------------------------------------------------------------
+; Writes
+; ---------------------------------------------------------------------------
 
-(defun show-issue (id)
-  (let ((issues (issue-bodies "id" id)))
-    (let ((issue (find-body id issues)))
-      (if (nil? issue)
-          (mb-fail (str "issue not found: " id))
-          (list (issue-with-counts issue))))))
+(defun entry-version (entry)
+  (list (list :revision (field entry :revision))
+        (list :origin (field entry :origin))))
 
-(defun mb-show (result)
-  (show-issue (first (cli-result-args result))))
+(defun save-issue (body now)
+  (upsert-record "" (entity "issue" (field body :id)) "marbles.issue@1" body now)
+  body)
 
-(defun mb-dispatch (result)
-  (let ((name (field result :name)))
+(defun event-id (seq)
+  (entity "marbles_event" (str seq)))
+
+(defun log-event (id ts actor event detail)
+  (let ((seq (now-ms)))
+    (upsert-record "" (event-id seq) "marbles.event@1"
+      (list (list :issue_id id) (list :ts ts) (list :actor actor)
+            (list :event event) (list :detail detail))
+      ts)
+    (if (= event "heartbeat") nil
+        (let ((project (field (body-of (entity "issue" id)) :project)))
+          (if (nil? project) nil
+              (upsert-record "" (entity "outbound_event" (str seq)) "marbles.outbound@1"
+                (list (list :seq seq) (list :issue_id id) (list :project project)
+                      (list :occurred_at ts) (list :event event)
+                      (list :next_attempt_at ts) (list :attempts 0))
+                ts))))))
+
+(defun actor-name (result)
+  (let ((actor (cli-result-option result "actor")))
+    (if (not (nil? actor)) actor
+        (let ((env (getenv "MARBLES_ACTOR")))
+          (if (nil? env) "agent" env)))))
+
+(defun option-int (result name)
+  (let ((value (cli-result-option result name)))
+    (if (nil? value) nil (json-decode value))))
+
+(defun now-seconds ()
+  (int (/ (now-ms) 1000)))
+
+(defun short-suffix (now)
+  (let ((chars (string-chars (str now))))
+    (string-join (drop (- (length chars) 4) chars) "")))
+
+(defun candidate-id (prefix now attempt)
+  (let ((id (str prefix "-" (short-suffix (+ now attempt)))))
+    (if (nil? (body-of (entity "issue" id))) id
+        (candidate-id prefix now (+ attempt 1)))))
+
+(defun create-issue (result actor now)
+  (let ((project (project-filter result)))
+    (if (nil? project) (mb-fail "create needs --project or MARBLES_PROJECT"))
+    (let ((prefix (project-prefix project result)))
+      (ensure-project project prefix now)
+      (let ((explicit (cli-result-option result "id")))
+        (let ((id (if (nil? explicit) (candidate-id prefix now 0) explicit)))
+          (let ((title (first (cli-result-args result)))
+                (description (or (cli-result-option result "description") ""))
+                (priority (or (option-int result "priority") 2))
+                (issue-type (or (cli-result-option result "type") "task"))
+                (label (cli-result-option result "label"))
+                (parent (cli-result-option result "parent"))
+                (external (cli-result-option result "external-ref"))
+                (available (option-int result "available-at"))
+                (metadata (cli-result-option result "metadata")))
+            (let ((body
+                    (list
+                      (list :id id) (list :project project) (list :title title)
+                      (list :description description) (list :status "open")
+                      (list :priority priority) (list :issue_type issue-type)
+                      (list :labels (if (nil? label) (list) (list label)))
+                      (list :parent parent) (list :assignee nil)
+                      (list :actor_kind nil) (list :expires_at nil)
+                      (list :available_at (if (nil? available) (+ now 600) available)) (list :created_at now)
+                      (list :updated_at now) (list :closed_at nil)
+                      (list :metadata (if (nil? metadata) (json-object) (json-decode metadata)))
+                      (list :external_ref external)
+                      (list :evidence (list)))))
+              (save-issue body now)
+              (log-event id now actor "created" title)
+              (list (list :id id)))))))))
+
+(defun status-valid? (status)
+  (or (= status "open") (= status "in_progress") (= status "review")
+      (= status "blocked") (= status "deferred") (= status "closed")))
+
+(defun update-issue (result actor now)
+  (let ((id (first (cli-result-args result))))
+    (let ((body (issue-body id)))
+      (let ((title (cli-result-option result "title"))
+            (description (cli-result-option result "description"))
+            (notes (cli-result-option result "notes"))
+            (status (cli-result-option result "status"))
+            (priority (option-int result "priority")))
+        (if (and (not (nil? status)) (not (status-valid? status)))
+            (mb-fail (str "bad status: " status)))
+        (let ((body (if (nil? title) body (assoc :title title body))))
+          (let ((body (if (nil? description) body (assoc :description description body))))
+            (let ((body (if (nil? notes) body
+                            (assoc :description
+                              (if (= (field body :description) "") notes
+                                  (str (field body :description) "\n" notes))
+                              body))))
+              (let ((body (if (nil? priority) body (assoc :priority priority body))))
+                (let ((body (if (nil? status) body
+                                (assoc :closed_at (if (= status "closed") now nil)
+                                  (assoc :status status body)))))
+                  (let ((body (assoc :available_at (+ now 120)
+                                  (assoc :updated_at now body))))
+                    (save-issue body now)
+                    (log-event id now actor "updated" "")
+                    (let ((assignee (cli-result-option result "assignee")))
+                      (if (nil? assignee) body (claim-issue id assignee "agent" nil actor now)))))))))))))
+
+(defun claim-issue (id assignee kind ttl actor now)
+  (let ((entry (entry-of (entity "issue" id))))
+    (if (nil? entry) (mb-fail (str "issue not found: " id)))
+    (let ((body (entry-body entry)))
+      (let ((held (and (not (nil? (field body :assignee)))
+                       (field body :expires_at)
+                       (> (field body :expires_at) now))))
+        (if (and held (not (= (field body :assignee) assignee)))
+            (mb-fail (str id " is claimed by " (field body :assignee))))
+        (let ((ttl (if (nil? ttl)
+                       (if (= kind "human") 172800 1800)
+                       ttl)))
+          (let ((body (assoc :actor_kind kind
+                        (assoc :expires_at (+ now ttl)
+                          (assoc :updated_at now
+                            (assoc :assignee assignee body))))))
+            (let ((cas (soil:records/compare-and-swap
+                         (field entry :key) (entry-version entry)
+                         (make-entry "" (entity "issue" id) "marbles.issue@1" body now))))
+              (if (not (ok? cas)) (mb-fail (str "claim failed: " (field cas :err))))
+              (let ((applied (field (value cas) :applied)))
+                (if (not applied)
+                    (mb-fail (str "claim for " id " lost a race; retry"))
+                    (begin
+                      (log-event id now assignee "claimed" kind)
+                      (list (list :id id) (list :assignee assignee)
+                            (list :actor_kind kind) (list :expires_at (+ now ttl)))))))))))))
+
+(defun claim-command (result actor now)
+  (let ((id (first (cli-result-args result)))
+        (assignee (or (cli-result-option result "as") actor))
+        (kind (if (cli-result-option result "human") "human" "agent"))
+        (ttl (option-int result "ttl")))
+    (claim-issue id assignee kind ttl actor now)))
+
+(defun touch-issue (result actor now)
+  (let ((id (first (cli-result-args result)))
+        (holder (or (cli-result-option result "as") actor)))
+    (let ((entry (entry-of (entity "issue" id))))
+      (if (nil? entry) (mb-fail (str "issue not found: " id)))
+      (let ((body (entry-body entry)))
+        (if (not (= (field body :assignee) holder))
+            (mb-fail (str id " is not claimed by " holder)))
+        (let ((ttl (if (= (field body :actor_kind) "human") 172800 1800)))
+          (let ((body (assoc :expires_at (+ now ttl)
+                        (assoc :updated_at now body))))
+            (let ((cas (soil:records/compare-and-swap
+                         (field entry :key) (entry-version entry)
+                         (make-entry "" (entity "issue" id) "marbles.issue@1" body now))))
+              (if (not (and (ok? cas) (field (value cas) :applied)))
+                  (mb-fail "touch lost a race; retry"))
+              (log-event id now holder "heartbeat" "")
+              (list (list :expires_at (+ now ttl))))))))))
+
+(defun release-issue (result actor now)
+  (let ((id (first (cli-result-args result)))
+        (holder (or (cli-result-option result "as") actor)))
+    (let ((body (issue-body id)))
+      (if (not (= (field body :assignee) holder))
+          (mb-fail (str id " is not claimed by " holder)))
+      (let ((body (assoc :expires_at nil
+                    (assoc :actor_kind nil
+                      (assoc :assignee nil
+                        (assoc :updated_at now body))))))
+        (save-issue body now)
+        (log-event id now holder "released" "")
+        (list (list :released id))))))
+
+(defun evidence-entry (kind value)
+  (list (list :kind kind) (list :value value)))
+
+(defun evidence-kind? (entry kind)
+  (= (field entry :kind) kind))
+
+(defun evidence-set (evidence kind value)
+  (cons (evidence-entry kind value)
+        (filter-with 'evidence-kind? kind evidence)))
+
+(defun evidence-has? (evidence kind value)
+  (if (nil? evidence) #f
+      (if (and (= (field (first evidence) :kind) kind)
+               (= (field (first evidence) :value) value))
+          #t
+          (evidence-has? (rest evidence) kind value))))
+
+(defun evidence-add (evidence kind value)
+  (if (evidence-has? evidence kind value) evidence
+      (append evidence (list (evidence-entry kind value)))))
+
+(defun review-issue (result actor now)
+  (let ((id (first (cli-result-args result)))
+        (pr (cli-result-option result "pr"))
+        (commit (cli-result-option result "commit")))
+    (let ((body (issue-body id)))
+      (let ((evidence (or (field body :evidence) nil)))
+        (let ((evidence (if (nil? pr) evidence (evidence-set evidence "pr" pr))))
+          (let ((evidence (if (nil? commit) evidence (evidence-set evidence "commit" commit))))
+            (let ((body (assoc-all body
+                          (list (list :evidence evidence)
+                                (list :status "review")
+                                (list :updated_at now)))))
+              (save-issue body now)
+              (log-event id now actor "status" "review")
+              body)))))))
+
+(defun close-issue (result actor now)
+  (let ((id (first (cli-result-args result)))
+        (reason (cli-result-option result "reason"))
+        (pr (cli-result-option result "pr"))
+        (commit (cli-result-option result "commit"))
+        (ack (cli-result-option result "ack")))
+    (if (and (nil? pr) (nil? commit) (nil? ack))
+        (mb-fail "close needs --pr, --commit, or --ack"))
+    (if (> (dependency-count id) 0)
+        (mb-fail (str id " still waits on an open dependency")))
+    (let ((body (issue-body id)))
+      (let ((evidence (or (field body :evidence) nil)))
+        (let ((evidence (if (nil? pr) evidence (evidence-add evidence "pr" pr))))
+          (let ((evidence (if (nil? commit) evidence (evidence-add evidence "commit" commit))))
+            (let ((evidence (if (nil? ack) evidence (evidence-add evidence "ack" ack))))
+              (let ((body (assoc-all body
+                            (list (list :evidence evidence)
+                                  (list :closed_at now)
+                                  (list :expires_at nil)
+                                  (list :actor_kind nil)
+                                  (list :assignee nil)
+                                  (list :status "closed")
+                                  (list :updated_at now)))))
+                (save-issue body now)
+                (log-event id now actor "closed" (or reason ""))
+                body))))))))
+
+(defun dep-add (result actor now)
+  (let ((child (first (cli-result-args result)))
+        (parent (nth 1 (cli-result-args result))))
+    (issue-body child)
+    (issue-body parent)
+    (if (= child parent) (mb-fail "an issue cannot depend on itself"))
+    (upsert-record "" (entity2 "dependency" child parent) "marbles.dependency@1"
+      (list (list :child child) (list :parent parent)) now)
+    (log-event child now actor "depends_on" parent)
+    (list (list :child child) (list :parent parent) (list :present #t))))
+
+(defun dep-rm (result actor now)
+  (let ((child (first (cli-result-args result)))
+        (parent (nth 1 (cli-result-args result))))
+    (let ((delete (soil:records/delete (record-key "" (entity2 "dependency" child parent)))))
+      (log-event child now actor "unblocked_from" parent)
+      (list (list :child child) (list :parent parent) (list :present #f)))))
+
+(defun label-has? (label labels)
+  (if (nil? labels) #f
+      (if (= (first labels) label) #t (label-has? label (rest labels)))))
+
+(defun label-not? (entry label)
+  (not (= entry label)))
+
+(defun label-add (result actor now)
+  (let ((id (first (cli-result-args result)))
+        (label (nth 1 (cli-result-args result))))
+    (let ((body (issue-body id)))
+      (let ((labels (if (label-has? label (field body :labels))
+                        (field body :labels)
+                        (append (field body :labels) (list label)))))
+        (let ((body (assoc :labels labels (assoc :updated_at now body))))
+          (save-issue body now)
+          (log-event id now actor "labels" label)
+          (list (list :id id) (list :label label) (list :present #t)))))))
+
+(defun label-rm (result actor now)
+  (let ((id (first (cli-result-args result)))
+        (label (nth 1 (cli-result-args result))))
+    (let ((body (issue-body id)))
+      (let ((labels (or-empty (filter-with 'label-not? label (field body :labels)))))
+        (let ((body (assoc :labels labels (assoc :updated_at now body))))
+          (save-issue body now)
+          (log-event id now actor "labels" label)
+          (list (list :id id) (list :label label) (list :present #f)))))))
+
+(defun history-issue (id)
+  (typed-bodies "marbles_event/" "issue_id" id))
+
+(defun stats-project (issue stats)
+  (let ((project (field issue :project))
+        (status (field issue :status)))
+    (let ((stats (if (nil? stats) (list) stats)))
+      (let ((entry (field stats project)))
+        (let ((entry (if (nil? entry)
+                         (list (list (keyword status) 1))
+                         (assoc (keyword status) (+ (or (field entry status) 0) 1) entry))))
+          (if (nil? (field stats project))
+              (list (list (keyword project) entry))
+              (assoc project entry stats)))))))
+
+(defun stats-all (issues stats)
+  (if (nil? issues) stats
+      (stats-all (rest issues) (stats-project (first issues) stats))))
+
+(defun stats-command ()
+  (stats-all (all-issue-bodies) nil))
+
+; ---------------------------------------------------------------------------
+; Dispatch
+; ---------------------------------------------------------------------------
+
+(defun mb-result (result actor now)
+  (let ((path (field result :path))
+        (project (project-filter result)))
     (cond
-      ((= name "list") (println (json-encode (mb-list result))))
-      ((= name "ready") (println (json-encode (mb-ready result))))
-      ((= name "show") (println (json-encode (mb-show result))))
-      (else (mb-fail (str "unsupported command: " name))))))
+      ((= path "mb list")
+        (or-empty (list-project project (cli-result-option result "id")
+          (cli-result-option result "all") (limit-option result))))
+      ((= path "mb ready") (or-empty (ready-project project)))
+      ((= path "mb show") (let ((id (first (cli-result-args result))))
+                            (list (issue-with-counts (issue-body id)))))
+      ((= path "mb history") (or-empty (history-issue (first (cli-result-args result)))))
+      ((= path "mb create") (create-issue result actor now))
+      ((= path "mb update") (update-issue result actor now))
+      ((= path "mb claim") (claim-command result actor now))
+      ((= path "mb touch") (touch-issue result actor now))
+      ((= path "mb release") (release-issue result actor now))
+      ((= path "mb review") (review-issue result actor now))
+      ((= path "mb close") (close-issue result actor now))
+      ((= path "mb dep add") (dep-add result actor now))
+      ((= path "mb dep rm") (dep-rm result actor now))
+      ((= path "mb label add") (label-add result actor now))
+      ((= path "mb label rm") (label-rm result actor now))
+      ((= path "mb stats") (stats-command))
+      (else (mb-fail (str "unsupported command: " path))))))
 
-; REPL-friendly names. Load this file and call `(marbles-ready "marbles")`,
-; `(marbles-list "marbles" #f 10)`, or `(marbles-show "marbles-an4z")`.
+(defun marbles-result (command args)
+  (let ((parsed (cli-parse-argv (mb-spec) (cons command args))))
+    (if (cli-ok? parsed)
+        (mb-result (field parsed :ok) "agent" (now-seconds))
+        (mb-fail (field parsed :error)))))
+
+(defun marbles (command args)
+  (println (json-encode (marbles-result command args))))
+
+; Load in a REPL and call these; each delegates to the same parser as `mb`.
 (defun marbles-list (project)
-  (list-project project nil #f 0))
-
+  (marbles-result "list" (list "--project" project)))
 (defun marbles-ready (project)
-  (ready-project project))
-
+  (marbles-result "ready" (list "--project" project)))
 (defun marbles-show (id)
-  (show-issue id))
+  (marbles-result "show" (list id)))
+
+(defun mb-dispatch (result actor now)
+  (println (json-encode (mb-result result actor now))))
 
 (defun main ()
   (let ((parsed (cli-parse-argv (mb-spec) (cli-args))))
     (if (cli-ok? parsed)
-        (mb-dispatch (field parsed :ok))
+        (let ((result (field parsed :ok)))
+          (mb-dispatch result (actor-name result) (now-seconds)))
         (mb-fail (field parsed :error)))))

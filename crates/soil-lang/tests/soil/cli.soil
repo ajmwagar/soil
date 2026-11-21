@@ -82,3 +82,15 @@
 
 (defun test/bytes-string ()
   (= (string-from-bytes (list 104 105)) "hi"))
+
+(defun test/cli-path ()
+  (let ((result (cli-parse-argv (test/cli-spec) (list "show" "x"))))
+    (= (field (field result :ok) :path) "marbles show")))
+
+(defun test/cli-builders ()
+  (let ((spec (cli-spec "x" "about" "1"
+                (list (cli-opt "json" "JSON"))
+                (list (cli-command-entry "go" "Go" nil nil)))))
+    (and (= (field spec :name) "x")
+         (= (field (first (field spec :commands)) :name) "go")
+         (= (field (first (field spec :options)) :long) "json"))))

@@ -132,10 +132,11 @@
                (field (nth (if (nil? args) 0 (length args)) required) :name)))
         (list (list :ok #t)))))
 
-(defun cli-result (command options args)
+(defun cli-result (command options args path)
   (list
     (list :command command)
     (list :name (field command :name))
+    (list :path path)
     (list :options options)
     (list :args args)))
 
@@ -192,7 +193,7 @@
           (cli-error (str "a command is required; try `" path " --help`"))
           (let ((validation (cli-validate-args spec args)))
             (if (cli-ok? validation)
-                (list (list :ok (cli-result spec options args)))
+                (list (list :ok (cli-result spec options args path)))
                 validation))))
     ((= (first argv) "--")
       (cli-parse (list) options (append args (rest argv)) path spec))
@@ -234,6 +235,51 @@
                 args path spec))))))
     (else
       (cli-parse-positional spec (first argv) (rest argv) options args path))))
+
+;;; Declarative spec builders.
+;;;
+;;; The parser still consumes plain data. These helpers only remove the nested
+;;; `(list (list :key value) ...)` noise from a command's source, so a spec reads
+;;; as commands, options, and args rather than as association-list plumbing.
+(defun cli-opt (long help)
+  (list (list :long long) (list :help help)))
+
+(defun cli-opt-short (long short help)
+  (list (list :long long) (list :short short) (list :help help)))
+
+(defun cli-opt-value (long value help)
+  (list (list :long long) (list :value value) (list :help help)))
+
+(defun cli-opt-short-value (long short value help)
+  (list (list :long long) (list :short short) (list :value value) (list :help help)))
+
+(defun cli-arg (name required help)
+  (list (list :name name) (list :required required) (list :help help)))
+
+(defun cli-command-group (name about options commands)
+  (list
+    (list :name name)
+    (list :about about)
+    (list :options options)
+    (list :args nil)
+    (list :commands commands)))
+
+(defun cli-command-entry (name about options args)
+  (list
+    (list :name name)
+    (list :about about)
+    (list :options options)
+    (list :args args)
+    (list :commands nil)))
+
+(defun cli-spec (name about version options commands)
+  (list
+    (list :name name)
+    (list :about about)
+    (list :version version)
+    (list :options options)
+    (list :args nil)
+    (list :commands commands)))
 
 ;;; Parse an argv list against a command spec.
 ;;;

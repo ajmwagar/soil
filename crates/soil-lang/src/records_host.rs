@@ -158,6 +158,72 @@ impl SoilRecordsHost {
             .map(|record| record.map(|record| Self::entry_value(collection, record)))
             .map_err(|error| error.to_string())
     }
+
+    /// Conditional write over the same revision/origin pair the WIT exposes.
+    ///
+    /// A records book is single-writer, so this is a lock-free check on the
+    /// materialized revision: compare the caller's expected version, then put
+    /// or tombstone. A conflict returns the current entry, not an error, so the
+    /// guest can decide whether to retry or report who holds the claim.
+    fn compare_and_swap_page(
+        &mut self,
+        key: &Value,
+        expected: Option<&Value>,
+        entry: &Value,
+    ) -> std::result::Result<Value, String> {
+        let (collection, id) = parse_key(key)?;
+        let scoped = Self::scoped(&collection, &id);
+        let current = self
+            .store
+            .get_optional(&self.book, &scoped)
+            .map_err(|error| error.to_string())?;
+        let current_entry = current
+            .as_ref()
+            .map(|record| Self::entry_value(&collection, record.clone()));
+        let matches = match (expected, &current) {
+            (None, None) => true,
+            (None, Some(record)) => record.deleted,
+            (Some(_), None) => return Ok(err("not-found")),
+            (Some(version), Some(record)) => {
+                field_value(version, "revision").as_f64().map(|n| n as u64)
+                    == Some(record.updated_hlc)
+                    && field_value(version, "origin").as_str() == Some(record.origin.as_str())
+            }
+        };
+        if !matches {
+            return Ok(ok(Value::List(vec![
+                pair("applied", Value::Bool(false)),
+                pair("entry", current_entry.unwrap_or(Value::Nil)),
+            ])));
+        }
+
+        let deleted = truthy(&field_value(entry, "deleted"));
+        let schema = field_value(entry, "schema")
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| current.as_ref().map(|record| record.schema_id.clone()))
+            .unwrap_or_else(|| "soil.record.v1".to_string());
+        if deleted {
+            self.store
+                .delete_record(&self.book, &scoped, &schema, 1)
+                .map_err(|error| error.to_string())?;
+        } else {
+            let fields = body_json(&field_value(entry, "body"))?;
+            self.store
+                .put_record(&self.book, &scoped, &schema, 1, fields)
+                .map_err(|error| error.to_string())?;
+        }
+        let written = self
+            .store
+            .get_optional(&self.book, &scoped)
+            .map_err(|error| error.to_string())?
+            .map(|record| Self::entry_value(&collection, record))
+            .unwrap_or(Value::Nil);
+        Ok(ok(Value::List(vec![
+            pair("applied", Value::Bool(true)),
+            pair("entry", written),
+        ])))
+    }
 }
 
 impl Host for SoilRecordsHost {
@@ -165,7 +231,15 @@ impl Host for SoilRecordsHost {
         interface == "soil:records"
             && matches!(
                 function,
-                "scan" | "scan-query" | "get" | "upsert" | "delete" | "changes" | "scan-packed" | "cas"
+                "scan"
+                    | "scan-query"
+                    | "get"
+                    | "upsert"
+                    | "delete"
+                    | "changes"
+                    | "scan-packed"
+                    | "cas"
+                    | "compare-and-swap"
             )
     }
 
@@ -263,10 +337,24 @@ impl Host for SoilRecordsHost {
                     .map_err(|error| error.to_string())?;
                 Ok(ok(Value::Nil))
             }
-            "scan-packed" | "cas" => Ok(err("unsupported")),
+            "compare-and-swap" | "cas" => {
+                let key = args
+                    .first()
+                    .ok_or_else(|| "compare-and-swap needs a key".to_string())?;
+                let expected = args.get(1).filter(|value| !matches!(value, Value::Nil));
+                let entry = args
+                    .get(2)
+                    .ok_or_else(|| "compare-and-swap needs an entry".to_string())?;
+                self.compare_and_swap_page(key, expected, entry)
+            }
+            "scan-packed" => Ok(err("unsupported")),
             other => Err(format!("unknown soil:records function `{other}`")),
         }
     }
+}
+
+fn truthy(value: &Value) -> bool {
+    !matches!(value, Value::Nil | Value::Bool(false))
 }
 
 fn parse_key(value: &Value) -> std::result::Result<(String, String), String> {

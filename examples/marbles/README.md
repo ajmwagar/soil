@@ -48,29 +48,48 @@ Gantt; without it the plan section is omitted. See
 [`docs/marbles-scope.md`](../../docs/marbles-scope.md) for the long-term
 contract and explicit `--project`/`--folder`/`--goal` flags.
 
-## Soil CLI (read path)
+## Soil CLI
 
-`examples/marbles/mb.soil` is the start of the Soil `mb` replacement. It reads
-the same records book as the Rust Spore and uses the host's `scan-query`
-projection, so `list --project` does not decode every issue in the book.
+`examples/marbles/mb.soil` is the Soil `mb` replacement for the records-backed
+command surface. Reads use the host's `scan-query` projection, so
+`list --project` does not decode every issue in the book. Writes append the same
+Marbles JSON bodies and audit events, and `claim` uses `compare-and-swap` on the
+revision and origin it read.
 
 ```sh
 .bin/soil-lang   --records-root "$HOME/.local/share/fungos/records"   --book personal/avery/marbles   crates/soil-lang/stdlib/prelude.soil   crates/soil-lang/stdlib/cli.soil   crates/soil-lang/bindings/soil-records.soil   crates/soil-lang/bindings/soil-time.soil   crates/soil-lang/bindings/wasi-cli.soil   examples/marbles/mb.soil -- list --project marbles --limit 5
 
-# ready and show also work
-... examples/marbles/mb.soil -- ready --project marbles
-... examples/marbles/mb.soil -- show marbles-an4z
+# lifecycle
+... examples/marbles/mb.soil -- create "Measure the thing" \
+  --project marbles --prefix marbles --available-at 0
+... examples/marbles/mb.soil -- claim <id> --as agent-7 --ttl 900
+... examples/marbles/mb.soil -- review <id> --pr https://github.com/org/repo/pull/1
+... examples/marbles/mb.soil -- close <id> --pr https://github.com/org/repo/pull/1 --commit <sha>
 ```
 
-The read path is the REPL-friendly part. Load the same files and call:
+Ported commands: `list`, `ready`, `show`, `history`, `create`, `update`,
+`claim`, `touch`, `release`, `review`, `close`, `dep add|rm`, `label add|rm`,
+and `stats`.
+
+The parser, spec builders, and record helpers are reusable. Load the same files
+in a Soil REPL and call the generic entry point:
 
 ```soil
+(marbles "list" (list "--project" "marbles"))
+
+; tiny projections of the same command
 (marbles-ready "marbles")
 (marbles-list "marbles")
 (marbles-show "marbles-an4z")
 ```
 
-Writes, claim CAS, events, and the full command tree are the next port slice.
+There is no `defmacro` in the runtime yet, so the source stays small with data
+builders (`cli-spec`, `cli-command-entry`, `cli-opt`) and one `marbles` function
+rather than a generated wrapper per command.
+
+`scan-query` and `compare-and-swap` are currently native `soil-lang` host
+extensions. They still need to be promoted into the canonical `soil:records`
+WIT and the `soil`/`soil-command` hosts for a wasm `mb`.
 
 ## Live host
 
@@ -103,5 +122,6 @@ so source edits hot-reload. Actions are intentionally no-ops for now.
 - **Plan** — Gantt rows, estimates, critical path, concurrency.
 - **Queue** — ready/in-flight/review/blocked lanes and recently closed.
 
-The next slice is the write path: `claim`, `review`, and `close` become forms
-that post intents back to the host while the read path stays a pure function.
+The next slice is the rest of the surface: `supersede`, `sweep`, `projects`,
+goal/epic/task creation, plan import, and promoting the native records
+extensions into WIT for a wasm build.

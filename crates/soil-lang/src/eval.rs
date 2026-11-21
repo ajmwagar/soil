@@ -212,6 +212,14 @@ impl Runtime {
                     ))),
                     "begin" | "do" => self.eval_body(&items[1..], env),
                     "host-call" => self.eval_host_call(items, env),
+                    "keyword" => {
+                        let value = self.eval(require(items, 1, "keyword")?, env)?;
+                        let text = value
+                            .as_str()
+                            .ok_or_else(|| anyhow!("keyword expects a string or symbol"))?;
+                        Ok(Value::Keyword(text.to_string()))
+                    }
+                    "json-object" => Ok(json_object()),
                     "list" => Ok(Value::List(self.eval_args(&items[1..], env)?)),
                     "argv" => Ok(Value::List(
                         self.args.iter().cloned().map(Value::String).collect(),
@@ -511,6 +519,13 @@ impl Runtime {
                             .ok_or_else(|| anyhow!("pow expects numbers"))?;
                         Ok(Value::Float(base.powf(exponent)))
                     }
+                    "int" => {
+                        let value = self.eval(require(items, 1, "int")?, env)?;
+                        let value = value
+                            .as_f64()
+                            .ok_or_else(|| anyhow!("int expects a number"))?;
+                        Ok(Value::Int(value as i64))
+                    }
                     "round" => {
                         let value = self.eval(require(items, 1, "round")?, env)?;
                         let value = value
@@ -708,6 +723,19 @@ fn value_bytes(value: &Value) -> Result<Vec<u8>> {
     }
 }
 
+/// An empty JSON object cannot be distinguished from an empty array in the
+/// list-only value model. A one-symbol marker keeps `{}` round-tripping through
+/// `json-decode` / `json-encode`; it is not a user-visible record.
+const JSON_OBJECT_MARKER: &str = "__json_object__";
+
+fn json_object() -> Value {
+    Value::List(vec![Value::Symbol(JSON_OBJECT_MARKER.to_string())])
+}
+
+fn is_json_object(items: &[Value]) -> bool {
+    matches!(items, [Value::Symbol(name)] if name == JSON_OBJECT_MARKER)
+}
+
 /// Decode a JSON value into the record/list shape Soil uses.
 ///
 /// JSON objects become lists of `(keyword value)` pairs, matching
@@ -723,6 +751,7 @@ pub fn json_to_value(json: &serde_json::Value) -> Value {
             .unwrap_or(Value::Nil),
         serde_json::Value::String(text) => Value::String(text.clone()),
         serde_json::Value::Array(items) => Value::List(items.iter().map(json_to_value).collect()),
+        serde_json::Value::Object(object) if object.is_empty() => json_object(),
         serde_json::Value::Object(object) => Value::List(
             object
                 .iter()
@@ -747,6 +776,7 @@ pub fn value_to_json(value: &Value) -> serde_json::Value {
         Value::String(text) | Value::Symbol(text) | Value::Keyword(text) => {
             serde_json::Value::String(text.clone())
         }
+        Value::List(items) if is_json_object(items) => serde_json::Value::Object(Default::default()),
         Value::List(items) => {
             let is_object = items.iter().all(|item| {
                 item.as_list().is_some_and(|pair| {
