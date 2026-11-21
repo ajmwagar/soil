@@ -39,6 +39,20 @@ cargo run -p soil-lang --bin soil-lang -- \
 ((:devices (("az09:1" (:in-use 0.85)) ...)) (:person (:present 0.9)))
 ```
 
+## REPL
+
+```sh
+cargo run -p soil-lang --bin soil-repl -- \
+  --prelude stdlib/prelude.soil --source examples/harness.soil
+```
+
+Readline editing, persistent history, function/command completion, `:load`,
+`:reload`, `:eval`, `:time`, `:inspect`, `:source`, and `:quit`.
+
+The Rust binary is currently the terminal host and command loop. The target is
+to move command/reload policy into a `repl.soil` module and leave Rust with the
+line editor, image primitives, history, and clock.
+
 ## Edit -> eval harness
 
 The smallest live loop is a file-backed image:

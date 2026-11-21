@@ -81,6 +81,12 @@ impl Runtime {
         self.functions.contains_key(name)
     }
 
+    pub fn function_names(&self) -> Vec<String> {
+        let mut names: Vec<_> = self.functions.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
     pub fn load_file(&mut self, path: impl AsRef<Path>) -> Result<Value> {
         let path = path.as_ref();
         let source =
