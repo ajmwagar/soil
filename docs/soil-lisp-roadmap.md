@@ -11,6 +11,7 @@
 | Soil is a homoiconic Lisp substrate | S-expressions are the source, IR, doc format, and agent-edit format. One reader, not several. |
 | Tiny Rust core, heavy capabilities in WIT | Numerics, GPU, audio, UI host, filesystem, inference live behind WIT. The core stays auditable. |
 | Libraries and applications are the same artifact: **spores** | One package type, one resolver, one lockfile. "Library" vs "app" is a launch convention, not a package class. |
+| Spores live in the spores repo | Soil owns the runtime, language, WIT, and language prelude. Shared spores live in the separate `spores` repository; Soil does not grow a `spores/` subdirectory. `tend` resolves both. |
 | Build tool is **tend** | `tend build/test/wasm/doc/add/run`. Existing `tend-core` (Canvas Lua composition) becomes one subcommand, not the tool. |
 | River is merged and **deadnamed** | Code and tests move into `soil-lang`; the name does not appear in crates, WIT, docs, or commands. One `HISTORY.md` line records the merge. |
 | HTML/CSS is the first UI path | Lisp emits UI forms + stylesheets + signal updates. A thin JS WIT adapter reconciles to real DOM. Canvas/GPU remains a separate WIT implementation. |
@@ -41,12 +42,12 @@ The roadmap therefore **consolidates and completes** rather than starting over.
 | 2 | WIT boundary and host parity | 5 wk | Same spore runs native and `wasm32-wasip2` |
 | 3 | tend and spore packaging | 5 wk | `tend` builds, tests, runs, and resolves spores |
 | 4 | Signals + HTML/CSS UI | 8 wk | Editable browser UI driven only by Lisp forms |
-| 5 | Constrained decoding | 5 wk | Prose → valid spore/panel, validated and repaired |
+| 5 | Constrained decoding | external | Owned outside Soil; consumes the grammar + structural actions |
 | 6 | Self-documentation | 6 wk | Soil documents itself from its own source |
 | 7 | Self-hosting and WASM deployment | 8 wk | Reader/eval bootstrapped in Soil; docs spore on the web |
 | 8 | Hardening and 1.0 | ongoing | Spec, fuzzing, performance budgets, stable ABI |
 
-Phases 1–3 are mostly sequential. Phase 4 can start once Phase 1 has macros and Phase 2 has a stable value codec. Phase 5 depends on Phase 1 (grammar) and Phase 3 (schemas). Phase 6 depends on Phase 1 (spans/comments) and Phase 4 (docs UI). Phase 7 depends on 1, 3, and 6.
+Phases 1–3 are mostly sequential. Phase 4 can start once Phase 1 has macros and Phase 2 has a stable value codec. Phase 5 is owned elsewhere; Soil only exports the grammar, structural actions, and codec. Phase 6 depends on Phase 1 (spans/comments) and Phase 4 (docs UI). Phase 7 depends on 1, 3, and 6.
 
 ---
 
@@ -129,6 +130,11 @@ Phases 1–3 are mostly sequential. Phase 4 can start once Phase 1 has macros an
   - a browser host backed by JS imports.
 - Generated bindings via the existing `witgen`, with a checked-in golden output and a CI diff gate.
 - Capability manifest emitted by `tend` and enforced by hosts: a spore can only call what it declares.
+- **No generic C FFI in the language or WIT.** A C library used by a host
+  becomes a narrow Rust adapter behind a specific WIT capability (`soil:codec`
+  for libopus is the model). A native-only, feature-gated, process-isolated
+  prototyping escape hatch may be added later; it is not a Soil capability,
+  not available to Wasm/browser hosts, and not part of the stable ABI.
 - A conformance spore that exercises: no capability, records, time, inference stub, denied grant, and error mapping.
 
 **Done when**
@@ -145,6 +151,10 @@ Phases 1–3 are mostly sequential. Phase 4 can start once Phase 1 has macros an
 ## Phase 3 — tend and spore packaging (5 weeks)
 
 **Goal:** one tool to cultivate spores, and one package shape for libraries and apps.
+
+Core spores live in the separate `spores` repository, not under `soil/`.
+`tend` resolves that repo by path for development and by git/CID for
+distribution. Soil's own examples and fixtures remain tests, not spores.
 
 **Deliverables**
 
@@ -213,30 +223,32 @@ Phases 1–3 are mostly sequential. Phase 4 can start once Phase 1 has macros an
 
 ---
 
-## Phase 5 — Constrained decoding (5 weeks)
+## Phase 5 — Constrained decoding (external)
 
-**Goal:** a model can generate valid Soil forms, reliably, from a schema and a prompt.
+**Not a Soil deliverable.** The decoder/model path is owned by another team or
+repository. Soil provides the stable pieces it consumes:
 
-**Deliverables**
+- the reader grammar as a machine-readable artifact (GBNF or equivalent),
+- the structural action set (`open`, `atom`, `string`, `comment`, `close`,
+  `end`, `hole`) shared by the editor and decoder,
+- span/comment-preserving parse and canonical print,
+- `soil:sexp` for values crossing the host boundary,
+- `tend schema` output for spore, UI, and style forms.
 
-- Grammar generation:
-  - reader grammar exported as a machine-readable grammar (GBNF or JSON-schema-equivalent) with a version.
-  - spore forms, UI forms, and style forms each get a schema generated from the same definitions used by the reader/printer.
-- A `tend schema` command that emits grammars for a spore, a UI panel, or a rewrite rule.
-- Integration with `soil:inference`:
-  - constrained completion request: prompt + grammar id + budget → forms.
-  - validation → repair loop: parse, type/arity check, capability check, then either accept or return diagnostics to the model.
-- Agent-facing edit path: generate a *patch* of forms plus preserved comments, not a whole-file rewrite. Reuse Phase 1 spans.
-- Corpus + eval harness: prose → form → validate → render. Track valid-first-try rate and repair rounds.
+Soil does not own prompt construction, model calls, token budgets, repair
+policy, or decoder integration. The structural-editing contract is described in
+[`docs/soil-structural-editing.md`](soil-structural-editing.md).
 
 **Done when**
 
-- From a prose brief, a constrained model produces a UI panel that parses, validates, and renders in the browser in one shot for a fixed benchmark set.
-- A model can add a form to an existing file without dropping comments or unrelated code.
-- Schemas are versioned and covered by golden tests.
-- Constrained decoding is optional: hand-written forms and macros take the same path.
+- An external decoder can consume the exported grammar and actions without
+  importing Soil internals.
+- An external model can add a form to an existing file without dropping
+  comments or unrelated code.
+- The grammar and schema artifacts are versioned and golden-tested in Soil.
+- Hand-written forms and macros take the same parse/print path.
 
-**Depends on:** Phase 1 (grammar, spans), Phase 3 (schemas), and an inference host (existing WIT surface).
+**Depends on:** Phase 1 (spans/grammar), Phase 2 (`soil:sexp`).
 
 ---
 
@@ -341,7 +353,7 @@ Principle: **Rust is the machine; Soil is the program.** If a feature is not on 
 | **0.2 "Hosts"** | Phase 2 done; conformance spore on native + WASI |
 | **0.3 "Spores"** | Phase 3 done; `tend` usable end-to-end; two example spores |
 | **0.4 "Surfaces"** | Phase 4 done; browser + native HTML/CSS UI |
-| **0.5 "Generated"** | Phase 5 done; prose → valid forms with repair |
+| **0.5 "Generated"** | Phase 5 external; exported grammar/actions consumed by the decoder |
 | **0.6 "Self-documenting"** | Phase 6 done; docs generated from source |
 | **0.7 "Self-hosting"** | Phase 7 done; browser deployment, Soil reader/eval |
 | **1.0** | Phase 8 gates; stable ABI, spec, security review |
@@ -356,7 +368,7 @@ Principle: **Rust is the machine; Soil is the program.** If a feature is not on 
 | Comment/span preservation is bolted on late | Phase 1 gate; all downstream docs and agent edits depend on it |
 | UI path drifts into a DOM API | `soil:ui` contract is forms + events only; JS adapter is replaceable |
 | GC pauses or leaks under UI workloads | Budgets in Phase 1; benches in Phase 4; deterministic collection points |
-| Constrained decoding produces plausible but invalid forms | Validation/repair loop is mandatory; benchmark first-try and repair rates |
+| External decoder drifts from the grammar | Grammar/action versioning; golden vectors; conformance fixtures in Soil |
 | WASM/native divergence | Same conformance spore on both hosts; Phase 2 gate |
 | tend becomes a package manager | No registry in v1; path/git/content-addressed only |
 | River scope returns through the merge | Explicit non-goal; S-expression IR only; document rejected surface |

@@ -7519,6 +7519,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "soil-lang"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fungos-records 0.1.0 (git+https://github.com/mycelium-linux/records.git?rev=1fa03a239b6191f61ecf9d5f9c5284ba9045a1cd)",
+ "serde_json",
+ "tempfile",
+ "wasm-encoder 0.263.0",
+ "wasmtime",
+ "wit-parser 0.263.0",
+]
+
+[[package]]
 name = "soil-layout"
 version = "0.1.0"
 dependencies = [
@@ -7907,6 +7920,15 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "soil-scene",
+]
+
+[[package]]
+name = "soil-ui-proto"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "soil-lang",
 ]
 
 [[package]]
@@ -11219,6 +11241,25 @@ dependencies = [
  "serde_json",
  "unicode-ident",
  "wasmparser 0.261.0",
+]
+
+[[package]]
+name = "wit-parser"
+version = "0.263.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "874d6ce9db4261cb66980ab14f3da066b24292497b6f46f988c0d1b9b27913f3"
+dependencies = [
+ "anyhow",
+ "hashbrown 0.17.1",
+ "id-arena",
+ "indexmap",
+ "log",
+ "semver",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "unicode-ident",
+ "wasmparser 0.263.0",
 ]
 
 [[package]]
