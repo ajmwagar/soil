@@ -7,6 +7,8 @@
 
 use std::{sync::Arc, time::Duration};
 
+#[cfg(unix)]
+use soil::creds::{GeodeCredentials, HostHandle};
 use soil::http_host::{
     CredentialProvider, Error as HttpError, HttpHost, HttpPolicy, Method as HttpMethod,
     Request as HttpRequest,
@@ -36,6 +38,36 @@ impl NativeHost {
             time: SystemTimeHost,
             http: None,
         })
+    }
+
+    /// Grant `soil:http` for the named origins, leasing path credentials from
+    /// the Geode daemon at `socket`.
+    ///
+    /// The guest still names only the handle `default`. The reference, the
+    /// purpose and the choice of path substitution stay host configuration, so
+    /// a Soil program cannot address another Geode slot by spelling it.
+    #[cfg(unix)]
+    pub fn with_geode_http(
+        mut self,
+        origins: impl IntoIterator<Item = String>,
+        socket: impl Into<std::path::PathBuf>,
+        reference: impl Into<String>,
+        purpose: impl Into<String>,
+    ) -> anyhow::Result<Self> {
+        let purpose = purpose.into();
+        let policy = HttpPolicy::new(origins, 16 * 1024 * 1024, Duration::from_secs(30))?;
+        let credentials =
+            GeodeCredentials::new(socket, "", purpose.clone(), Duration::from_secs(60))
+                .with_host_handle(
+                    "default",
+                    HostHandle {
+                        reference: reference.into(),
+                        purpose,
+                        header: None,
+                    },
+                );
+        self.http = Some(HttpHost::new(policy).with_credentials(Arc::new(credentials)));
+        Ok(self)
     }
 
     /// Grant `soil:http` for the named origins.

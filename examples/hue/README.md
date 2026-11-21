@@ -13,20 +13,28 @@ interactively from the REPL while automating lights.
 
 ## REPL
 
+The preferred path is Geode: the key stays encrypted in the daemon and the
+guest only names the handle `default`.
+
 ```sh
 export HUE_BRIDGE=http://192.168.1.10
-export HUE_KEY=...            # the application key, never in the source
 
 cargo run -p soil-lang --bin soil-lang -- \
   --workspace-root . \
   --records-root /tmp/soil-records \
   --prelude crates/soil-lang/stdlib/prelude.soil \
   --allow "$HUE_BRIDGE" \
-  --http-credential-env HUE_KEY \
+  --geode-socket "$HOME/.geode/geode.sock" \
+  --geode-reference geode://home/hue/bridge \
+  --geode-purpose hue.control \
   --repl \
   crates/soil-lang/bindings/soil-http.soil \
   examples/hue/hue.soil
 ```
+
+For a key you have not put in Geode yet, `--http-credential-env HUE_KEY` is the
+development fallback. It keeps the key out of the source but not out of the
+host process environment.
 
 Then, in the REPL:
 
@@ -67,12 +75,19 @@ cargo run -p soil-lang --bin soil-lang -- \
 (hue/pair (hue/bridge "http://192.168.1.10" nil) "soil#hue")
 ```
 
-Store the returned `username` as `HUE_KEY` (or in Geode) and restart the REPL
-with `--http-credential-env`.
+Store the returned `username` in Geode under `geode://home/hue/bridge` with the
+purpose `hue.control`, restart `geoded`, and use the `--geode-*` flags above.
+
+A lease can be checked without printing the secret:
+
+```sh
+printf '%s\n' '{"op":"lease","reference":"geode://home/hue/bridge","purpose":"hue.control","ttl_ms":60000}' \
+  | nc -U "$HOME/.geode/geode.sock"
+```
 
 ## What is not here yet
 
-- Bridge discovery (mDNS/SSDP) and the Geode lease itself are host work.
+- Bridge discovery (mDNS/SSDP) is still host work.
 - The Room/light UI is still `spores/lights-view`; this library is the seam it
   will call once the view is ported.
 - `hue/pair` is the one call that intentionally has no credential: it is the
