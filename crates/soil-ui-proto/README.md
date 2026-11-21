@@ -33,6 +33,19 @@ cargo run -p soil-ui-proto -- --port 9000
 `--render` prints the same JSON the browser receives. It is the cheap way to
 check a form without starting a server.
 
+### Editing the host without a Rust rebuild
+
+`web/index.html` and `web/ui.js` are embedded in the binary with `include_str!`.
+For JS/HTML edits, run the dev proxy instead of rebuilding:
+
+```sh
+node crates/soil-ui-proto/web/dev-proxy.mjs
+# http://127.0.0.1:7879/
+```
+
+It serves the two static files from disk and proxies `/view`, `/examples`, and
+`/source` to the running Rust host.
+
 ## Examples
 
 All examples live in [`examples/ui/`](../../examples/ui) and are pure `.soil`:

@@ -217,7 +217,7 @@ root.addEventListener("click", (event) => {
   const target = event.target instanceof Element ? event.target.closest("[data-op]") : null;
   if (!target) return;
   if (target.tagName === "FORM") return;
-  if (target.tagName === "BUTTON" && target.type === "submit") return;
+  if (target.tagName === "BUTTON" && target.type === "submit" && target.form) return;
   event.preventDefault();
   const action = actionFromElement(target);
   if (action) runAction(action);
