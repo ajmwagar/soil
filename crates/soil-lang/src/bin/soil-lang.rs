@@ -16,6 +16,9 @@ fn run() -> Result<()> {
     let mut repl = false;
     let mut http_origins: Vec<String> = Vec::new();
     let mut http_credential: Option<String> = None;
+    let mut geode_socket: Option<PathBuf> = None;
+    let mut geode_reference: Option<String> = None;
+    let mut geode_purpose: Option<String> = None;
     let mut program_args: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
 
@@ -72,6 +75,24 @@ fn run() -> Result<()> {
                     .map_err(|_| anyhow::anyhow!("--http-credential-env: {name} is not set"))?;
                 http_credential = Some(value);
             }
+            "--geode-socket" => {
+                geode_socket =
+                    Some(PathBuf::from(args.next().ok_or_else(|| {
+                        anyhow::anyhow!("--geode-socket needs a path")
+                    })?));
+            }
+            "--geode-reference" => {
+                geode_reference = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("--geode-reference needs a reference"))?,
+                );
+            }
+            "--geode-purpose" => {
+                geode_purpose = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("--geode-purpose needs a purpose"))?,
+                );
+            }
             "--" => {
                 program_args.extend(args.by_ref());
                 break;
@@ -80,7 +101,9 @@ fn run() -> Result<()> {
                 println!(
                     "usage: soil-lang [--call NAME | --no-call] [--repl] [--prelude FILE] \
                      [--records-root DIR] [--book NAME] [--workspace-root DIR] \
-                     [--allow ORIGIN]... [--http-credential VALUE | --http-credential-env VAR] \
+                     [--allow ORIGIN]... \
+                     [--http-credential VALUE | --http-credential-env VAR \
+                      | --geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] \
                      FILE... [-- ARG...]"
                 );
                 return Ok(());
@@ -93,14 +116,26 @@ fn run() -> Result<()> {
         bail!(
             "usage: soil-lang [--call NAME | --no-call] [--repl] [--prelude FILE] \
              [--records-root DIR] [--book NAME] [--workspace-root DIR] \
-             [--allow ORIGIN]... [--http-credential VALUE | --http-credential-env VAR] \
+             [--allow ORIGIN]... \
+             [--http-credential VALUE | --http-credential-env VAR \
+              | --geode-socket PATH --geode-reference REF --geode-purpose PURPOSE] \
              FILE... [-- ARG...]"
         );
     }
 
-    let wants_http = !http_origins.is_empty() || http_credential.is_some();
+    let wants_geode =
+        geode_socket.is_some() || geode_reference.is_some() || geode_purpose.is_some();
+    if wants_geode
+        && (geode_socket.is_none() || geode_reference.is_none() || geode_purpose.is_none())
+    {
+        bail!("--geode-socket, --geode-reference and --geode-purpose are used together");
+    }
+    if wants_geode && http_credential.is_some() {
+        bail!("--geode-* and --http-credential are mutually exclusive");
+    }
+    let wants_http = !http_origins.is_empty() || http_credential.is_some() || wants_geode;
     if wants_http && http_origins.is_empty() {
-        bail!("--http-credential needs at least one --allow ORIGIN");
+        bail!("a credential needs at least one --allow ORIGIN");
     }
     if wants_http && (workspace_root.is_none() || records_root.is_none()) {
         bail!("--allow needs --workspace-root and --records-root");
@@ -109,7 +144,21 @@ fn run() -> Result<()> {
     let host: Box<dyn Host> = match (workspace_root, records_root) {
         (Some(workspace), Some(records)) => {
             let mut native = NativeHost::open(workspace, records, book)?;
-            if wants_http {
+            if wants_geode {
+                #[cfg(unix)]
+                {
+                    native = native.with_geode_http(
+                        http_origins,
+                        geode_socket.expect("validated"),
+                        geode_reference.expect("validated"),
+                        geode_purpose.expect("validated"),
+                    )?;
+                }
+                #[cfg(not(unix))]
+                {
+                    bail!("--geode-socket is only available on Unix hosts");
+                }
+            } else if wants_http {
                 native = native.with_http(http_origins, http_credential)?;
             }
             Box::new(native)
