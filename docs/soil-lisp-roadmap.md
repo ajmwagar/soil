@@ -11,6 +11,7 @@
 | Soil is a homoiconic Lisp substrate | S-expressions are the source, IR, doc format, and agent-edit format. One reader, not several. |
 | Tiny Rust core, heavy capabilities in WIT | Numerics, GPU, audio, UI host, filesystem, inference live behind WIT. The core stays auditable. |
 | Libraries and applications are the same artifact: **spores** | One package type, one resolver, one lockfile. "Library" vs "app" is a launch convention, not a package class. |
+| Spores live in the spores repo | Soil owns the runtime, language, WIT, and language prelude. Shared spores live in the separate `spores` repository; Soil does not grow a `spores/` subdirectory. `tend` resolves both. |
 | Build tool is **tend** | `tend build/test/wasm/doc/add/run`. Existing `tend-core` (Canvas Lua composition) becomes one subcommand, not the tool. |
 | River is merged and **deadnamed** | Code and tests move into `soil-lang`; the name does not appear in crates, WIT, docs, or commands. One `HISTORY.md` line records the merge. |
 | HTML/CSS is the first UI path | Lisp emits UI forms + stylesheets + signal updates. A thin JS WIT adapter reconciles to real DOM. Canvas/GPU remains a separate WIT implementation. |
@@ -145,6 +146,10 @@ Phases 1–3 are mostly sequential. Phase 4 can start once Phase 1 has macros an
 ## Phase 3 — tend and spore packaging (5 weeks)
 
 **Goal:** one tool to cultivate spores, and one package shape for libraries and apps.
+
+Core spores live in the separate `spores` repository, not under `soil/`.
+`tend` resolves that repo by path for development and by git/CID for
+distribution. Soil's own examples and fixtures remain tests, not spores.
 
 **Deliverables**
 
