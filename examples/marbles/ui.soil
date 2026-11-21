@@ -1,0 +1,232 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Marbles: a read-only task graph rendered by Soil.
+;
+; This is the first spore UI ported to the HTML/CSS path. The host supplies one
+; flat snapshot — exactly the array `marbles list --json` returns — and this
+; file decides every pixel. No client JavaScript, no Canvas, no Lua.
+
+(defun initial-state ()
+  (marbles-snapshot))
+
+(defun update (state action)
+  state)
+
+(defun issue-count (issues)
+  (if (nil? issues) 0 (length issues)))
+
+(defun dependency-count (issue)
+  (let ((count (field issue :dependency_count)))
+    (if (nil? count) 0 count)))
+
+(defun issue-ready? (issue)
+  (and
+    (= (field issue :status) "open")
+    (= (dependency-count issue) 0)
+    (nil? (field issue :assignee))))
+
+(defun issue-active? (issue)
+  (= (field issue :status) "in_progress"))
+
+(defun issue-review? (issue)
+  (= (field issue :status) "review"))
+
+(defun issue-blocked? (issue)
+  (or
+    (= (field issue :status) "blocked")
+    (> (dependency-count issue) 0)))
+
+(defun issue-closed? (issue)
+  (= (field issue :status) "closed"))
+
+(defun count-if (predicate issues)
+  (issue-count (filter predicate issues)))
+
+(defun status-class (status)
+  (str "status-" status))
+
+(defun priority-label (priority)
+  (str "P" priority))
+
+(defun type-label (issue)
+  (let ((kind (field issue :issue_type)))
+    (if (nil? kind) "issue" kind)))
+
+(defun label-chip (label)
+  (el "span" (list (attr :class "label")) (list (txt label))))
+
+(defun labels (issue)
+  (let ((labels (field issue :labels)))
+    (if (nil? labels)
+        nil
+        (el "div" (list (attr :class "labels"))
+          (map 'label-chip labels)))))
+
+(defun issue-meta (issue)
+  (let ((assignee (field issue :assignee))
+        (deps (dependency-count issue))
+        (parent (field issue :parent)))
+    (list
+      (el "span" (list (attr :class "meta-item"))
+        (list
+          (txt
+            (if (nil? assignee)
+                "unclaimed"
+                (str "claimed by " assignee)))))
+      (if (> deps 0)
+          (el "span" (list (attr :class "meta-item danger"))
+            (list (txt (str deps " blockers"))))
+          nil)
+      (if (nil? parent)
+          nil
+          (el "span" (list (attr :class "meta-item"))
+            (list (txt (str "under " parent))))))))
+
+(defun issue-card (issue)
+  (let ((status (field issue :status))
+        (priority (field issue :priority))
+        (id (field issue :id))
+        (title (field issue :title)))
+    (el "article" (list (attr :class (str "issue " (status-class status))))
+      (list
+        (el "div" (list (attr :class "issue-head"))
+          (list
+            (el "span" (list (attr :class "issue-id")) (list (txt id)))
+            (el "span" (list (attr :class (str "issue-type type-" (type-label issue))))
+              (list (txt (type-label issue))))
+            (el "span" (list (attr :class (str "priority p" priority)))
+              (list (txt (priority-label priority))))))
+        (el "h3" nil (list (txt title)))
+        (labels issue)
+        (el "div" (list (attr :class "issue-meta"))
+          (issue-meta issue))))))
+
+(defun lane (title subtitle issues empty-text)
+  (el "section" (list (attr :class "lane"))
+    (list
+      (el "div" (list (attr :class "lane-head"))
+        (list
+          (el "div" nil
+            (list
+              (el "h2" nil (list (txt title)))
+              (el "p" nil (list (txt subtitle)))))
+          (el "span" (list (attr :class "lane-count"))
+            (list (txt (issue-count issues))))))
+      (if (nil? issues)
+          (el "p" (list (attr :class "lane-empty")) (list (txt empty-text)))
+          (map 'issue-card issues)))))
+
+(defun stat (label value tone)
+  (el "div" (list (attr :class (str "stat " tone)))
+    (list
+      (el "span" (list (attr :class "stat-value")) (list (txt value)))
+      (el "span" (list (attr :class "stat-label")) (list (txt label))))))
+
+(defun header (issues)
+  (el "header" (list (attr :class "marbles-head"))
+    (list
+      (el "div" (list (attr :class "brand-row"))
+        (list
+          (el "div" nil
+            (list
+              (el "p" (list (attr :class "kicker")) (list (txt "MARBLES")))
+              (el "h1" nil (list (txt "The work graph, on one wall.")))
+              (el "p" (list (attr :class "lede"))
+                (list (txt "A read-only projection of `marbles list --json`. Rendered by Soil on the host; there is no client application.")))))
+          (el "div" (list (attr :class "pill")) (list (txt "SSR · no JS")))))
+      (el "div" (list (attr :class "stats"))
+        (list
+          (stat "ready" (count-if 'issue-ready? issues) "ready")
+          (stat "in flight" (count-if 'issue-active? issues) "active")
+          (stat "review" (count-if 'issue-review? issues) "review")
+          (stat "blocked" (count-if 'issue-blocked? issues) "blocked")
+          (stat "closed" (count-if 'issue-closed? issues) "closed"))))))
+
+(defun rail-card (title body)
+  (el "section" (list (attr :class "rail-card"))
+    (list
+      (el "h2" nil (list (txt title)))
+      (el "p" nil (list (txt body))))))
+
+(defun view (state)
+  (let ((ready (filter 'issue-ready? state))
+        (active (filter 'issue-active? state))
+        (review (filter 'issue-review? state))
+        (blocked (filter 'issue-blocked? state))
+        (closed (filter 'issue-closed? state)))
+    (el "div" (list (attr :class "marbles"))
+      (list
+        (header state)
+        (el "main" (list (attr :class "marble-board"))
+          (list
+            (el "div" (list (attr :class "queue"))
+              (list
+                (lane "Ready now" "unblocked, unclaimed, past grace" ready
+                  "Nothing is ready. Either the fleet is working or the graph is blocked.")
+                (lane "In flight" "claimed work with a live lease" active
+                  "No agent holds a lease right now.")
+                (lane "Review" "PR open; not done until merged" review
+                  "Nothing is waiting for review.")
+                (lane "Blocked" "dependency edges still open" blocked
+                  "No blockers in this snapshot.")))
+            (el "aside" (list (attr :class "rail"))
+              (list
+                (rail-card "Recently closed"
+                  (if (nil? closed)
+                      "No closed work in this snapshot."
+                      (str (issue-count closed)
+                           " closed issues are outside the active lanes.")))
+                (rail-card "How this renders"
+                  "The host reads the Marbles JSON and hands Soil one snapshot. `view` returns forms, `render-html` emits the page. A browser receives HTML and CSS only.")
+                (rail-card "Next slice"
+                  "`claim`, `review`, and `close` become forms that post intents back to the host. The read path stays a pure function.")))))))))
+
+(defun styles ()
+  (str
+    (base-styles)
+    ".marbles { max-width: 1240px; margin: 0 auto; }\n"
+    ".marbles-head { padding: 10px 0 26px; border-bottom: 1px solid var(--line); }\n"
+    ".brand-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; flex-wrap: wrap; }\n"
+    ".kicker { margin: 0 0 10px; color: var(--accent); font-size: 11px; letter-spacing: .24em; }\n"
+    ".marbles h1 { margin: 0; font-size: clamp(32px, 5vw, 56px); line-height: 1.02; letter-spacing: -.045em; max-width: 18ch; }\n"
+    ".lede { color: var(--muted); max-width: 62ch; margin: 14px 0 0; }\n"
+    ".stats { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 26px; }\n"
+    ".stat { flex: 1 1 120px; border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; background: rgba(255,255,255,.025); border-top: 2px solid var(--line); }\n"
+    ".stat-value { display: block; font: 700 28px/1 ui-sans-serif, system-ui, sans-serif; letter-spacing: -.03em; }\n"
+    ".stat-label { display: block; margin-top: 6px; color: var(--muted); font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .12em; }\n"
+    ".stat.ready { border-top-color: var(--accent); }\n"
+    ".stat.active { border-top-color: #e3b341; }\n"
+    ".stat.review { border-top-color: #a78bff; }\n"
+    ".stat.blocked { border-top-color: var(--danger); }\n"
+    ".stat.closed { border-top-color: #3fb950; }\n"
+    ".marble-board { display: flex; align-items: flex-start; gap: 22px; padding-top: 26px; flex-wrap: wrap; }\n"
+    ".queue { flex: 1 1 620px; display: flex; flex-direction: column; gap: 26px; }\n"
+    ".rail { flex: 0 1 300px; display: flex; flex-direction: column; gap: 14px; }\n"
+    ".lane { border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(180deg, rgba(255,255,255,.03), transparent 45%), rgba(16,20,29,.72); overflow: hidden; }\n"
+    ".lane-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }\n"
+    ".lane-head h2 { margin: 0; font-size: 17px; letter-spacing: -.02em; }\n"
+    ".lane-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }\n"
+    ".lane-count { min-width: 34px; height: 34px; display: grid; place-content: center; border: 1px solid var(--line); border-radius: 50%; color: var(--muted); font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }\n"
+    ".lane-empty { margin: 0; padding: 22px 20px; color: var(--muted); font-size: 13px; }\n"
+    ".issue { padding: 16px 20px 17px; border-top: 1px solid var(--line); border-left: 3px solid var(--line); }\n"
+    ".issue:first-of-type { border-top: 0; }\n"
+    ".issue.status-open { border-left-color: var(--accent); }\n"
+    ".issue.status-in_progress { border-left-color: #e3b341; }\n"
+    ".issue.status-review { border-left-color: #a78bff; }\n"
+    ".issue.status-blocked { border-left-color: var(--danger); }\n"
+    ".issue.status-closed { border-left-color: #3fb950; opacity: .82; }\n"
+    ".issue-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }\n"
+    ".issue-id { color: var(--muted); font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }\n"
+    ".issue-type, .priority { border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px; font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .06em; }\n"
+    ".issue-type { color: #8db4ff; }\n"
+    ".priority { margin-left: auto; color: var(--muted); }\n"
+    ".priority.p1 { color: var(--accent); border-color: rgba(200,241,105,.35); }\n"
+    ".priority.p2 { color: #e3b341; }\n"
+    ".issue h3 { margin: 9px 0 0; font-size: 16px; line-height: 1.35; letter-spacing: -.015em; }\n"
+    ".labels { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }\n"
+    ".label { color: var(--muted); background: rgba(255,255,255,.04); border: 1px solid var(--line); border-radius: 5px; padding: 2px 6px; font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }\n"
+    ".issue-meta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 11px; color: var(--muted); font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }\n"
+    ".meta-item.danger { color: var(--danger); }\n"
+    ".rail-card { border: 1px solid var(--line); border-radius: 16px; padding: 18px; background: rgba(16,20,29,.72); }\n"
+    ".rail-card h2 { margin: 0 0 8px; font-size: 14px; letter-spacing: -.01em; }\n"
+    ".rail-card p { margin: 0; color: var(--muted); font-size: 12.5px; }\n"
+    "@media (max-width: 840px) { .rail { flex-basis: 100%; } }\n"))
