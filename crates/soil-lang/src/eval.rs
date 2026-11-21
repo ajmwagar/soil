@@ -220,6 +220,23 @@ impl Runtime {
                         let form = self.eval(require(items, 1, "eval")?, env)?;
                         self.eval(&form, env)
                     }
+                    "try-read" => {
+                        let source = self.eval(require(items, 1, "try-read")?, env)?;
+                        let source = source
+                            .as_str()
+                            .ok_or_else(|| anyhow!("try-read expects a string"))?;
+                        Ok(match parse_all(source) {
+                            Ok(forms) => result_ok(Value::List(forms)),
+                            Err(error) => result_err(&error.to_string()),
+                        })
+                    }
+                    "try-eval" => {
+                        let form = self.eval(require(items, 1, "try-eval")?, env)?;
+                        Ok(match self.eval(&form, env) {
+                            Ok(value) => result_ok(value),
+                            Err(error) => result_err(&format!("{error:#}")),
+                        })
+                    }
                     "load" => {
                         let path = self.eval(require(items, 1, "load")?, env)?;
                         let path = path
@@ -672,6 +689,17 @@ pub fn value_to_json(value: &Value) -> serde_json::Value {
             }
         }
     }
+}
+
+fn result_ok(value: Value) -> Value {
+    Value::List(vec![Value::Symbol("ok".into()), value])
+}
+
+fn result_err(message: &str) -> Value {
+    Value::List(vec![
+        Value::Symbol("err".into()),
+        Value::String(message.into()),
+    ])
 }
 
 fn require<'a>(items: &'a [Value], index: usize, form: &str) -> Result<&'a Value> {
