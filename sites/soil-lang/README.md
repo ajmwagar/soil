@@ -16,6 +16,16 @@ SOIL_UI_UPSTREAM=http://127.0.0.1:7882 SOIL_UI_PORT=7883 \
 open 'http://127.0.0.1:7883/?bare=1'
 ```
 
-The page is a static landscape: nav, hero, why, learn, spores, community, footer.
-It has no actions and no state. The same forms can later be exported to plain
-HTML by walking the tree the host already returns from `/view`.
+The page is a static landscape: nav, hero, why, substrate, learn, spores,
+community, footer. It has no actions and no state.
+
+Build the static page through the Soil standard library:
+
+```sh
+./sites/soil-lang/build.sh
+# sites/soil-lang/dist/index.html
+```
+
+The output is plain HTML with server-rendered syntax highlighting. No client
+JavaScript is required. `dist/index.html` is generated and checked in for
+deployment.

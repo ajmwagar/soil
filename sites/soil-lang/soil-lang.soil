@@ -11,18 +11,6 @@
 (defun update (state action)
   state)
 
-(defun el (tag attrs children)
-  (list
-    (list :tag tag)
-    (list :attrs attrs)
-    (list :children children)))
-
-(defun attr (key value)
-  (list key value))
-
-(defun txt (value)
-  (list (list :text (str value))))
-
 (defun a (href class children)
   (el "a" (list (attr :href href) (attr :class class)) children))
 
@@ -55,6 +43,7 @@
               (el "nav" (list (attr :class "nav-links"))
                 (list
                   (a "#why" "" (list (txt "Why Soil")))
+                  (a "#substrate" "" (list (txt "Substrate")))
                   (a "#learn" "" (list (txt "Learn")))
                   (a "#spores" "" (list (txt "Spores")))
                   (a "#community" "" (list (txt "Community")))))
@@ -71,13 +60,16 @@
                       (txt "A substrate for tools that ")
                       (el "span" (list (attr :class "accent")) (list (txt "explain themselves.")))))
                   (el "p" (list (attr :class "lede"))
-                    (list (txt "Soil is a small homoiconic Lisp with WIT capabilities. The code, the docs, and the UI are the same S-expressions. Libraries and apps are spores; tend cultivates them.")))
+                    (list (txt "Soil is a small homoiconic Lisp with WIT capabilities. It keeps the Lisp bargain — code as data, macros, a live system — and adds typed host interfaces, GPU-resident views, and spores that travel.")))
                   (el "div" (list (attr :class "actions"))
                     (list
                       (a "#learn" "btn primary" (list (txt "Get started")))
                       (a "https://github.com/mycelium-linux/soil" "btn" (list (txt "View on GitHub")))))
                   (el "p" (list (attr :class "meta"))
-                    (list (txt "MIT OR Apache-2.0 · Rust core · native and WASM hosts")))))
+                    (list
+                      (txt "In the Lisp family. ")
+                      (a "https://lisp-lang.org/" "" (list (txt "lisp-lang.org")))
+                      (txt " · MIT OR Apache-2.0 · Rust core · native and WASM hosts")))))
               (el "div" (list (attr :class "hero-code"))
                 (list
                   (el "div" (list (attr :class "code-head"))
@@ -86,8 +78,7 @@
                       (el "span" (list (attr :class "dot")) nil) 
                       (el "span" (list (attr :class "dot")) nil) 
                       (el "span" (list (attr :class "code-name")) (list (txt "counter.soil")))))
-                  (el "pre" (list (attr :class "code"))
-                    (list (txt "(defun view (state)\n  (el \"div\" (list (attr :class \"app\"))\n    (list\n      (el \"output\" (list (attr :class \"value\"))\n        (list (txt state)))\n      (el \"button\" (list (attr :data-op \"inc\"))\n        (list (txt \"+\"))))))")))
+                  (code-block "(defun view (state)\n  (el \"div\" (list (attr :class \"app\"))\n    (list\n      (el \"output\" (list (attr :class \"value\"))\n        (list (txt state)))\n      (el \"button\" (list (attr :data-op \"inc\"))\n        (list (txt \"+\"))))))")
                   (el "div" (list (attr :class "code-foot"))
                     (list (txt "→ real HTML and CSS. No virtual DOM required.")))))))
           (el "section" (list (attr :class "section") (attr :id "why"))
@@ -102,6 +93,20 @@
                     "Every form carries a source span. An agent can replace one form and keep the comments, layout, and everything it did not touch.")
                   (feature "Portable"
                     "One WIT contract, two hosts. The same Lisp runs natively and in the browser; the GPU stays an optional capability, not a requirement.")))))
+          (el "section" (list (attr :class "section") (attr :id "substrate"))
+            (list
+              (el "p" (list (attr :class "kicker")) (list (txt "LISP, EXTENDED")))
+              (el "h2" nil (list (txt "The Lisp bargain, with a modern substrate.")))
+              (el "p" (list (attr :class "body"))
+                (list (txt "Lisp gave us code as data, macros, and a live system. Soil keeps that bargain and adds a typed capability boundary, GPU-resident views, and spores that travel between machines.")))
+              (el "div" (list (attr :class "grid three"))
+                (list
+                  (feature "Lisp, kept intact"
+                    "Homoiconic forms, macros, a small core, and a REPL-shaped workflow. The source, the docs, and the UI do not fork into separate representations.")
+                  (feature "GPU when it matters"
+                    "Canvas and GPU-resident scenes are a host capability. Trees, forms, and docs stay ordinary HTML/CSS; waveforms and schematics stay on the GPU.")
+                  (feature "Boundaries and distance"
+                    "WIT makes capabilities typed and portable. Spores are content-addressed, so the same artifact can run on this machine or another host.")))))
           (el "section" (list (attr :class "section split") (attr :id "learn"))
             (list
               (el "div" nil
@@ -116,7 +121,7 @@
                       (step "02" "Run an example" "Counter, TODO, calculator, tic-tac-toe. All of them are plain .soil.")
                       (step "03" "Write a spore" "One manifest and one entry form. A library and an app are the same artifact.")))))
               (el "pre" (list (attr :class "code block"))
-                (list (txt ";; tend build\n;; tend run\n\n(defun view (state)\n  (el \"main\" (list (attr :class \"app\"))\n    (list\n      (el \"h1\" nil (list (txt \"Hello from Soil\")))\n      (el \"p\" nil (list (txt \"This is a form, not a template.\"))))))")))))
+                (highlight-soil ";; tend build\n;; tend run\n\n(defun view (state)\n  (el \"main\" (list (attr :class \"app\"))\n    (list\n      (el \"h1\" nil (list (txt \"Hello from Soil\")))\n      (el \"p\" nil (list (txt \"This is a form, not a template.\"))))))"))))
           (el "section" (list (attr :class "section") (attr :id "spores"))
             (list
               (el "p" (list (attr :class "kicker")) (list (txt "SPORES")))
@@ -130,7 +135,7 @@
                   (el "article" (list (attr :class "card"))
                     (list
                       (el "h3" nil (list (txt "Launch it for its entry point")))
-                      (el "p" nil (list (txt "The same spore with a start form is an app. tend resolves it, builds it, and runs it on the surface you choose.")))))))))
+                      (el "p" nil (list (txt "The same spore with a start form is an app. tend resolves it, builds it, and runs it here or on another host.")))))))))
           (el "section" (list (attr :class "community") (attr :id "community"))
             (list
               (el "div" nil
@@ -204,6 +209,8 @@
     ".btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }\n"
     ".btn.primary:hover { background: #d7ff7d; }\n"
     ".meta { margin: 18px 0 0; color: var(--dim); font-size: 12.5px; }\n"
+    ".meta a { color: var(--muted); text-decoration: none; border-bottom: 1px solid var(--line); }\n"
+    ".meta a:hover { color: var(--ink); }\n"
     ".hero-code { border: 1px solid var(--line); border-radius: 18px; overflow: hidden; background: var(--panel); box-shadow: 0 30px 90px rgba(0,0,0,.45); }\n"
     ".code-head { display: flex; align-items: center; gap: 7px; padding: 12px 14px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.02); }\n"
     ".dot { width: 9px; height: 9px; border-radius: 50%; background: #3a4254; }\n"

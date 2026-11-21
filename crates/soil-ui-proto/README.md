@@ -116,6 +116,8 @@ Rules the prototype already relies on:
 |---|---|---|
 | App markup, CSS, state transitions | `examples/ui/*.soil` | Soil spore |
 | Shared UI helpers and theme | `examples/ui/prelude.soil` | Soil spore / prelude |
+| Form constructors, HTML escaping, `render-html` | `stdlib/ui.soil` | Soil stdlib |
+| Soil syntax highlighting | `stdlib/highlight.soil` | Soil stdlib |
 | Reader, evaluator, value encoding | `soil-lang` | Rust core + eventual Soil bootstrap |
 | Calling `view` / `update` / `styles` | `soil-ui-proto` | `tend run` + `soil:ui` host |
 | Turning forms into DOM, patching, CSS injection | `web/ui.js` | JS implementation of `soil:ui` (WIT) |

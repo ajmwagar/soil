@@ -105,11 +105,20 @@ fn main() -> Result<()> {
             }
         };
         let app = Arc::clone(&app);
-        std::thread::spawn(move || {
-            if let Err(error) = handle(stream, &app) {
-                eprintln!("request: {error:#}");
-            }
-        });
+        // The evaluator, HTML renderer, and JSON encoder are recursive. A
+        // browser request gets the same headroom as the CLI, not the 2 MiB
+        // default thread stack.
+        let spawned = std::thread::Builder::new()
+            .name("soil-ui-request".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                if let Err(error) = handle(stream, &app) {
+                    eprintln!("request: {error:#}");
+                }
+            });
+        if let Err(error) = spawned {
+            eprintln!("spawn request: {error}");
+        }
     }
     Ok(())
 }
@@ -142,6 +151,16 @@ fn build_runtime(app: &App, source: &Path) -> Result<Runtime> {
         runtime
             .load_file(prelude)
             .with_context(|| format!("load prelude {}", prelude.display()))?;
+        if let Some(directory) = prelude.parent() {
+            for name in ["ui.soil", "highlight.soil"] {
+                let path = directory.join(name);
+                if path.is_file() {
+                    runtime
+                        .load_file(&path)
+                        .with_context(|| format!("load stdlib {}", path.display()))?;
+                }
+            }
+        }
     }
     if let Some(prelude) = &app.ui_prelude
         && prelude.is_file()

@@ -27,18 +27,6 @@
       ((= op "again") (initial-state))
       (else state))))
 
-(defun el (tag attrs children)
-  (list
-    (list :tag tag)
-    (list :attrs attrs)
-    (list :children children)))
-
-(defun attr (key value)
-  (list key value))
-
-(defun txt (value)
-  (list (list :text (str value))))
-
 (defun field-row (label name placeholder)
   (el "label" (list (attr :class "field"))
     (list

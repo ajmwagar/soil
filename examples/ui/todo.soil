@@ -52,18 +52,6 @@
           (filter 'not-done? items)))
       (else state))))
 
-(defun el (tag attrs children)
-  (list
-    (list :tag tag)
-    (list :attrs attrs)
-    (list :children children)))
-
-(defun attr (key value)
-  (list key value))
-
-(defun txt (value)
-  (list (list :text (str value))))
-
 (defun view-item (item)
   (let ((id (str (field item :id)))
         (done (field item :done)))

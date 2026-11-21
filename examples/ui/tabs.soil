@@ -13,18 +13,6 @@
       ((= op "tab") (tab-state (action-field action :tab "overview")))
       (else state))))
 
-(defun el (tag attrs children)
-  (list
-    (list :tag tag)
-    (list :attrs attrs)
-    (list :children children)))
-
-(defun attr (key value)
-  (list key value))
-
-(defun txt (value)
-  (list (list :text (str value))))
-
 (defun tab-button (active id label)
   (el "button"
     (list
