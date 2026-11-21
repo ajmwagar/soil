@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use soil_lang::sexp::Value;
 use soil_lang::{FakeHost, Host, HostChain, NativeHost, Runtime, SoilRecordsHost, SystemTimeHost};
 
-fn main() -> Result<()> {
+fn run() -> Result<()> {
     let mut files: Vec<PathBuf> = Vec::new();
     let mut prelude: Option<PathBuf> = None;
     let mut call: Option<String> = Some("main".to_string());
@@ -153,6 +153,17 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn main() -> Result<()> {
+    // The evaluator is recursive over lists, and real records books hold
+    // thousands of issues. Give the interpreter enough stack for one pass
+    // instead of aborting on the 512-entry scan page.
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(run)?
+        .join()
+        .map_err(|_| anyhow::anyhow!("soil-lang worker panicked"))?
+}
+
 fn run_repl(runtime: &mut Runtime) -> Result<()> {
     let stdin = io::stdin();
     let mut buffer = String::new();
@@ -162,6 +173,58 @@ fn run_repl(runtime: &mut Runtime) -> Result<()> {
         let mut line = String::new();
         if stdin.read_line(&mut line)? == 0 {
             return Ok(());
+        }
+        if buffer.is_empty() && line.starts_with(':') {
+            let trimmed = line.trim_end();
+            let mut parts = trimmed.splitn(2, ' ');
+            let command = parts.next().unwrap_or("");
+            let rest = parts.next().unwrap_or("").trim();
+            match command {
+                ":quit" | ":q" => return Ok(()),
+                ":help" | ":h" => println!(
+                    ":stats          eval/host counters for this image\n\
+                     :time FORM      evaluate and print elapsed ms\n\
+                     :bench N FORM   evaluate FORM N times\n\
+                     :reset          reset counters\n\
+                     :quit           leave"
+                ),
+                ":stats" => {
+                    println!("{value}", value = runtime.load("(runtime-stats)")?);
+                }
+                ":reset" => {
+                    runtime.load("(runtime-reset)")?;
+                    println!("stats reset");
+                }
+                ":time" => {
+                    let started = std::time::Instant::now();
+                    match runtime.load(rest) {
+                        Ok(value) => println!(
+                            "{value}  ({ms} ms)",
+                            ms = started.elapsed().as_millis()
+                        ),
+                        Err(error) => eprintln!("{error:#}"),
+                    }
+                }
+                ":bench" => {
+                    let mut bits = rest.splitn(2, ' ');
+                    let runs = bits.next().unwrap_or("10").parse::<u64>().unwrap_or(10);
+                    let form = bits.next().unwrap_or("");
+                    let started = std::time::Instant::now();
+                    for _ in 0..runs {
+                        if let Err(error) = runtime.load(form) {
+                            eprintln!("{error:#}");
+                            break;
+                        }
+                    }
+                    println!(
+                        "{runs} run(s) in {ms} ms",
+                        ms = started.elapsed().as_millis()
+                    );
+                }
+                _ => eprintln!("unknown REPL command {command}; try :stats, :time FORM, :bench N FORM, :reset, :quit"),
+            }
+            buffer.clear();
+            continue;
         }
         buffer.push_str(&line);
         match runtime.load(&buffer) {

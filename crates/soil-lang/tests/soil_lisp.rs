@@ -30,6 +30,7 @@ fn runtime(root: &Path) -> Runtime {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     for file in [
         "stdlib/prelude.soil",
+        "stdlib/perf.soil",
         "stdlib/ui.soil",
         "stdlib/highlight.soil",
         "stdlib/doc.soil",

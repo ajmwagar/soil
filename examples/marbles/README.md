@@ -68,8 +68,18 @@ revision and origin it read.
 ```
 
 Ported commands: `list`, `ready`, `show`, `history`, `create`, `update`,
-`claim`, `touch`, `release`, `review`, `close`, `dep add|rm`, `label add|rm`,
-and `stats`.
+`claim`, `touch`, `release`, `review`, `close`, `supersede`, `sweep`,
+`dep add|rm`, `label add|rm`, `stats`, `projects`, `doctor`, `project rm`,
+`goal`, `epic`, `task`, `folder`, `burndown`, `portfolio`, and
+`plan show|gantt|ready|create`.
+
+`plan create` accepts an inline JSON spec. The native Rust backend also accepts
+TOML; this Soil slice does not have a TOML reader yet.
+
+The records are the same on both sides: entity ids, schemas, schemas’ bodies,
+dependency edges, events, and outbox rows. Verified both ways against the
+installed Rust Spore: it reads Soil-created issues/events/stats, and Soil reads
+Rust-created issues/events.
 
 The parser, spec builders, and record helpers are reusable. Load the same files
 in a Soil REPL and call the generic entry point:
@@ -86,6 +96,11 @@ in a Soil REPL and call the generic entry point:
 There is no `defmacro` in the runtime yet, so the source stays small with data
 builders (`cli-spec`, `cli-command-entry`, `cli-opt`) and one `marbles` function
 rather than a generated wrapper per command.
+
+For timing and counter-based profiling, load `stdlib/perf.soil` and use
+`perf/measure`, `perf/bench`, `perf/eval`, or the REPL’s `:stats`, `:time`,
+`:bench`, and `:reset` commands. See
+[`docs/soil-lisp-perf.md`](../../docs/soil-lisp-perf.md).
 
 `scan-query` and `compare-and-swap` are currently native `soil-lang` host
 extensions. They still need to be promoted into the canonical `soil:records`
@@ -122,6 +137,8 @@ so source edits hot-reload. Actions are intentionally no-ops for now.
 - **Plan** — Gantt rows, estimates, critical path, concurrency.
 - **Queue** — ready/in-flight/review/blocked lanes and recently closed.
 
-The next slice is the rest of the surface: `supersede`, `sweep`, `projects`,
-goal/epic/task creation, plan import, and promoting the native records
-extensions into WIT for a wasm build.
+The remaining work is performance, not record shape: whole-store projections
+such as `stats`, `doctor`, `plan`, and `portfolio` decode every issue in Soil
+today, so they are much slower than project-scoped `list`/`ready`. Promote
+`scan-query`/`compare-and-swap` into canonical WIT for a wasm build, and add a
+host-side projection/aggregation for whole-store reports.

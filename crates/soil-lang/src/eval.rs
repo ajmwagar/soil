@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::Instant;
 
 use crate::sexp::{Value, parse_all};
 use anyhow::{Context, Result, anyhow, bail};
@@ -25,6 +26,10 @@ pub struct Runtime {
     functions: HashMap<String, Function>,
     host: Box<dyn Host>,
     args: Vec<String>,
+    started: Instant,
+    evals: u64,
+    host_calls: u64,
+    host_ms: u64,
 }
 
 pub trait Host {
@@ -76,6 +81,10 @@ impl Runtime {
             functions: HashMap::new(),
             host,
             args: Vec::new(),
+            started: Instant::now(),
+            evals: 0,
+            host_calls: 0,
+            host_ms: 0,
         }
     }
 
@@ -156,6 +165,7 @@ impl Runtime {
     }
 
     fn eval(&mut self, expression: &Value, env: &mut HashMap<String, Value>) -> Result<Value> {
+        self.evals += 1;
         match expression {
             Value::Nil
             | Value::Bool(_)
@@ -211,6 +221,17 @@ impl Runtime {
                         &self.eval(require(items, 1, "not")?, env)?,
                     ))),
                     "begin" | "do" => self.eval_body(&items[1..], env),
+                    "read" => {
+                        let source = self.eval(require(items, 1, "read")?, env)?;
+                        let source = source
+                            .as_str()
+                            .ok_or_else(|| anyhow!("read expects a string"))?;
+                        Ok(Value::List(parse_all(source)?))
+                    }
+                    "eval" => {
+                        let form = self.eval(require(items, 1, "eval")?, env)?;
+                        self.eval(&form, env)
+                    }
                     "host-call" => self.eval_host_call(items, env),
                     "keyword" => {
                         let value = self.eval(require(items, 1, "keyword")?, env)?;
@@ -220,6 +241,11 @@ impl Runtime {
                         Ok(Value::Keyword(text.to_string()))
                     }
                     "json-object" => Ok(json_object()),
+                    "runtime-stats" => Ok(self.stats_value()),
+                    "runtime-reset" => {
+                        self.reset_stats();
+                        Ok(Value::Nil)
+                    }
                     "list" => Ok(Value::List(self.eval_args(&items[1..], env)?)),
                     "argv" => Ok(Value::List(
                         self.args.iter().cloned().map(Value::String).collect(),
@@ -291,10 +317,11 @@ impl Runtime {
                             _ => bail!("value expects a two-element tagged list"),
                         })
                     }
-                    "nil?" => Ok(Value::Bool(matches!(
-                        self.eval(require(items, 1, "nil?")?, env)?,
-                        Value::Nil
-                    ))),
+                    "nil?" => Ok(Value::Bool(match self.eval(require(items, 1, "nil?")?, env)? {
+                        Value::Nil => true,
+                        Value::List(items) if items.is_empty() => true,
+                        _ => false,
+                    })),
                     "first" => {
                         let value = self.eval(require(items, 1, "first")?, env)?;
                         Ok(value
@@ -519,6 +546,20 @@ impl Runtime {
                             .ok_or_else(|| anyhow!("pow expects numbers"))?;
                         Ok(Value::Float(base.powf(exponent)))
                     }
+                    "slugify" => {
+                        let value = self.eval(require(items, 1, "slugify")?, env)?;
+                        let text = value
+                            .as_str()
+                            .ok_or_else(|| anyhow!("slugify expects a string"))?;
+                        Ok(Value::String(slugify(text)))
+                    }
+                    "date-string" => {
+                        let value = self.eval(require(items, 1, "date-string")?, env)?;
+                        let epoch = value
+                            .as_f64()
+                            .ok_or_else(|| anyhow!("date-string expects epoch seconds"))?;
+                        Ok(Value::String(date_string(epoch as i64)))
+                    }
                     "int" => {
                         let value = self.eval(require(items, 1, "int")?, env)?;
                         let value = value
@@ -625,9 +666,33 @@ impl Runtime {
             bail!("denied: {interface}/{function} is not granted to this caller");
         }
 
-        self.host
+        self.host_calls += 1;
+        let started = Instant::now();
+        let result = self
+            .host
             .call(&interface, &function, &args)
-            .map_err(|error| anyhow!("host error: {error}"))
+            .map_err(|error| anyhow!("host error: {error}"));
+        self.host_ms += started.elapsed().as_millis() as u64;
+        result
+    }
+
+    fn reset_stats(&mut self) {
+        self.started = Instant::now();
+        self.evals = 0;
+        self.host_calls = 0;
+        self.host_ms = 0;
+    }
+
+    fn stats_value(&self) -> Value {
+        Value::List(vec![
+            pair("evals", Value::Int(self.evals as i64)),
+            pair("host_calls", Value::Int(self.host_calls as i64)),
+            pair("host_ms", Value::Int(self.host_ms as i64)),
+            pair(
+                "elapsed_ms",
+                Value::Int(self.started.elapsed().as_millis() as i64),
+            ),
+        ])
     }
 
     fn eval_arithmetic(
@@ -721,6 +786,38 @@ fn value_bytes(value: &Value) -> Result<Vec<u8>> {
         Value::String(text) => Ok(text.as_bytes().to_vec()),
         _ => bail!("body must be a list of bytes or a string"),
     }
+}
+
+fn slugify(text: &str) -> String {
+    let mut slug = String::new();
+    let mut last_dash = true;
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            last_dash = false;
+        } else if !last_dash {
+            slug.push('-');
+            last_dash = true;
+        }
+    }
+    slug.trim_matches('-').to_string()
+}
+
+/// Civil date from Unix seconds, independent of a date crate. Howard Hinnant's
+/// days-from-civil inverse keeps `burndown` points stable in native and wasm.
+fn date_string(epoch: i64) -> String {
+    let days = epoch.div_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 /// An empty JSON object cannot be distinguished from an empty array in the

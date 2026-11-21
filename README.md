@@ -43,6 +43,12 @@ Principles:
 - **Honest failure.** A rejected or unverifiable Spore fails loudly with a named
   reason, never silently degrades.
 
+## Soil Lisp
+
+The interpreter, reader, and stdlib live in `crates/soil-lang`. Performance
+counters and timing helpers are documented in
+[`docs/soil-lisp-perf.md`](docs/soil-lisp-perf.md).
+
 ## Capability contracts
 
 | Package | Grant | Status |
