@@ -224,7 +224,7 @@ fn main() -> Result<()> {
     // thousands of issues. Give the interpreter enough stack for one pass
     // instead of aborting on the 512-entry scan page.
     std::thread::Builder::new()
-        .stack_size(64 * 1024 * 1024)
+        .stack_size(512 * 1024 * 1024)
         .spawn(run)?
         .join()
         .map_err(|_| anyhow::anyhow!("soil-lang worker panicked"))?

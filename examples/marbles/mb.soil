@@ -208,6 +208,12 @@
   (map 'entry-body
     (filter-with 'entry-type? prefix (reverse (scan-into nil nil)))))
 
+(defun field-bodies (prefix fields)
+  (let ((result (soil:records/scan-fields "" prefix fields nil 20000)))
+    (if (not (ok? result))
+        (mb-fail (str "records projection failed: " (field result :err)))
+        (map 'entry-body (field (value result) :entries)))))
+
 (defun all-issue-bodies ()
   (if (nil? (project-summaries))
       nil
@@ -755,7 +761,7 @@
       (stats-all (rest issues) (stats-project (first issues) stats))))
 
 (defun stats-command ()
-  (let ((stats (stats-all (all-issue-bodies) nil)))
+  (let ((stats (stats-all (field-bodies "issue/" (list "project" "status")) nil)))
     (if (nil? stats) (json-object) stats)))
 
 ; ---------------------------------------------------------------------------
@@ -848,12 +854,15 @@
                               (append problems
                                 (list (str "issue " id " names missing project " project)))
                               problems)))
-            (let ((edges (dependency-edges "child" id)))
+            (let ((edges (filter-with 'edge-child? id (field-bodies "dependency/" (list "child" "parent")))))
               (let ((problems
                       (if (nil? edges) problems
                           (doctor-edges id edges problems))))
                 (doctor-issues (rest issues) projects problems
                   (+ deps (if (nil? edges) 0 (length edges)))))))))))
+
+(defun edge-child? (edge child)
+  (= (field edge :child) child))
 
 (defun doctor-edges (id edges problems)
   (if (nil? edges) problems
@@ -876,7 +885,7 @@
     (if (nil? rows) nil (field (first rows) :value))))
 
 (defun doctor-command ()
-  (let ((issues (all-issue-bodies))
+  (let ((issues (field-bodies "issue/" (list "id" "project")))
         (projects (project-summaries)))
     (let ((project-map (project-map-of projects)))
       (let ((checked (doctor-issues issues project-map nil 0)))
