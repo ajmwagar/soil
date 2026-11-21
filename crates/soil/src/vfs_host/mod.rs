@@ -325,6 +325,7 @@ impl VfsHost {
             }
             hits.push(index::Hit {
                 path,
+                content_id: Some(node.entry.content_id.to_string()),
                 score: (score.max(0.0) * 1_000_000.0) as u32,
                 snippet: Some(node.text.chars().take(160).collect()),
                 matched_by: Some(index::MatchSource::Embedding),
@@ -955,6 +956,49 @@ mod tests {
                 .iter()
                 .all(|hit| hit.path.contains("greece") || hit.path == "notes.txt")
         );
+        // A hit is a document, and a document is its bytes: the identity travels
+        // with the hit so a caller can dedupe across paths or fetch the content by
+        // name instead of by the path it happened to see.
+        assert!(
+            page.hits.iter().all(|hit| hit
+                .content_id
+                .as_deref()
+                .is_some_and(|id| id.starts_with("blake3:"))),
+            "{:?}",
+            page.hits
+        );
+    }
+
+    #[test]
+    fn two_paths_holding_the_same_bytes_are_one_document() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut vfs = Vfs::open(dir.path()).unwrap();
+            vfs.put("a.md", b"identical bytes", "text/plain", Expect::Any)
+                .unwrap();
+            vfs.put("b.md", b"identical bytes", "text/plain", Expect::Any)
+                .unwrap();
+        }
+        let mut host = VfsHost::open(dir.path()).unwrap();
+        let page = host
+            .search(index::Query {
+                text: "identical".into(),
+                mode: None,
+                parent: None,
+                media_type_prefix: None,
+                offset: 0,
+                limit: 10,
+            })
+            .unwrap();
+        assert_eq!(page.hits.len(), 2, "two paths, two hits");
+        let first = page.hits[0].content_id.clone().expect("identity");
+        let second = page.hits[1].content_id.clone().expect("identity");
+        assert_eq!(first, second, "the same bytes are one document");
+        // And the identity answers the follow-up question the path cannot: where
+        // else are these bytes?
+        let elsewhere = <VfsHost as cid::Host>::find(&mut host, first.clone(), 0, 10)
+            .expect("content lookup");
+        assert_eq!(elsewhere.entries.len(), 2);
     }
 
     #[test]

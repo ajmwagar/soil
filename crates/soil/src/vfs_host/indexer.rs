@@ -401,6 +401,7 @@ impl SqliteIndex {
             };
             hits.push(index::Hit {
                 path: node.entry.path.clone(),
+                content_id: Some(node.entry.content_id.to_string()),
                 score,
                 snippet: text_snippet(&text, &needle),
                 matched_by: Some(matched_by),
@@ -454,6 +455,7 @@ impl SqliteIndex {
             });
             hits.push(index::Hit {
                 path: node.entry.path.clone(),
+                content_id: Some(node.entry.content_id.to_string()),
                 score: 1,
                 snippet,
                 matched_by: Some(matched_by),
@@ -525,6 +527,10 @@ impl SqliteIndex {
             .into_iter()
             .enumerate()
             .map(|(index, (path, (_, snippet)))| index::Hit {
+                content_id: self
+                    .nodes
+                    .get(&path)
+                    .map(|node| node.entry.content_id.to_string()),
                 path,
                 score: (MAX_FULL_TEXT_ROWS - index).max(1) as u32,
                 snippet,
@@ -548,6 +554,7 @@ impl SqliteIndex {
             } else if node.entry.path.to_lowercase().contains(&needle) {
                 hits.push(index::Hit {
                     path: node.entry.path.clone(),
+                    content_id: Some(node.entry.content_id.to_string()),
                     score: MAX_FULL_TEXT_ROWS as u32 + 1,
                     snippet: None,
                     matched_by: Some(index::MatchSource::Path),
@@ -635,6 +642,7 @@ impl IndexBackend for SqliteIndex {
             .take(limit as usize)
             .map(|node| index::Hit {
                 path: node.entry.path.clone(),
+                content_id: Some(node.entry.content_id.to_string()),
                 score: 0,
                 snippet: None,
                 matched_by: None,
