@@ -944,8 +944,11 @@ mod tests {
     fn a_path_is_never_a_host_program() {
         assert!(host_allowed("git"));
         assert!(!host_allowed("./git"));
-        // Credential-bearing, but allowed by decision so a run can open a PR.
-        assert!(host_allowed("gh"));
+        // `gh` used to be here "by decision, not by default": it carries the
+        // user's credentials, which is the one thing a shell must not do. The
+        // capability path (`gitmyc-askpass`) is how a push happens now, so a
+        // `gh` in an agent's shell would be a credential the grant did not give.
+        assert!(!host_allowed("gh"));
         // A random binary is still refused.
         assert!(!host_allowed("python3"));
     }

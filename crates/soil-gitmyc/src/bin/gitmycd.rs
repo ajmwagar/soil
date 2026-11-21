@@ -131,12 +131,14 @@ enum Command {
         #[arg(long, env = "GITMYC_UPSTREAM_TOKEN_FILE")]
         upstream_token_file: Option<PathBuf>,
     },
-    /// Search a manifest without fetching it: filter with the per-file Bloom,
-    /// hydrate only the candidates, confirm with a literal scan.
+    /// Search a manifest without fetching it: ask the shipped index which
+    /// documents contain every trigram of the pattern, and hydrate nothing.
     ///
-    /// This is the prefilter half of a hosted index: it answers "which files could
-    /// contain this" from a 44 KB catalog, so a cold node hydrates a handful
-    /// instead of a tree.
+    /// The index is corpus-level and keyed by content id (`fungos-content`), so it
+    /// is deduplicated, cannot go stale (changed bytes are a different id), and
+    /// ships with the content it describes. A per-file Bloom filter was measured
+    /// and deleted - it kept two thirds of a corpus as candidates; see
+    /// `src/search.rs`.
     Find {
         /// A manifest with a shipped index: answers from paths and content ids alone.
         #[arg(long, conflicts_with = "vfs")]
