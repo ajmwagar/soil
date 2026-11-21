@@ -10,7 +10,7 @@ use soil::vfs_host::vfs_mut::Host as VfsMutHostTrait;
 use soil::vfs_host::{VfsHost, vfs, vfs_mut};
 
 use crate::sexp::Value;
-use crate::{Host, SessionHost, SoilRecordsHost, SystemTimeHost};
+use crate::{Host, HttpSession, SessionHost, SoilRecordsHost, SystemTimeHost};
 use soil_inference_host::Resource;
 use std::collections::HashMap;
 
@@ -21,6 +21,8 @@ pub struct NativeHost {
     inference: Option<soil_inference_host::InferenceHost>,
     streams: HashMap<i64, Resource<soil_inference_host::CompletionStream>>,
     next_stream: i64,
+    http_streams: HashMap<i64, HttpSession>,
+    next_http_stream: i64,
     session: Option<SessionHost>,
 }
 
@@ -37,6 +39,8 @@ impl NativeHost {
             inference: None,
             streams: HashMap::new(),
             next_stream: 1,
+            http_streams: HashMap::new(),
+            next_http_stream: 1,
             session: None,
         })
     }
@@ -157,6 +161,14 @@ impl Host for NativeHost {
                             | "[method]completion-stream.cancel"
                     )
             }
+            "soil:streams" => matches!(
+                function,
+                "accept"
+                    | "[method]session.info"
+                    | "[method]session.read"
+                    | "[method]session.write"
+                    | "[method]session.close"
+            ),
             "session" => self.session.is_some() && function == "exec",
             _ => false,
         }
@@ -174,6 +186,7 @@ impl Host for NativeHost {
             "soil:vfs" => self.call_vfs(function, args),
             "soil:vfs-mut" => self.call_vfs_mut(function, args),
             "soil:inference" => self.call_inference(function, args),
+            "soil:streams" => self.call_stream(function, args),
             "session" => self
                 .session
                 .as_mut()
@@ -328,6 +341,126 @@ fn err(code: &str) -> Value {
         Value::Symbol("err".into()),
         Value::Symbol(code.into()),
     ])
+}
+
+// --- soil:streams ---------------------------------------------------------
+
+impl NativeHost {
+    /// Attach the one HTTP session this runtime was started for.
+    pub fn with_stream(mut self, session: HttpSession) -> Self {
+        let id = self.next_http_stream;
+        self.next_http_stream += 1;
+        self.http_streams.insert(id, session);
+        self
+    }
+
+    fn call_stream(
+        &mut self,
+        function: &str,
+        args: &[Value],
+    ) -> std::result::Result<Value, String> {
+        match function {
+            "accept" => {
+                let protocol = text(args.first()).unwrap_or_default();
+                let Some(id) = self
+                    .http_streams
+                    .iter()
+                    .find(|(_, session)| session.protocol == protocol)
+                    .map(|(id, _)| *id)
+                else {
+                    return Ok(ok(Value::Nil));
+                };
+                Ok(ok(Value::Int(id)))
+            }
+            "[method]session.read" => {
+                let id = args
+                    .first()
+                    .and_then(Value::as_f64)
+                    .ok_or_else(|| "session.read needs a handle".to_string())?
+                    as i64;
+                let max = args.get(1).and_then(Value::as_f64).unwrap_or(65536.0) as u32;
+                let Some(session) = self.http_streams.get_mut(&id) else {
+                    return Ok(err("invalid"));
+                };
+                match session.read(max) {
+                    Ok(Some(bytes)) => Ok(ok(Value::List(
+                        bytes
+                            .into_iter()
+                            .map(|byte| Value::Int(byte as i64))
+                            .collect(),
+                    ))),
+                    Ok(None) => Ok(ok(Value::Nil)),
+                    Err(code) => Ok(err(code)),
+                }
+            }
+            "[method]session.write" => {
+                let id = args
+                    .first()
+                    .and_then(Value::as_f64)
+                    .ok_or_else(|| "session.write needs a handle".to_string())?
+                    as i64;
+                let data =
+                    byte_vec(args.get(1)).ok_or_else(|| "session.write needs bytes".to_string())?;
+                let Some(session) = self.http_streams.get_mut(&id) else {
+                    return Ok(err("invalid"));
+                };
+                match session.write(&data) {
+                    Ok(written) => Ok(ok(Value::Int(written as i64))),
+                    Err(code) => Ok(err(code)),
+                }
+            }
+            "[method]session.close" => {
+                let id = args
+                    .first()
+                    .and_then(Value::as_f64)
+                    .ok_or_else(|| "session.close needs a handle".to_string())?
+                    as i64;
+                let Some(session) = self.http_streams.get_mut(&id) else {
+                    return Ok(err("invalid"));
+                };
+                session.close().map_err(str::to_string)?;
+                Ok(ok(Value::Nil))
+            }
+            "[method]session.info" => {
+                let id = args
+                    .first()
+                    .and_then(Value::as_f64)
+                    .ok_or_else(|| "session.info needs a handle".to_string())?
+                    as i64;
+                let Some(session) = self.http_streams.get(&id) else {
+                    return Ok(err("invalid"));
+                };
+                Ok(ok(Value::List(vec![
+                    pair("protocol", Value::String(session.protocol.clone())),
+                    pair(
+                        "peer",
+                        session
+                            .peer
+                            .clone()
+                            .map(Value::String)
+                            .unwrap_or(Value::Nil),
+                    ),
+                    pair(
+                        "principal",
+                        session
+                            .principal
+                            .clone()
+                            .map(Value::String)
+                            .unwrap_or(Value::Nil),
+                    ),
+                    pair(
+                        "media-type",
+                        session
+                            .media_type
+                            .clone()
+                            .map(Value::String)
+                            .unwrap_or(Value::Nil),
+                    ),
+                ])))
+            }
+            other => Err(format!("unknown soil:streams function `{other}`")),
+        }
+    }
 }
 
 // --- soil:inference -------------------------------------------------------

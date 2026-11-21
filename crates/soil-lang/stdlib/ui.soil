@@ -1,0 +1,120 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Soil UI forms and HTML rendering.
+;
+; A form is a record tree:
+;
+;   ((:tag "div") (:attrs ((:class "app"))) (:children (...)))
+;   ((:text "hello"))
+;   ((:raw "<span>...</span>"))
+;
+; This file owns the form constructors and the HTML serializer. Hosts that
+; render to DOM, a native surface, or a GPU scene use the same forms; only
+; `render-html` is specific to HTML.
+
+;;; Build a UI form from a tag, attribute list, and child list.
+;;;
+;;; Attributes are `(attr key value)` pairs. Children may be forms, strings, lists of forms, or `nil`.
+(defun el (tag attrs children)
+  (list
+    (list :tag tag)
+    (list :attrs attrs)
+    (list :children children)))
+
+;;; Build one attribute pair for `el`.
+(defun attr (key value)
+  (list key value))
+
+;;; Wrap a value as an escaped text node.
+(defun txt (value)
+  (list (list :text (str value))))
+
+;; Explicit escape hatch for pre-rendered markup. Never pass untrusted input.
+;;; Wrap pre-rendered HTML without escaping.
+;;;
+;;; This is an explicit escape hatch. Never pass untrusted input.
+(defun raw (html)
+  (list (list :raw (str html))))
+
+;;; Escape `&`, `<`, and `>` for HTML text.
+(defun html-escape (text)
+  (string-replace
+    (string-replace
+      (string-replace (str text) "&" "&amp;")
+      "<" "&lt;")
+    ">" "&gt;"))
+
+;;; Escape a value for a double-quoted HTML attribute.
+(defun attr-escape (value)
+  (string-replace (html-escape value) "\"" "&quot;"))
+
+;;; Strip the leading colon from a keyword attribute name.
+(defun attr-name (key)
+  (string-replace (str key) ":" ""))
+
+;;; Render one attribute pair as HTML, or an empty string for `nil`/false.
+(defun render-attr (pair)
+  (let ((key (attr-name (first pair)))
+        (value (first (rest pair))))
+    (cond
+      ((nil? value) "")
+      ((= value #t) (str " " key))
+      ((= value #f) "")
+      (else (str " " key "=\"" (attr-escape value) "\"")))))
+
+;;; Render an attribute list as a leading space plus HTML attributes.
+(defun render-attrs (attrs)
+  (if (nil? attrs)
+      ""
+      (string-join (map 'render-attr attrs) "")))
+
+;;; Return true for HTML elements that must not have a closing tag.
+(defun void-element? (tag)
+  (or
+    (= tag "area")
+    (= tag "base")
+    (= tag "br")
+    (= tag "col")
+    (= tag "embed")
+    (= tag "hr")
+    (= tag "img")
+    (= tag "input")
+    (= tag "link")
+    (= tag "meta")
+    (= tag "param")
+    (= tag "source")
+    (= tag "track")
+    (= tag "wbr")))
+
+;;; Render one tag form, including attributes and children.
+(defun render-tag (form)
+  (let ((tag (field form :tag))
+        (attrs (render-attrs (field form :attrs)))
+        (children (field form :children)))
+    (if (void-element? tag)
+        (str "<" tag attrs ">")
+        (str "<" tag attrs ">"
+             (string-join (map 'render-html children) "")
+             "</" tag ">"))))
+
+;;; Render a UI form, a list of forms, or a text node as HTML.
+(defun render-html (form)
+  (cond
+    ((nil? form) "")
+    ((not (nil? (field form :text))) (html-escape (field form :text)))
+    ((not (nil? (field form :raw))) (field form :raw))
+    ((not (nil? (field form :tag))) (render-tag form))
+    (else (string-join (map 'render-html form) ""))))
+
+;;; Wrap rendered HTML in a complete document with `title`, `styles`, and `body`.
+(defun render-page (title styles body)
+  (str
+    "<!doctype html>\n"
+    "<html lang=\"en\">\n"
+    "<head>\n"
+    "<meta charset=\"utf-8\">\n"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+    "<title>" (html-escape title) "</title>\n"
+    "<style>\nbody { margin: 0; }\n" styles "\n</style>\n"
+    "</head>\n"
+    "<body>\n" (render-html body) "\n</body>\n"
+    "</html>\n"))

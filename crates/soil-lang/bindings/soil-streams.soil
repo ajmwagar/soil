@@ -1,0 +1,68 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+(define-package "soil:streams@0.1.0" :base "soil:streams" :version "0.1.0")
+
+(define-enum soil:streams/error denied invalid closed over-budget unavailable io)
+
+(define-record soil:streams/info
+  (protocol string)
+  (peer (option string))
+  (principal (option string))
+  (media-type (option string))
+)
+
+(define-resource soil:streams/session)
+
+(define-capability soil:streams/[method]session.info
+  :interface "soil:streams"
+  :function "[method]session.info"
+  :grant "soil:streams"
+  :version "0.1.0"
+  :params ((self (unsupported "handle")))
+  :result (result soil:streams/info soil:streams/error))
+
+(defun soil:streams/[method]session.info (self)
+  (host-call "soil:streams" "[method]session.info" (list self)))
+
+(define-capability soil:streams/[method]session.read
+  :interface "soil:streams"
+  :function "[method]session.read"
+  :grant "soil:streams"
+  :version "0.1.0"
+  :params ((self (unsupported "handle")) (max u32))
+  :result (result (option (list u8)) soil:streams/error))
+
+(defun soil:streams/[method]session.read (self max)
+  (host-call "soil:streams" "[method]session.read" (list self max)))
+
+(define-capability soil:streams/[method]session.write
+  :interface "soil:streams"
+  :function "[method]session.write"
+  :grant "soil:streams"
+  :version "0.1.0"
+  :params ((self (unsupported "handle")) (data (list u8)))
+  :result (result u64 soil:streams/error))
+
+(defun soil:streams/[method]session.write (self data)
+  (host-call "soil:streams" "[method]session.write" (list self data)))
+
+(define-capability soil:streams/[method]session.close
+  :interface "soil:streams"
+  :function "[method]session.close"
+  :grant "soil:streams"
+  :version "0.1.0"
+  :params ((self (unsupported "handle")))
+  :result (result unit soil:streams/error))
+
+(defun soil:streams/[method]session.close (self)
+  (host-call "soil:streams" "[method]session.close" (list self)))
+
+(define-capability soil:streams/accept
+  :interface "soil:streams"
+  :function "accept"
+  :grant "soil:streams"
+  :version "0.1.0"
+  :params ((protocol string))
+  :result (result (option (unsupported "handle")) soil:streams/error))
+
+(defun soil:streams/accept (protocol)
+  (host-call "soil:streams" "accept" (list protocol)))
