@@ -7923,15 +7923,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "soil-ui-proto"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde_json",
- "soil-lang",
-]
-
-[[package]]
 name = "soil-video"
 version = "0.1.0"
 dependencies = [

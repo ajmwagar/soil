@@ -316,6 +316,10 @@ impl Runtime {
                             .ok_or_else(|| anyhow!("apply: unknown function `{name}`"))?;
                         self.call_function(&function, arguments)
                     }
+                    "symbol?" => Ok(Value::Bool(matches!(
+                        self.eval(require(items, 1, "symbol?")?, env)?,
+                        Value::Symbol(_)
+                    ))),
                     "atom" => {
                         let value = self.eval(require(items, 1, "atom")?, env)?;
                         Ok(if matches!(value, Value::List(_)) {

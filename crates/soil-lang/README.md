@@ -15,6 +15,9 @@ backends. This is the language side of Soil; the host and capabilities live in
 - `witgen.rs` — WIT -> `.soil` binding stubs.
 - `bindings/` — generated Soil capability bindings.
 - `stdlib/prelude.soil` — list, JSON, records, and time helpers.
+- `boot/boot.soil` — the first evaluator written in Soil: environments,
+  binding, special forms, application, and a primitive table. This is the seed
+  for Phase 7 self-hosting, not the finished bootstrap.
 
 ## Run Instinct
 
@@ -57,6 +60,8 @@ cargo run -p soil-lang --bin soil-c -- \
 cargo test -p soil-lang
 ```
 
+`tests/boot.rs` runs the Soil bootstrap evaluator on arithmetic, `if`, `cond`,
+`let`, lambdas, environments, and lists.
 `tests/jmc.rs` runs McCarthy's `eval.` in the interpreter.
 `tests/jmc_wasm.rs` compiles the same `eval.` and runs it on wasmtime.
 `tests/fixtures/jmc.lisp` is Paul Graham's CL translation of McCarthy's 1960
