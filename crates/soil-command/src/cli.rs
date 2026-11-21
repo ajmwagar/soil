@@ -219,21 +219,22 @@ fn run_as(args: Vec<String>, subcommand: &[&str]) -> Result<i32> {
     if !std::io::stdin().is_terminal() {
         std::io::stdin().read_to_end(&mut stdin)?;
     }
-    // The bus is the grant's counterpart: a command that lists `soil:unibus`
-    // in `requires` needs one, and the runner refuses to promise a capability
-    // it cannot link.
+    // A command that lists `soil:unibus` in `requires` gets the interface
+    // linked even when no hub is configured; the host then answers
+    // `unavailable` and the command can retry the publish later. The shim
+    // sources a policy file, so a host can name the hub there instead of
+    // putting it in every argv. An explicit flag still wins.
+    let unibus_config = unibus_config.or_else(|| {
+        std::env::var_os("UNIBUS_CONFIG")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    });
     let bus = match &unibus_config {
         Some(path) => {
             Some(Arc::new(::soil::UnibusBus::from_config_file(path)?) as Arc<dyn ::soil::Bus>)
         }
         None => None,
     };
-    if entry.requires.iter().any(|cap| cap == "soil:unibus") && bus.is_none() {
-        bail!(
-            "{} requires soil:unibus but no --unibus-config was given",
-            entry.name
-        );
-    }
     let output = CommandRunner::new(records, bus)?.run(
         &entry,
         &RunRequest {
