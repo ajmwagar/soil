@@ -567,7 +567,11 @@ fn value_bytes(value: &Value) -> Result<Vec<u8>> {
     }
 }
 
-fn json_to_value(json: &serde_json::Value) -> Value {
+/// Decode a JSON value into the record/list shape Soil uses.
+///
+/// JSON objects become lists of `(keyword value)` pairs, matching
+/// `json-decode` and the UI form encoding.
+pub fn json_to_value(json: &serde_json::Value) -> Value {
     match json {
         serde_json::Value::Null => Value::Nil,
         serde_json::Value::Bool(value) => Value::Bool(*value),

@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// The entire host-side UI implementation for the prototype.
+// The entire host-side UI implementation for the examples.
 //
 // Lisp emits a tree of {tag, attrs, children} and {text} records plus a CSS
 // string. This file mounts the tree, patches it in place, injects the CSS, and
-// sends named actions back to the server. It has no knowledge of the counter.
+// sends named actions back to the server. It has no knowledge of any example.
 
 const root = document.getElementById("root");
 const source = document.getElementById("source");
 const status = document.getElementById("status");
 const apply = document.getElementById("apply");
+const examples = document.getElementById("examples");
+const filename = document.getElementById("filename");
 
 let mounted = null;
 let currentState = null;
+let currentName = null;
 let styleElement = null;
 
 function setStatus(text, isError = false) {
@@ -41,7 +44,7 @@ function patch(dom, vnode) {
     dom.remove();
     return null;
   }
-  if (Object.prototype.hasOwnProperty.call(vnode, "text") || typeof vnode === "string") {
+  if (typeof vnode === "string" || Object.prototype.hasOwnProperty.call(vnode, "text")) {
     const text = typeof vnode === "string" ? vnode : (vnode.text ?? "");
     if (dom.nodeType === Node.TEXT_NODE) {
       if (dom.data !== text) dom.data = text;
@@ -120,12 +123,31 @@ function applyCss(css) {
   if (styleElement.textContent !== css) styleElement.textContent = css;
 }
 
-async function render(action = "") {
-  const params = new URLSearchParams();
-  if (currentState !== null) params.set("state", String(currentState));
-  if (action) params.set("action", action);
+function sourceUrl() {
+  if (!currentName) return "/source";
+  return `/source?name=${encodeURIComponent(currentName)}`;
+}
 
-  const response = await fetch(`/view?${params.toString()}`, { cache: "no-store" });
+function viewUrl(action) {
+  const params = new URLSearchParams();
+  if (currentName) params.set("name", currentName);
+  if (currentState !== null) params.set("state", JSON.stringify(currentState));
+  if (action) params.set("action", action);
+  return `/view?${params.toString()}`;
+}
+
+function actionFromElement(element) {
+  if (!element.dataset || !element.dataset.op) return null;
+  const payload = { op: element.dataset.op };
+  for (const [key, value] of Object.entries(element.dataset)) {
+    if (key !== "op") payload[key] = value;
+  }
+  return JSON.stringify(payload);
+}
+
+async function render(action = "") {
+  if (!currentName) return;
+  const response = await fetch(viewUrl(action), { cache: "no-store" });
   const data = await response.json();
   if (!response.ok) {
     setStatus(data.error || "render failed", true);
@@ -134,11 +156,11 @@ async function render(action = "") {
   currentState = data.state;
   applyCss(data.css);
   renderTree(data.tree);
-  setStatus(`state ${currentState}`);
+  setStatus(`state ${JSON.stringify(currentState)}`);
 }
 
 async function loadSource() {
-  const response = await fetch("/source", { cache: "no-store" });
+  const response = await fetch(sourceUrl(), { cache: "no-store" });
   if (!response.ok) {
     setStatus("could not load source", true);
     return;
@@ -148,7 +170,7 @@ async function loadSource() {
 
 async function applySource() {
   setStatus("applying…");
-  const response = await fetch("/source", {
+  const response = await fetch(sourceUrl(), {
     method: "POST",
     body: source.value,
     headers: { "Content-Type": "text/plain; charset=utf-8" },
@@ -161,11 +183,63 @@ async function applySource() {
   await render();
 }
 
+async function loadExamples() {
+  const response = await fetch("/examples", { cache: "no-store" });
+  if (!response.ok) {
+    setStatus("could not load examples", true);
+    return;
+  }
+  const list = await response.json();
+  examples.replaceChildren();
+  for (const example of list) {
+    const option = document.createElement("option");
+    option.value = example.name;
+    option.textContent = example.title;
+    examples.appendChild(option);
+  }
+}
+
+async function selectExample(name) {
+  currentName = name;
+  currentState = null;
+  mounted = null;
+  root.replaceChildren();
+  filename.textContent = `${name}.soil`;
+  await loadSource();
+  await render();
+}
+
+function runAction(action) {
+  render(action).catch((error) => setStatus(String(error), true));
+}
+
 root.addEventListener("click", (event) => {
-  const target = event.target instanceof Element ? event.target.closest("[data-action]") : null;
+  const target = event.target instanceof Element ? event.target.closest("[data-op]") : null;
   if (!target) return;
+  if (target.tagName === "FORM") return;
+  if (target.tagName === "BUTTON" && target.type === "submit") return;
   event.preventDefault();
-  render(target.dataset.action).catch((error) => setStatus(String(error), true));
+  const action = actionFromElement(target);
+  if (action) runAction(action);
+});
+
+root.addEventListener("submit", (event) => {
+  const form = event.target instanceof HTMLFormElement ? event.target : null;
+  if (!form || !form.dataset.op) return;
+  event.preventDefault();
+  const payload = {
+    op: form.dataset.op,
+    ...Object.fromEntries(new FormData(form)),
+  };
+  render(JSON.stringify(payload))
+    .then(() => {
+      if (form.isConnected) form.reset();
+    })
+    .catch((error) => setStatus(String(error), true));
+});
+
+examples.addEventListener("change", () => {
+  selectExample(examples.value).catch((error) => setStatus(String(error), true));
 });
 
 apply.addEventListener("click", () => {
@@ -181,8 +255,9 @@ source.addEventListener("keydown", (event) => {
 
 (async () => {
   try {
-    await loadSource();
-    await render();
+    await loadExamples();
+    const initial = examples.value || "counter";
+    await selectExample(initial);
   } catch (error) {
     setStatus(String(error), true);
   }
