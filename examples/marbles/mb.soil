@@ -153,14 +153,18 @@
 (defun issue-id-option? (issue id)
   (or (nil? id) (= (field issue :id) id)))
 
+(defun list-project (project id all limit)
+  (let ((issues (filter-with 'issue-in-project? project (issue-bodies "project" project))))
+    (let ((visible (filter-with 'issue-id-option? id issues)))
+      (let ((visible (if all visible (filter 'open-issue? visible))))
+        (truncate limit (issues-with-counts visible))))))
+
 (defun mb-list (result)
-  (let ((project (require-project result)))
-    (let ((id (cli-result-option result "id"))
-          (all (cli-result-option result "all")))
-      (let ((issues (filter-with 'issue-in-project? project (issue-bodies "project" project))))
-        (let ((visible (filter-with 'issue-id-option? id issues)))
-          (let ((visible (if all visible (filter 'open-issue? visible))))
-            (truncate (limit-option result) (issues-with-counts visible))))))))
+  (list-project
+    (require-project result)
+    (cli-result-option result "id")
+    (cli-result-option result "all")
+    (limit-option result)))
 
 (defun issue-available? (issue now)
   (let ((available (field issue :available_at)))
@@ -180,20 +184,24 @@
       (issue-available? issue now)
       (not (issue-claimed? issue now)))))
 
+(defun ready-project (project)
+  (let ((issues (filter-with 'issue-in-project? project (issue-bodies "project" project))))
+    (let ((now (/ (now-ms) 1000)))
+      (issues-with-counts
+        (filter-with 'ready-issue? (list now) issues)))))
+
 (defun mb-ready (result)
-  (let ((project (require-project result)))
-    (let ((issues (filter-with 'issue-in-project? project (issue-bodies "project" project))))
-      (let ((now (/ (now-ms) 1000)))
-        (issues-with-counts
-          (filter-with 'ready-issue? (list now) issues))))))
+  (ready-project (require-project result)))
+
+(defun show-issue (id)
+  (let ((issues (issue-bodies "id" id)))
+    (let ((issue (find-body id issues)))
+      (if (nil? issue)
+          (mb-fail (str "issue not found: " id))
+          (list (issue-with-counts issue))))))
 
 (defun mb-show (result)
-  (let ((id (first (cli-result-args result))))
-    (let ((issues (issue-bodies "id" id)))
-      (let ((issue (find-body id issues)))
-        (if (nil? issue)
-            (mb-fail (str "issue not found: " id))
-            (list (issue-with-counts issue)))))))
+  (show-issue (first (cli-result-args result))))
 
 (defun mb-dispatch (result)
   (let ((name (field result :name)))
@@ -202,6 +210,17 @@
       ((= name "ready") (println (json-encode (mb-ready result))))
       ((= name "show") (println (json-encode (mb-show result))))
       (else (mb-fail (str "unsupported command: " name))))))
+
+; REPL-friendly names. Load this file and call `(marbles-ready "marbles")`,
+; `(marbles-list "marbles" #f 10)`, or `(marbles-show "marbles-an4z")`.
+(defun marbles-list (project)
+  (list-project project nil #f 0))
+
+(defun marbles-ready (project)
+  (ready-project project))
+
+(defun marbles-show (id)
+  (show-issue id))
 
 (defun main ()
   (let ((parsed (cli-parse-argv (mb-spec) (cli-args))))

@@ -62,9 +62,15 @@ projection, so `list --project` does not decode every issue in the book.
 ... examples/marbles/mb.soil -- show marbles-an4z
 ```
 
-The read path is the REPL-friendly part: load the same files and call
-`(mb-ready result)` or `(mb-list result)` from a Soil session. Writes, claim
-CAS, events, and the full command tree are the next port slice.
+The read path is the REPL-friendly part. Load the same files and call:
+
+```soil
+(marbles-ready "marbles")
+(marbles-list "marbles")
+(marbles-show "marbles-an4z")
+```
+
+Writes, claim CAS, events, and the full command tree are the next port slice.
 
 ## Live host
 
