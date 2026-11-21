@@ -147,10 +147,20 @@ fn spawn_task(stream: &mut TcpStream, theseus: &PathBuf, body: &[u8]) -> Result<
     let text = String::from_utf8_lossy(body);
     let task = serde_json::from_str::<serde_json::Value>(&text)
         .ok()
-        .and_then(|value| value.get("task").and_then(|task| task.as_str()).map(str::to_owned))
+        .and_then(|value| {
+            value
+                .get("task")
+                .and_then(|task| task.as_str())
+                .map(str::to_owned)
+        })
         .unwrap_or_else(|| text.trim().to_owned());
     if task.is_empty() {
-        return respond(stream, 400, "application/json", br#"{"error":"empty task"}"#);
+        return respond(
+            stream,
+            400,
+            "application/json",
+            br#"{"error":"empty task"}"#,
+        );
     }
     let child = std::process::Command::new(theseus)
         .arg("agent")

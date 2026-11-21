@@ -11,8 +11,8 @@ use soil::vfs_host::{VfsHost, vfs, vfs_mut};
 
 use crate::sexp::Value;
 use crate::{Host, SessionHost, SoilRecordsHost, SystemTimeHost};
-use std::collections::HashMap;
 use soil_inference_host::Resource;
+use std::collections::HashMap;
 
 pub struct NativeHost {
     vfs: VfsHost,
@@ -400,10 +400,7 @@ impl NativeHost {
                     .and_then(Value::as_f64)
                     .ok_or_else(|| "completion-stream.next needs a handle".to_string())?
                     as i64;
-                let timeout = args
-                    .get(1)
-                    .and_then(Value::as_f64)
-                    .unwrap_or(30_000.0) as u32;
+                let timeout = args.get(1).and_then(Value::as_f64).unwrap_or(30_000.0) as u32;
                 let Some(stream) = self.streams.remove(&id) else {
                     return Ok(err("invalid"));
                 };
@@ -413,8 +410,7 @@ impl NativeHost {
                         let done = chunk.done;
                         let value = inference_chunk(chunk);
                         if !done {
-                            self.streams
-                                .insert(id, Resource::new_own(rep));
+                            self.streams.insert(id, Resource::new_own(rep));
                         } else {
                             let _ = StreamTrait::drop(host, Resource::new_own(rep));
                         }
