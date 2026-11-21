@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! Soil's Lisp: the S-expression reader, interpreter, typed core, WIT bindings,
+//! and Wasm backends.
+
+pub mod core;
+pub mod eval;
+pub mod lisp;
+pub mod records_host;
+pub mod sexp;
+pub mod time_host;
+pub mod wasm;
+pub mod witgen;
+
+pub use core::{Expr, Function, Program, parse};
+pub use eval::{FakeHost, Host, HostChain, Runtime, value_to_json as to_json};
+pub use lisp::{Compiled as CompiledLisp, compile_source as compile_lisp};
+pub use records_host::SoilRecordsHost;
+pub use time_host::SystemTimeHost;
+pub use wasm::compile;
+pub use witgen::{Generated, generate};
