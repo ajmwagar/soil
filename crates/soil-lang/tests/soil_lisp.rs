@@ -37,6 +37,8 @@ fn runtime(root: &Path) -> Runtime {
         "bindings/wasi-cli.generated.soil",
         "bindings/soil-time.soil",
         "bindings/soil-records.soil",
+        "bindings/soil-http.soil",
+        "../../examples/hue/hue.soil",
         "boot/boot.soil",
     ] {
         runtime.load_file(dir.join(file)).unwrap();
@@ -62,6 +64,18 @@ fn test_names(source: &str) -> Vec<String> {
 
 #[test]
 fn soil_test_files_pass() {
+    // A recursive Soil test can use more stack than libtest's default. Run the
+    // whole corpus on an explicit stack so a new test does not fail the suite
+    // for the size of its recursion rather than its result.
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(run_soil_tests)
+        .expect("spawn soil test runner")
+        .join()
+        .expect("soil test runner panicked");
+}
+
+fn run_soil_tests() {
     for file in soil_tests() {
         let source = std::fs::read_to_string(&file).unwrap();
         let names = test_names(&source);

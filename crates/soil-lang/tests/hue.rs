@@ -175,17 +175,20 @@ fn hue_scene_looks_up_the_name_and_puts_its_id() {
 }
 
 #[test]
-fn hue_converts_rgb_to_the_bridge_xy_contract() {
-    let mut runtime = runtime(FakeHttp::default());
-    let red = runtime
-        .call(
-            "hue/rgb->xy",
-            &[Value::Int(255), Value::Int(0), Value::Int(0)],
-        )
+fn hue_group_lights_keep_their_ids() {
+    let host = FakeHttp::new([
+        r#"{"lights":["3"]}"#,
+        r#"{"name":"Window Lamp","capabilities":{"control":{"colorgamut":[[0.6915,0.3083],[0.17,0.7],[0.1532,0.0475]]}}}"#,
+    ]);
+    let mut runtime = runtime(host);
+    let bridge = bridge(&mut runtime);
+
+    let lights = runtime
+        .call("hue/lights-in-group", &[bridge, Value::String("81".into())])
         .unwrap();
-    let red = red.as_list().unwrap();
-    let x = red[0].as_f64().unwrap();
-    let y = red[1].as_f64().unwrap();
-    assert!((x - 0.7006).abs() < 0.001, "{x}");
-    assert!((y - 0.2993).abs() < 0.001, "{y}");
+    let lights = lights.as_list().unwrap();
+    assert_eq!(lights[0].as_symbol(), Some("ok"));
+    let first = lights[1].as_list().unwrap()[0].clone();
+    assert_eq!(record_field(&first, "id").as_str(), Some("3"));
+    assert_eq!(record_field(&first, "name").as_str(), Some("Window Lamp"));
 }

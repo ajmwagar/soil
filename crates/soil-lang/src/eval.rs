@@ -495,6 +495,13 @@ impl Runtime {
                             .ok_or_else(|| anyhow!("round expects a number"))?;
                         Ok(Value::Float(value.round()))
                     }
+                    "floor" => {
+                        let value = self.eval(require(items, 1, "floor")?, env)?;
+                        let value = value
+                            .as_f64()
+                            .ok_or_else(|| anyhow!("floor expects a number"))?;
+                        Ok(Value::Float(value.floor()))
+                    }
                     "=" | ">" | "<" | ">=" | "<=" => self.eval_comparison(head, &items[1..], env),
                     name if self.functions.contains_key(name) => {
                         let function = self.functions.get(name).cloned().unwrap();

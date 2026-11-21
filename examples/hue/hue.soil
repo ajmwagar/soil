@@ -252,3 +252,353 @@
       (if (ok? response)
           (hue/check (value response))
           response))))
+
+;;; ---------------------------------------------------------------------------
+;;; Color theory, per-lamp gamut, and spatial scenes
+;;; ---------------------------------------------------------------------------
+
+(defun hue/abs (value)
+  (if (< value 0) (- 0 value) value))
+
+(defun hue/clamp (value low high)
+  (if (< value low) low (if (> value high) high value)))
+
+(defun hue/clamp-bri (value)
+  (round (hue/clamp value 1 254)))
+
+(defun hue/count (xs)
+  (if (nil? xs) 0 (length xs)))
+
+(defun hue/wrap-hue (degrees)
+  (- degrees (* 360.0 (floor (/ degrees 360.0)))))
+
+(defun hue/mod2 (value)
+  (- value (* 2.0 (floor (/ value 2.0)))))
+
+;;; Convert HSL (hue degrees, saturation 0..1, lightness 0..1) to sRGB.
+(defun hue/hsl->rgb (hue saturation lightness)
+  (let ((hue (hue/wrap-hue hue)))
+    (let ((chroma (* (- 1.0 (hue/abs (- (* 2.0 lightness) 1.0))) saturation)))
+      (let ((x (* chroma
+                  (- 1.0
+                     (hue/abs (- (hue/mod2 (/ hue 60.0)) 1.0))))))
+        (let ((m (- lightness (/ chroma 2.0))))
+          (let ((rgb
+                  (cond
+                    ((< hue 60.0) (list chroma x 0.0))
+                    ((< hue 120.0) (list x chroma 0.0))
+                    ((< hue 180.0) (list 0.0 chroma x))
+                    ((< hue 240.0) (list 0.0 x chroma))
+                    ((< hue 300.0) (list x 0.0 chroma))
+                    (else (list chroma 0.0 x)))))
+            (list
+              (round (* (+ (nth 0 rgb) m) 255.0))
+              (round (* (+ (nth 1 rgb) m) 255.0))
+              (round (* (+ (nth 2 rgb) m) 255.0)))))))))
+
+;;; A colour-theory set as HSL triples. Hue is degrees; s/l are 0..1.
+(defun hue/harmony (hue saturation lightness mode)
+  (cond
+    ((= mode "analogous")
+      (list
+        (list (- hue 30.0) saturation lightness)
+        (list hue saturation lightness)
+        (list (+ hue 30.0) saturation lightness)))
+    ((= mode "complementary")
+      (list
+        (list hue saturation lightness)
+        (list (+ hue 180.0) saturation lightness)))
+    ((= mode "split")
+      (list
+        (list hue saturation lightness)
+        (list (+ hue 150.0) saturation lightness)
+        (list (+ hue 210.0) saturation lightness)))
+    ((= mode "triadic")
+      (list
+        (list hue saturation lightness)
+        (list (+ hue 120.0) saturation lightness)
+        (list (+ hue 240.0) saturation lightness)))
+    ((= mode "tetradic")
+      (list
+        (list hue saturation lightness)
+        (list (+ hue 90.0) saturation lightness)
+        (list (+ hue 180.0) saturation lightness)
+        (list (+ hue 270.0) saturation lightness)))
+    ((= mode "mono")
+      (list
+        (list hue saturation (- lightness 0.18))
+        (list hue saturation lightness)
+        (list hue saturation (+ lightness 0.18))))
+    (else (list (list hue saturation lightness)))))
+
+(defun hue/harmony-rgb (hue saturation lightness mode)
+  (map 'hue/hsl->rgb (hue/harmony hue saturation lightness mode)))
+
+(defun hue/lerp (a b t)
+  (+ a (* (- b a) t)))
+
+(defun hue/lerp-rgb (a b t)
+  (list
+    (round (hue/lerp (nth 0 a) (nth 0 b) t))
+    (round (hue/lerp (nth 1 a) (nth 1 b) t))
+    (round (hue/lerp (nth 2 a) (nth 2 b) t))))
+
+;;; Sample a palette at 0..1, interpolating between adjacent swatches.
+(defun hue/palette-at (palette t)
+  (let ((last (- (length palette) 1)))
+    (if (<= last 0)
+        (first palette)
+        (let ((position (* (hue/clamp t 0.0 1.0) last)))
+          (let ((index (floor position)))
+            (if (>= index last)
+                (nth last palette)
+                (hue/lerp-rgb
+                  (nth index palette)
+                  (nth (+ index 1) palette)
+                  (- position index))))))))
+
+;;; The closest point on segment AB to P, in CIE xy.
+(defun hue/closest-segment (p a b)
+  (let ((dx (- (nth 0 b) (nth 0 a)))
+        (dy (- (nth 1 b) (nth 1 a))))
+    (let ((length2 (+ (* dx dx) (* dy dy))))
+      (if (= length2 0.0)
+          a
+          (let ((u (/ (+ (* (- (nth 0 p) (nth 0 a)) dx)
+                         (* (- (nth 1 p) (nth 1 a)) dy))
+                      length2)))
+            (let ((u (hue/clamp u 0.0 1.0)))
+              (list (+ (nth 0 a) (* u dx))
+                    (+ (nth 1 a) (* u dy)))))))))
+
+(defun hue/dist2 (a b)
+  (let ((dx (- (nth 0 a) (nth 0 b)))
+        (dy (- (nth 1 a) (nth 1 b))))
+    (+ (* dx dx) (* dy dy))))
+
+(defun hue/cross (a b p)
+  (- (* (- (nth 0 b) (nth 0 a)) (- (nth 1 p) (nth 1 a)))
+     (* (- (nth 1 b) (nth 1 a)) (- (nth 0 p) (nth 0 a)))))
+
+(defun hue/inside-triangle? (p triangle)
+  (let ((d1 (hue/cross (nth 0 triangle) (nth 1 triangle) p))
+        (d2 (hue/cross (nth 1 triangle) (nth 2 triangle) p))
+        (d3 (hue/cross (nth 2 triangle) (nth 0 triangle) p)))
+    (or
+      (and (>= d1 -0.000000001) (>= d2 -0.000000001) (>= d3 -0.000000001))
+      (and (<= d1 0.000000001) (<= d2 0.000000001) (<= d3 0.000000001)))))
+
+(defun hue/nearest-point (p a b c)
+  (let ((ab (hue/closest-segment p a b))
+        (bc (hue/closest-segment p b c))
+        (ca (hue/closest-segment p c a)))
+    (let ((dab (hue/dist2 p ab))
+          (dbc (hue/dist2 p bc))
+          (dca (hue/dist2 p ca)))
+      (cond
+        ((and (<= dab dbc) (<= dab dca)) ab)
+        ((<= dbc dca) bc)
+        (else ca)))))
+
+;;; Clamp an xy pair into a lamp's colour triangle. A bulb cannot show every
+;;; colour the matrix produces; this turns an out-of-gamut request into the
+;;; nearest colour the lamp can actually render.
+(defun hue/clamp-gamut (xy gamut)
+  (cond
+    ((or (nil? gamut) (< (length gamut) 3)) xy)
+    ((hue/inside-triangle? xy gamut) xy)
+    (else
+      (hue/nearest-point
+        xy
+        (nth 0 gamut)
+        (nth 1 gamut)
+        (nth 2 gamut)))))
+
+(defun hue/light-gamut (light)
+  (field
+    (field (field light :capabilities) :control)
+    :colorgamut))
+
+(defun hue/light-name (light)
+  (field light :name))
+
+(defun hue/load-light (id bridge)
+  (let ((light (hue/get bridge (str "/lights/" id))))
+    (if (ok? light)
+        (list 'ok (cons (list :id id) (value light)))
+        light)))
+
+(defun hue/load-lights (bridge ids)
+  (if (nil? ids)
+      (list 'ok nil)
+      (let ((light (hue/load-light (first ids) bridge)))
+        (if (ok? light)
+            (let ((rest (hue/load-lights bridge (rest ids))))
+              (if (ok? rest)
+                  (list 'ok (cons (value light) (value rest)))
+                  rest))
+            light))))
+
+(defun hue/group-light-ids (bridge group-id)
+  (let ((group (hue/get bridge (str "/groups/" group-id))))
+    (if (ok? group)
+        (list 'ok (field (value group) :lights))
+        group)))
+
+(defun hue/lights-in-group (bridge group-id)
+  (let ((ids (hue/group-light-ids bridge group-id)))
+    (if (ok? ids)
+        (hue/load-lights bridge (value ids))
+        ids)))
+
+(defun hue/layout-entry (layout id)
+  (cond
+    ((nil? layout) nil)
+    ((= (first (first layout)) id) (first layout))
+    (else (hue/layout-entry (rest layout) id))))
+
+;;; A layout is a list of `(light-id x y)` entries in normalized room space.
+;;; Without one, bridge order becomes the gradient.
+(defun hue/layout-t (layout id index total)
+  (if (nil? layout)
+      (if (= total 1) 0.5 (/ index (- total 1)))
+      (let ((entry (hue/layout-entry layout id)))
+        (if (nil? entry)
+            (if (= total 1) 0.5 (/ index (- total 1)))
+            (nth 1 entry)))))
+
+(defun hue/mood-record (palette brightness spread transition)
+  (list
+    (list :palette palette)
+    (list :brightness brightness)
+    (list :spread spread)
+    (list :transition transition)))
+
+(defun hue/mood (name)
+  (cond
+    ((= name "aurora")
+      (hue/mood-record
+        (list (list 20 220 160) (list 30 120 255) (list 130 40 220))
+        190 60 20))
+    ((= name "sunset")
+      (hue/mood-record
+        (list (list 255 90 40) (list 255 40 120) (list 140 30 180))
+        190 60 20))
+    ((= name "ocean")
+      (hue/mood-record
+        (list (list 0 80 180) (list 0 160 200) (list 40 220 180))
+        185 70 20))
+    ((= name "ember")
+      (hue/mood-record
+        (list (list 255 60 0) (list 255 120 0) (list 255 200 40))
+        175 70 20))
+    ((= name "forest")
+      (hue/mood-record
+        (list (list 20 100 40) (list 60 160 60) (list 180 200 80))
+        185 55 20))
+    ((= name "nebula")
+      (hue/mood-record
+        (list (list 80 0 180) (list 200 0 160) (list 0 120 255))
+        185 65 20))
+    ((= name "movie")
+      (hue/mood-record
+        (list (list 10 20 80) (list 40 10 90) (list 255 120 40))
+        120 50 20))
+    ((= name "focus")
+      (hue/mood-record
+        (list (list 255 210 160) (list 255 230 200) (list 220 235 255))
+        230 30 10))
+    ((= name "candle")
+      (hue/mood-record
+        (list (list 255 120 30) (list 255 170 70) (list 255 220 140))
+        120 40 25))
+    (else
+      (hue/mood-record
+        (list (list 255 180 90) (list 255 90 140) (list 80 120 255))
+        180 70 20))))
+
+(defun hue/plan-light (light palette brightness spread transition layout index total)
+  (let ((t (hue/layout-t layout (field light :id) index total)))
+    (let ((rgb (hue/palette-at palette t)))
+      (let ((xy (hue/clamp-gamut
+                  (hue/rgb->xy (nth 0 rgb) (nth 1 rgb) (nth 2 rgb))
+                  (hue/light-gamut light))))
+        (list
+          (list :id (field light :id))
+          (list :name (field light :name))
+          (list :t t)
+          (list :rgb rgb)
+          (list :xy xy)
+          (list :bri (hue/clamp-bri (+ brightness (* spread (- t 0.5)))))
+          (list :transition transition))))))
+
+(defun hue/plan-lights (lights palette brightness spread transition layout index total)
+  (if (nil? lights)
+      nil
+      (cons
+        (hue/plan-light
+          (first lights) palette brightness spread transition layout index total)
+        (hue/plan-lights
+          (rest lights) palette brightness spread transition layout
+          (+ index 1) total))))
+
+(defun hue/atmosphere-plan (bridge group-id mood-name layout)
+  (let ((mood (hue/mood mood-name)))
+    (let ((lights (hue/lights-in-group bridge group-id)))
+      (if (ok? lights)
+          (let ((lights (value lights)))
+            (list 'ok
+              (hue/plan-lights
+                lights
+                (field mood :palette)
+                (field mood :brightness)
+                (field mood :spread)
+                (field mood :transition)
+                layout
+                0
+                (hue/count lights))))
+          lights))))
+
+(defun hue/apply-plan (bridge plan)
+  (if (nil? plan)
+      nil
+      (let ((entry (first plan)))
+        (cons
+          (hue/put
+            bridge
+            (str "/lights/" (field entry :id) "/state")
+            (list
+              (list :on #t)
+              (list :bri (field entry :bri))
+              (list :xy (field entry :xy))
+              (list :transitiontime (field entry :transition))))
+          (hue/apply-plan bridge (rest plan))))))
+
+;;; Apply a mood across a group. Returns the per-light bridge replies.
+(defun hue/atmosphere (bridge group-id mood-name layout)
+  (let ((plan (hue/atmosphere-plan bridge group-id mood-name layout)))
+    (if (ok? plan)
+        (hue/apply-plan bridge (value plan))
+        plan)))
+
+;;; A palette straight from colour theory instead of a named mood.
+(defun hue/atmosphere-harmony (bridge group-id hue-degrees harmony layout)
+  (let ((mood
+          (hue/mood-record
+            (hue/harmony-rgb hue-degrees 0.68 0.55 harmony)
+            190 65 20)))
+    (let ((lights (hue/lights-in-group bridge group-id)))
+      (if (ok? lights)
+          (let ((lights (value lights)))
+            (hue/apply-plan
+              bridge
+              (hue/plan-lights
+                lights
+                (field mood :palette)
+                (field mood :brightness)
+                (field mood :spread)
+                (field mood :transition)
+                layout
+                0
+                (hue/count lights))))
+          lights))))

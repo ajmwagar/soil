@@ -85,6 +85,48 @@ printf '%s\n' '{"op":"lease","reference":"geode://home/hue/bridge","purpose":"hu
   | nc -U "$HOME/.geode/geode.sock"
 ```
 
+## Colour theory and spatial scenes
+
+The library can turn a mood into a coordinated set of per-light writes instead
+of one flat group action:
+
+```lisp
+(hue/mood "aurora")                       ; palette, brightness, spread, transition
+(hue/atmosphere-plan (home) "81" "sunset" nil)  ; plan only; no bridge writes
+(hue/atmosphere (home) "81" "aurora" nil)       ; apply it
+```
+
+Built-in moods: `aurora`, `sunset`, `ocean`, `ember`, `forest`, `nebula`,
+`movie`, `focus`, `candle`.
+
+Colour theory is exposed directly:
+
+```lisp
+(hue/harmony 190 0.68 0.55 "analogous")   ; HSL triples
+(hue/harmony-rgb 190 0.68 0.55 "triadic") ; sRGB
+(hue/hsl->rgb 210 0.7 0.5)
+(hue/atmosphere-harmony (home) "81" 190 "split" nil)
+```
+
+Every request is clamped to the target lamp's CIE `colorgamut` before it is
+sent, so a palette that looks good on paper does not get rejected by a bulb.
+The bridge's own group order is the fallback spatial axis; for a real gradient,
+pass a layout:
+
+```lisp
+(defun living-room-layout ()
+  (list
+    (list "3" 0.10 0.20)   ; light-id, x, y in normalized room space
+    (list "8" 0.30 0.20)
+    (list "4" 0.50 0.50)
+    (list "7" 0.85 0.70)))
+
+(hue/atmosphere (home) "81" "ocean" (living-room-layout))
+```
+
+Without a layout the gradient runs in bridge order. With one, `x` is the
+position along the gradient and `y` is reserved for future 2D/radial fields.
+
 ## What is not here yet
 
 - Bridge discovery (mDNS/SSDP) is still host work.
