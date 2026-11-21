@@ -452,6 +452,31 @@ impl Runtime {
                         };
                         Ok(Value::String(text.replace(from, to)))
                     }
+                    "string-split" => {
+                        let text = self.eval(require(items, 1, "string-split")?, env)?;
+                        let separator = self.eval(require(items, 2, "string-split")?, env)?;
+                        let Some(text) = text.as_str() else {
+                            bail!("string-split expects a string");
+                        };
+                        let Some(separator) = separator.as_str() else {
+                            bail!("string-split expects a separator string");
+                        };
+                        if separator.is_empty() {
+                            bail!("string-split separator must not be empty");
+                        }
+                        Ok(Value::List(
+                            text.split(separator)
+                                .map(|part| Value::String(part.to_string()))
+                                .collect(),
+                        ))
+                    }
+                    "string-trim" => {
+                        let text = self.eval(require(items, 1, "string-trim")?, env)?;
+                        let Some(text) = text.as_str() else {
+                            bail!("string-trim expects a string");
+                        };
+                        Ok(Value::String(text.trim().to_string()))
+                    }
                     "string-chars" => {
                         let text = self.eval(require(items, 1, "string-chars")?, env)?;
                         let Some(text) = text.as_str() else {

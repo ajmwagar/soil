@@ -11,7 +11,7 @@ use base64::Engine;
 use serde_json::{Value, json};
 use soil_inference::{GeodeResolver, SoilConfig};
 use soil_scrub::Scrubber;
-use wasmtime::component::{HasSelf, Linker, Resource, ResourceTable};
+use wasmtime::component::{HasSelf, Linker, ResourceTable};
 
 wasmtime::component::bindgen!({
     path: "wit",
@@ -24,6 +24,8 @@ wasmtime::component::bindgen!({
 pub mod api {
     pub use crate::soil::inference::inference::*;
 }
+
+pub use wasmtime::component::Resource;
 
 const MAX_CHUNK: usize = 16 * 1024;
 const BASE64_STANDARD: base64::engine::general_purpose::GeneralPurpose =

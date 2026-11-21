@@ -11,12 +11,16 @@ use soil::vfs_host::{VfsHost, vfs, vfs_mut};
 
 use crate::sexp::Value;
 use crate::{Host, SessionHost, SoilRecordsHost, SystemTimeHost};
+use std::collections::HashMap;
+use soil_inference_host::Resource;
 
 pub struct NativeHost {
     vfs: VfsHost,
     records: SoilRecordsHost,
     time: SystemTimeHost,
     inference: Option<soil_inference_host::InferenceHost>,
+    streams: HashMap<i64, Resource<soil_inference_host::CompletionStream>>,
+    next_stream: i64,
     session: Option<SessionHost>,
 }
 
@@ -31,6 +35,8 @@ impl NativeHost {
             records: SoilRecordsHost::open(records_root, book)?,
             time: SystemTimeHost,
             inference: None,
+            streams: HashMap::new(),
+            next_stream: 1,
             session: None,
         })
     }
@@ -141,7 +147,15 @@ impl Host for NativeHost {
                 "write" | "mkdir" | "remove" | "rmdir" | "chmod" | "rename"
             ),
             "soil:inference" => {
-                self.inference.is_some() && matches!(function, "complete" | "models")
+                self.inference.is_some()
+                    && matches!(
+                        function,
+                        "complete"
+                            | "models"
+                            | "open-stream"
+                            | "[method]completion-stream.next"
+                            | "[method]completion-stream.cancel"
+                    )
             }
             "session" => self.session.is_some() && function == "exec",
             _ => false,
@@ -364,6 +378,74 @@ impl NativeHost {
                 ))),
                 Err(error) => Ok(err(inference_error(error))),
             },
+            "open-stream" => {
+                let request = args
+                    .first()
+                    .ok_or_else(|| "open-stream needs a request".to_string())?;
+                let request = inference_request(request)?;
+                match InferenceHostTrait::open_stream(host, request) {
+                    Ok(stream) => {
+                        let id = self.next_stream;
+                        self.next_stream += 1;
+                        self.streams.insert(id, stream);
+                        Ok(ok(Value::Int(id)))
+                    }
+                    Err(error) => Ok(err(inference_error(error))),
+                }
+            }
+            "[method]completion-stream.next" => {
+                use soil_inference_host::api::HostCompletionStream as StreamTrait;
+                let id = args
+                    .first()
+                    .and_then(Value::as_f64)
+                    .ok_or_else(|| "completion-stream.next needs a handle".to_string())?
+                    as i64;
+                let timeout = args
+                    .get(1)
+                    .and_then(Value::as_f64)
+                    .unwrap_or(30_000.0) as u32;
+                let Some(stream) = self.streams.remove(&id) else {
+                    return Ok(err("invalid"));
+                };
+                let rep = stream.rep();
+                match StreamTrait::next(host, stream, timeout) {
+                    Ok(Some(chunk)) => {
+                        let done = chunk.done;
+                        let value = inference_chunk(chunk);
+                        if !done {
+                            self.streams
+                                .insert(id, Resource::new_own(rep));
+                        } else {
+                            let _ = StreamTrait::drop(host, Resource::new_own(rep));
+                        }
+                        Ok(ok(value))
+                    }
+                    Ok(None) => {
+                        // Timeout: keep the handle for the next poll.
+                        self.streams.insert(id, Resource::new_own(rep));
+                        Ok(ok(Value::Nil))
+                    }
+                    Err(error) => {
+                        let _ = StreamTrait::drop(host, Resource::new_own(rep));
+                        Ok(err(inference_error(error)))
+                    }
+                }
+            }
+            "[method]completion-stream.cancel" => {
+                use soil_inference_host::api::HostCompletionStream as StreamTrait;
+                let id = args
+                    .first()
+                    .and_then(Value::as_f64)
+                    .ok_or_else(|| "completion-stream.cancel needs a handle".to_string())?
+                    as i64;
+                let Some(stream) = self.streams.remove(&id) else {
+                    return Ok(err("invalid"));
+                };
+                match StreamTrait::cancel(host, stream) {
+                    Ok(()) => Ok(ok(Value::Nil)),
+                    Err(error) => Ok(err(inference_error(error))),
+                }
+            }
             other => Err(format!("unknown soil:inference function `{other}`")),
         }
     }
@@ -444,6 +526,22 @@ fn inference_attachment(
         data: bytes(value, "data")?,
         extracted_text: optional_string(value, "extracted-text"),
     })
+}
+
+fn inference_chunk(value: soil_inference_host::api::Chunk) -> Value {
+    Value::List(vec![
+        pair(
+            "data",
+            Value::List(
+                value
+                    .data
+                    .into_iter()
+                    .map(|byte| Value::Int(byte as i64))
+                    .collect(),
+            ),
+        ),
+        pair("done", Value::Bool(value.done)),
+    ])
 }
 
 fn inference_response(value: soil_inference_host::api::Response) -> Value {

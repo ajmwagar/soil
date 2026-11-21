@@ -1,0 +1,7 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+
+(defun test/string-split ()
+  (= (string-split "a\nb\n" "\n") (list "a" "b" "")))
+
+(defun test/string-trim ()
+  (= (string-trim "  x\r\n") "x"))
