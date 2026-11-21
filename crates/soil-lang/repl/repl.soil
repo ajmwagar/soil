@@ -10,6 +10,7 @@
        ":time FORM   evaluate and report elapsed time\n"
        ":inspect F   evaluate and print the value\n"
        ":source      print the current source path\n"
+       ":reload-harness  reload all standard harness source files\n"
        ":agent TASK  run the loaded Theseus agent on TASK\n"
        ":quit        leave"))
 
@@ -26,6 +27,7 @@
     ((eq command ":time") (list :time rest))
     ((eq command ":inspect") (list :inspect rest))
     ((eq command ":source") (list :source))
+    ((eq command ":reload-harness") (list :reload-harness))
     ((eq command ":agent")
      (if (= rest "")
          (list :error ":agent needs a task")

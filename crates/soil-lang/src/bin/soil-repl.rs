@@ -180,6 +180,7 @@ fn main() -> Result<()> {
         ":time".into(),
         ":inspect".into(),
         ":source".into(),
+        ":reload-harness".into(),
         ":agent".into(),
         ":help".into(),
         ":quit".into(),
@@ -348,6 +349,15 @@ impl Session {
                 Some(path) => println!("{}", path.display()),
                 None => println!("no source file"),
             },
+            "reload-harness" => {
+                if !self.runtime.has_function("codemode/reload-harness") {
+                    eprintln!("codemode/reload-harness is not loaded");
+                } else if let Err(error) = self.runtime.call("codemode/reload-harness", &[]) {
+                    eprintln!("{error:#}");
+                } else {
+                    println!("harness reloaded");
+                }
+            }
             "agent" => {
                 if let Some(task) = arg.and_then(Value::as_str) {
                     if !self.runtime.has_function("theseus/run") {

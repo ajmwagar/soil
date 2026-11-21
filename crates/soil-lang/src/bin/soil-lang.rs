@@ -14,6 +14,7 @@ fn main() -> Result<()> {
     let mut workspace_root: Option<PathBuf> = None;
     let mut inference_config: Option<PathBuf> = None;
     let mut inference_profile: Option<String> = None;
+    let mut program_args: Vec<String> = Vec::new();
     let mut allow_exec = false;
     let mut book = "soil".to_string();
     let mut repl = false;
@@ -64,13 +65,17 @@ fn main() -> Result<()> {
                 );
             }
             "--allow-exec" => allow_exec = true,
+            "--" => {
+                program_args.extend(args.by_ref());
+                break;
+            }
             "--repl" => repl = true,
             "-h" | "--help" => {
                 println!(
                     "usage: soil-lang [--call NAME | --no-call] [--repl] [--prelude FILE] \
                      [--records-root DIR] [--book NAME] [--workspace-root DIR] \
                      [--inference-config FILE] [--inference-profile NAME] \
-                     [--allow-exec] FILE..."
+                     [--allow-exec] FILE... [-- ARG...]"
                 );
                 return Ok(());
             }
@@ -120,6 +125,7 @@ fn main() -> Result<()> {
         }
     };
     let mut runtime = Runtime::new(host);
+    runtime.set_args(program_args);
 
     if let Some(prelude) = prelude {
         runtime.load_file(prelude)?;
