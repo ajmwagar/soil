@@ -73,3 +73,24 @@
     (= (length (field (hue/mood "aurora") :palette)) 3)
     (= (length (field (hue/mood "movie") :palette)) 3)
     (= (length (field (hue/mood "sunset") :palette)) 3)))
+
+(defun test/hue-timed-helpers ()
+  (and
+    (= (hue/triangle 0.0) 0)
+    (= (hue/triangle 0.5) 1)
+    (= (hue/triangle 1.0) 0)
+    (= (length (hue/cyclic-palette (list (list 1 2 3)))) 2)
+    (= (hue/frames-for 1000 250) 4)))
+
+(defun test/hue-restore-body-keeps-the-colour-mode ()
+  (let ((state
+          (list
+            (list :on #t)
+            (list :bri 207)
+            (list :colormode "xy")
+            (list :xy (list 0.5 0.4)))))
+    (let ((body (hue/restore-body state)))
+      (and
+        (= (field body :on) #t)
+        (= (field body :bri) 207)
+        (= (field body :xy) (list 0.5 0.4))))))

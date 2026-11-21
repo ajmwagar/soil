@@ -512,6 +512,19 @@
       (hue/mood-record
         (list (list 255 120 30) (list 255 170 70) (list 255 220 140))
         120 40 25))
+    ((= name "party")
+      (hue/mood-record
+        (list
+          (list 255 0 60)
+          (list 255 180 0)
+          (list 0 220 120)
+          (list 0 120 255)
+          (list 160 0 255))
+        220 40 5))
+    ((= name "sunrise")
+      (hue/mood-record
+        (list (list 255 80 20) (list 255 150 60) (list 255 220 160))
+        90 130 40))
     (else
       (hue/mood-record
         (list (list 255 180 90) (list 255 90 140) (list 80 120 255))
@@ -602,3 +615,161 @@
                 0
                 (hue/count lights))))
           lights))))
+
+;;; ---------------------------------------------------------------------------
+;;; Timed demos
+;;; ---------------------------------------------------------------------------
+
+(defun hue/wrap01 (value)
+  (- value (floor value)))
+
+;;; A 0..1 triangle wave: 0 at the edges, 1 in the middle.
+(defun hue/triangle (phase)
+  (- 1.0 (hue/abs (- (* 2.0 (hue/wrap01 phase)) 1.0))))
+
+;;; A cyclic palette loops from its last colour back to the first, so a moving
+;;; gradient never snaps at the seam.
+(defun hue/cyclic-palette (palette)
+  (append palette (list (first palette))))
+
+(defun hue/plan-light-phase
+  (light palette brightness spread breath transition layout index total phase)
+  (let ((t (hue/layout-t layout (field light :id) index total)))
+    (let ((rgb (hue/palette-at palette (hue/wrap01 (+ t phase)))))
+      (let ((xy (hue/clamp-gamut
+                  (hue/rgb->xy (nth 0 rgb) (nth 1 rgb) (nth 2 rgb))
+                  (hue/light-gamut light))))
+        (let ((wave (hue/triangle (+ phase (* t 0.25))))
+              (bri (+ brightness
+                      (* spread (- t 0.5))
+                      (* breath (- wave 0.5)))))
+          (list
+            (list :id (field light :id))
+            (list :name (field light :name))
+            (list :t t)
+            (list :rgb rgb)
+            (list :xy xy)
+            (list :bri (hue/clamp-bri bri))
+            (list :transition transition)))))))
+
+(defun hue/plan-lights-phase
+  (lights palette brightness spread breath transition layout index total phase)
+  (if (nil? lights)
+      nil
+      (cons
+        (hue/plan-light-phase
+          (first lights) palette brightness spread breath transition layout
+          index total phase)
+        (hue/plan-lights-phase
+          (rest lights) palette brightness spread breath transition layout
+          (+ index 1) total phase))))
+
+(defun hue/animate-frames
+  (bridge lights mood palette layout frames frame-ms index)
+  (if (>= index frames)
+      (list 'ok frames)
+      (begin
+        (hue/apply-plan
+          bridge
+          (hue/plan-lights-phase
+            lights
+            palette
+            (field mood :brightness)
+            (field mood :spread)
+            40
+            (field mood :transition)
+            layout
+            0
+            (hue/count lights)
+            (/ index frames)))
+        (soil:time/tick frame-ms)
+        (hue/animate-frames
+          bridge lights mood palette layout frames frame-ms (+ index 1)))))
+
+(defun hue/animate-lights (bridge lights mood-name layout frames frame-ms)
+  (let ((mood (hue/mood mood-name)))
+    (let ((palette (hue/cyclic-palette (field mood :palette))))
+      (hue/animate-frames bridge lights mood palette layout frames frame-ms 0))))
+
+(defun hue/animate (bridge group-id mood-name layout frames frame-ms)
+  (let ((lights (hue/lights-in-group bridge group-id)))
+    (if (ok? lights)
+        (hue/animate-lights bridge (value lights) mood-name layout frames frame-ms)
+        lights)))
+
+(defun hue/restore-body (state)
+  (let ((body
+          (list
+            (list :on (field state :on))
+            (list :bri (field state :bri)))))
+    (let ((mode (field state :colormode)))
+      (cond
+        ((= mode "xy")
+          (append body (list (list :xy (field state :xy)))))
+        ((= mode "ct")
+          (append body (list (list :ct (field state :ct)))))
+        ((= mode "hs")
+          (append body
+            (list
+              (list :hue (field state :hue))
+              (list :sat (field state :sat)))))
+        (else body)))))
+
+(defun hue/restore-light (bridge light)
+  (hue/put
+    bridge
+    (str "/lights/" (field light :id) "/state")
+    (append
+      (hue/restore-body (field light :state))
+      (list (list :transitiontime 10)))))
+
+(defun hue/restore-lights (bridge lights)
+  (if (nil? lights)
+      nil
+      (cons
+        (hue/restore-light bridge (first lights))
+        (hue/restore-lights bridge (rest lights)))))
+
+;;; Run a timed demo and put the room back the way it was.
+(defun hue/demo (bridge group-id mood-name layout frames frame-ms)
+  (let ((lights (hue/lights-in-group bridge group-id)))
+    (if (ok? lights)
+        (let ((lights (value lights)))
+          (begin
+            (hue/animate-lights bridge lights mood-name layout frames frame-ms)
+            (hue/restore-lights bridge lights)))
+        lights)))
+
+(defun hue/frames-for (duration-ms frame-ms)
+  (let ((frames (round (/ duration-ms frame-ms))))
+    (if (< frames 1) 1 frames)))
+
+(defun hue/demo-for (bridge group-id mood-name layout duration-ms frame-ms)
+  (hue/demo
+    bridge group-id mood-name layout
+    (hue/frames-for duration-ms frame-ms)
+    frame-ms))
+
+(defun hue/demo-aurora (bridge group-id layout)
+  (hue/demo bridge group-id "aurora" layout 24 250))
+
+(defun hue/demo-ocean (bridge group-id layout)
+  (hue/demo bridge group-id "ocean" layout 32 280))
+
+(defun hue/demo-ember (bridge group-id layout)
+  (hue/demo bridge group-id "ember" layout 20 400))
+
+(defun hue/demo-nebula (bridge group-id layout)
+  (hue/demo bridge group-id "nebula" layout 28 300))
+
+(defun hue/demo-party (bridge group-id layout)
+  (hue/demo bridge group-id "party" layout 30 250))
+
+(defun hue/demo-movie (bridge group-id layout)
+  (hue/demo bridge group-id "movie" layout 16 500))
+
+(defun hue/demo-sunrise (bridge group-id layout)
+  (hue/demo-for bridge group-id "sunrise" layout 12000 400))
+
+(defun hue/demo-focus (bridge group-id layout)
+  (hue/demo-for bridge group-id "focus" layout 8000 500))

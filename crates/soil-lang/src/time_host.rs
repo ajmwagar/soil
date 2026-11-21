@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Minimal in-process `soil:time` host.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::sexp::Value;
 
@@ -15,6 +16,11 @@ impl SystemTimeHost {
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_millis() as i64)
             .unwrap_or(0)
+    }
+
+    fn monotonic_ms() -> i64 {
+        static EPOCH: OnceLock<Instant> = OnceLock::new();
+        EPOCH.get_or_init(Instant::now).elapsed().as_millis() as i64
     }
 }
 
@@ -32,14 +38,23 @@ impl Host for SystemTimeHost {
         if interface != "soil:time" {
             return Err(format!("unknown interface `{interface}`"));
         }
-        let now = Self::now_ms();
         match function {
-            "monotonic-ms" => Ok(ok(Value::Int(now))),
+            "monotonic-ms" => Ok(ok(Value::Int(Self::monotonic_ms()))),
             "wall-clock" => Ok(ok(Value::List(vec![
-                pair("unix-ms", Value::Int(now)),
+                pair("unix-ms", Value::Int(Self::now_ms())),
                 pair("offset-minutes", Value::Int(0)),
             ]))),
-            "tick" => Ok(ok(Value::Nil)),
+            "tick" => {
+                let timeout_ms = _args
+                    .first()
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0)
+                    .max(0.0) as u64;
+                if timeout_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(timeout_ms));
+                }
+                Ok(ok(Value::Int(Self::monotonic_ms())))
+            }
             other => Err(format!("unknown soil:time function `{other}`")),
         }
     }

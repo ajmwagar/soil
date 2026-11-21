@@ -127,6 +127,34 @@ pass a layout:
 Without a layout the gradient runs in bridge order. With one, `x` is the
 position along the gradient and `y` is reserved for future 2D/radial fields.
 
+## Timed demos
+
+Demos are timed in Soil: each frame plans the room, writes it, waits on
+`soil:time/tick`, then advances the phase. The palette is cyclic, so a moving
+gradient loops without a seam.
+
+```lisp
+(hue/demo-aurora (home) "81" (living-room-layout))   ; ~6s, then restore
+(hue/demo-ocean (home) "81" (living-room-layout))    ; ~9s
+(hue/demo-ember (home) "81" (living-room-layout))    ; ~8s
+(hue/demo-nebula (home) "81" (living-room-layout))   ; ~8s
+(hue/demo-party (home) "81" (living-room-layout))    ; ~8s
+(hue/demo-movie (home) "81" (living-room-layout))    ; ~8s
+(hue/demo-sunrise (home) "81" (living-room-layout))  ; ~12s
+(hue/demo-focus (home) "81" (living-room-layout))    ; ~8s
+```
+
+`hue/demo*` snapshots every lamp first and restores `on`, brightness and the
+current colour mode afterwards. `hue/animate` leaves the final frame in place:
+
+```lisp
+(hue/animate (home) "82" "ocean" nil 40 200)
+(hue/demo-for (home) "81" "aurora" (living-room-layout) 20000 300)
+```
+
+Keep `frame-ms` at 150 or more for a whole room; the bridge rate-limits bursts
+of individual light writes.
+
 ## What is not here yet
 
 - Bridge discovery (mDNS/SSDP) is still host work.
