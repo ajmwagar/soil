@@ -6,7 +6,8 @@
 //! time to the same native hosts the Wasm host uses.
 
 use soil::vfs_host::vfs::Host as VfsHostTrait;
-use soil::vfs_host::{VfsHost, vfs};
+use soil::vfs_host::vfs_mut::Host as VfsMutHostTrait;
+use soil::vfs_host::{VfsHost, vfs, vfs_mut};
 
 use crate::sexp::Value;
 use crate::{Host, SessionHost, SoilRecordsHost, SystemTimeHost};
@@ -64,6 +65,69 @@ impl NativeHost {
             other => Err(format!("unknown soil:vfs function `{other}`")),
         }
     }
+    fn call_vfs_mut(
+        &mut self,
+        function: &str,
+        args: &[Value],
+    ) -> std::result::Result<Value, String> {
+        match function {
+            "write" => {
+                let path = text(args.first()).unwrap_or_default();
+                let data = byte_vec(args.get(1)).ok_or_else(|| "write needs bytes".to_string())?;
+                let media = text(args.get(2)).unwrap_or_else(|| "text/plain".to_string());
+                let expected = args
+                    .get(3)
+                    .and_then(Value::as_f64)
+                    .map(|value| value as u64);
+                let mode = args
+                    .get(4)
+                    .and_then(Value::as_f64)
+                    .map(|value| value as u32);
+                match VfsMutHostTrait::write(&mut self.vfs, path, data, media, expected, mode) {
+                    Ok(result) => Ok(ok(vfs_write_result(result))),
+                    Err(error) => Ok(vfs_mut_error(error)),
+                }
+            }
+            "mkdir" => {
+                let path = text(args.first()).unwrap_or_default();
+                match VfsMutHostTrait::mkdir(&mut self.vfs, path) {
+                    Ok(()) => Ok(ok(Value::Nil)),
+                    Err(error) => Ok(vfs_mut_error(error)),
+                }
+            }
+            "remove" => {
+                let path = text(args.first()).unwrap_or_default();
+                match VfsMutHostTrait::remove(&mut self.vfs, path) {
+                    Ok(()) => Ok(ok(Value::Nil)),
+                    Err(error) => Ok(vfs_mut_error(error)),
+                }
+            }
+            "rmdir" => {
+                let path = text(args.first()).unwrap_or_default();
+                match VfsMutHostTrait::rmdir(&mut self.vfs, path) {
+                    Ok(()) => Ok(ok(Value::Nil)),
+                    Err(error) => Ok(vfs_mut_error(error)),
+                }
+            }
+            "chmod" => {
+                let path = text(args.first()).unwrap_or_default();
+                let mode = args.get(1).and_then(Value::as_f64).unwrap_or(0.0) as u32;
+                match VfsMutHostTrait::chmod(&mut self.vfs, path, mode) {
+                    Ok(result) => Ok(ok(vfs_write_result(result))),
+                    Err(error) => Ok(vfs_mut_error(error)),
+                }
+            }
+            "rename" => {
+                let source = text(args.first()).unwrap_or_default();
+                let target = text(args.get(1)).unwrap_or_default();
+                match VfsMutHostTrait::rename(&mut self.vfs, source, target) {
+                    Ok(result) => Ok(ok(vfs_write_result(result))),
+                    Err(error) => Ok(vfs_mut_error(error)),
+                }
+            }
+            other => Err(format!("unknown soil:vfs-mut function `{other}`")),
+        }
+    }
 }
 
 impl Host for NativeHost {
@@ -72,6 +136,10 @@ impl Host for NativeHost {
             "soil:time" => self.time.granted(interface, function),
             "soil:records" => self.records.granted(interface, function),
             "soil:vfs" => matches!(function, "ls" | "stat" | "read"),
+            "soil:vfs-mut" => matches!(
+                function,
+                "write" | "mkdir" | "remove" | "rmdir" | "chmod" | "rename"
+            ),
             "soil:inference" => {
                 self.inference.is_some() && matches!(function, "complete" | "models")
             }
@@ -90,6 +158,7 @@ impl Host for NativeHost {
             "soil:time" => self.time.call(interface, function, args),
             "soil:records" => self.records.call(interface, function, args),
             "soil:vfs" => self.call_vfs(function, args),
+            "soil:vfs-mut" => self.call_vfs_mut(function, args),
             "soil:inference" => self.call_inference(function, args),
             "session" => self
                 .session
@@ -182,6 +251,47 @@ fn vfs_error(error: vfs::Error) -> Value {
         vfs::Error::Stale => "stale",
     };
     err(code)
+}
+
+fn vfs_write_result(result: vfs_mut::WriteResult) -> Value {
+    Value::List(vec![
+        pair("path", Value::String(result.path)),
+        pair("version", Value::Int(result.version as i64)),
+        pair("content-id", Value::String(result.content_id)),
+        pair("size", Value::Int(result.size as i64)),
+        pair("mode", Value::Int(result.mode as i64)),
+    ])
+}
+
+fn vfs_mut_error(error: vfs_mut::Error) -> Value {
+    let code = match error {
+        vfs_mut::Error::Denied => "denied",
+        vfs_mut::Error::NotFound => "not-found",
+        vfs_mut::Error::AlreadyExists => "already-exists",
+        vfs_mut::Error::NotDirectory => "not-directory",
+        vfs_mut::Error::NotEmpty => "not-empty",
+        vfs_mut::Error::Conflict => "conflict",
+        vfs_mut::Error::OverBudget => "over-budget",
+        vfs_mut::Error::Invalid => "invalid",
+        vfs_mut::Error::Io => "io",
+        vfs_mut::Error::Stale => "stale",
+    };
+    err(code)
+}
+
+fn byte_vec(value: Option<&Value>) -> Option<Vec<u8>> {
+    let value = value?;
+    match value {
+        Value::List(items) => items
+            .iter()
+            .map(|item| match item {
+                Value::Int(byte) if (0..=255).contains(byte) => Some(*byte as u8),
+                _ => None,
+            })
+            .collect(),
+        Value::String(text) => Some(text.as_bytes().to_vec()),
+        _ => None,
+    }
 }
 
 fn text(value: Option<&Value>) -> Option<String> {

@@ -389,6 +389,28 @@ impl Runtime {
                         };
                         Ok(Value::Bool(haystack.contains(needle)))
                     }
+                    "string->bytes" => {
+                        let text = self.eval(require(items, 1, "string->bytes")?, env)?;
+                        let text = text
+                            .as_str()
+                            .ok_or_else(|| anyhow!("string->bytes expects a string"))?;
+                        Ok(Value::List(
+                            text.bytes().map(|byte| Value::Int(byte as i64)).collect(),
+                        ))
+                    }
+                    "bytes->string" => {
+                        let value = self.eval(require(items, 1, "bytes->string")?, env)?;
+                        let bytes = value
+                            .as_list()
+                            .ok_or_else(|| anyhow!("bytes->string expects bytes"))?
+                            .iter()
+                            .map(|value| match value {
+                                Value::Int(byte) if (0..=255).contains(byte) => Ok(*byte as u8),
+                                _ => bail!("bytes->string expects bytes"),
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        Ok(Value::String(String::from_utf8(bytes)?))
+                    }
                     "json-decode" => {
                         let value = self.eval(require(items, 1, "json-decode")?, env)?;
                         let bytes = value_bytes(&value)?;

@@ -1,0 +1,124 @@
+(define-package "soil:vfs-mut@0.1.0" :base "soil:vfs-mut" :version "0.1.0")
+
+(define-enum soil:vfs-mut/error denied not-found already-exists not-directory not-empty conflict over-budget invalid io stale)
+
+(define-record soil:vfs-mut/write-result
+  (path string)
+  (version u64)
+  (content-id string)
+  (size u64)
+  (mode u32)
+)
+
+(define-resource soil:vfs-mut/writer)
+
+(define-capability soil:vfs-mut/[method]writer.write
+  :interface "soil:vfs-mut"
+  :function "[method]writer.write"
+  :grant "soil:vfs-mut"
+  :version "0.1.0"
+  :params ((self (unsupported "handle")) (data (list u8)))
+  :result (result u64 soil:vfs-mut/error))
+
+(defun soil:vfs-mut/[method]writer.write (self data)
+  (host-call "soil:vfs-mut" "[method]writer.write" (list self data)))
+
+(define-capability soil:vfs-mut/[method]writer.finish
+  :interface "soil:vfs-mut"
+  :function "[method]writer.finish"
+  :grant "soil:vfs-mut"
+  :version "0.1.0"
+  :params ((self (unsupported "handle")))
+  :result (result soil:vfs-mut/write-result soil:vfs-mut/error))
+
+(defun soil:vfs-mut/[method]writer.finish (self)
+  (host-call "soil:vfs-mut" "[method]writer.finish" (list self)))
+
+(define-capability soil:vfs-mut/[method]writer.abort
+  :interface "soil:vfs-mut"
+  :function "[method]writer.abort"
+  :grant "soil:vfs-mut"
+  :version "0.1.0"
+  :params ((self (unsupported "handle")))
+  :result (result unit soil:vfs-mut/error))
+
+(defun soil:vfs-mut/[method]writer.abort (self)
+  (host-call "soil:vfs-mut" "[method]writer.abort" (list self)))
+
+(define-capability soil:vfs-mut/begin-write
+  :interface "soil:vfs-mut"
+  :function "begin-write"
+  :grant "soil:vfs-mut"
+  :version "0.1.0"
+  :params ((path string) (media-type string) (expected-size (option u64)) (expected-version (option u64)) (mode (option u32)))
+  :result (result (unsupported "handle") soil:vfs-mut/error))
+
+(defun soil:vfs-mut/begin-write (path media-type expected-size expected-version mode)
+  (host-call "soil:vfs-mut" "begin-write" (list path media-type expected-size expected-version mode)))
+
+(define-capability soil:vfs-mut/write
+  :interface "soil:vfs-mut"
+  :function "write"
+  :grant "soil:vfs-mut"
+  :version "0.1.0"
+  :params ((path string) (data (list u8)) (media-type string) (expected-version (option u64)) (mode (option u32)))
+  :result (result soil:vfs-mut/write-result soil:vfs-mut/error))
+
+(defun soil:vfs-mut/write (path data media-type expected-version mode)
+  (host-call "soil:vfs-mut" "write" (list path data media-type expected-version mode)))
+
+(define-capability soil:vfs-mut/chmod
+  :interface "soil:vfs-mut"
+  :function "chmod"
+  :grant "soil:vfs-mut"
+  :version "0.1.0"
+  :params ((path string) (mode u32))
+  :result (result soil:vfs-mut/write-result soil:vfs-mut/error))
+
+(defun soil:vfs-mut/chmod (path mode)
+  (host-call "soil:vfs-mut" "chmod" (list path mode)))
+
+(define-capability soil:vfs-mut/remove
+  :interface "soil:vfs-mut"
+  :function "remove"
+  :grant "soil:vfs-mut"
+  :version "0.1.0"
+  :params ((path string))
+  :result (result unit soil:vfs-mut/error))
+
+(defun soil:vfs-mut/remove (path)
+  (host-call "soil:vfs-mut" "remove" (list path)))
+
+(define-capability soil:vfs-mut/mkdir
+  :interface "soil:vfs-mut"
+  :function "mkdir"
+  :grant "soil:vfs-mut"
+  :version "0.1.0"
+  :params ((path string))
+  :result (result unit soil:vfs-mut/error))
+
+(defun soil:vfs-mut/mkdir (path)
+  (host-call "soil:vfs-mut" "mkdir" (list path)))
+
+(define-capability soil:vfs-mut/rmdir
+  :interface "soil:vfs-mut"
+  :function "rmdir"
+  :grant "soil:vfs-mut"
+  :version "0.1.0"
+  :params ((path string))
+  :result (result unit soil:vfs-mut/error))
+
+(defun soil:vfs-mut/rmdir (path)
+  (host-call "soil:vfs-mut" "rmdir" (list path)))
+
+(define-capability soil:vfs-mut/rename
+  :interface "soil:vfs-mut"
+  :function "rename"
+  :grant "soil:vfs-mut"
+  :version "0.1.0"
+  :params ((source string) (target string))
+  :result (result soil:vfs-mut/write-result soil:vfs-mut/error))
+
+(defun soil:vfs-mut/rename (source target)
+  (host-call "soil:vfs-mut" "rename" (list source target)))
+

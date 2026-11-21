@@ -8,9 +8,8 @@ backends. This is the language side of Soil; the host and capabilities live in
 
 - `sexp.rs` — S-expression reader (`'x`, `nil`, comments). `parse_document` retains top-level spans, comments, and stable form ids; nested trivia is the next slice.
 - `eval.rs` — closed interpreter with `host-call`.
-- `native_host.rs` — native REPL host; delegates `soil:vfs` to Soil's
-  existing `VfsHost` and records/time to the native adapters. `soil:vfs` reads
-  VFS-managed entries, not arbitrary files in the workspace root.
+- `native_host.rs` — native REPL host; delegates `soil:vfs` and `soil:vfs-mut`
+  to Soil's existing `VfsHost`, and records/time/inference to native adapters.
 - `records_host.rs` / `time_host.rs` — generic in-process Soil hosts.
 - `core.rs` / `wasm.rs` — numeric core and Wasm backend.
 - `lisp.rs` — McCarthy-style Lisp core (symbols, cons, `quote`, `atom`, `eq`,
