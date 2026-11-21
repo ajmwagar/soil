@@ -5,6 +5,7 @@
 pub mod core;
 pub mod eval;
 pub mod lisp;
+pub mod native_host;
 pub mod records_host;
 pub mod sexp;
 pub mod time_host;
@@ -14,6 +15,7 @@ pub mod witgen;
 pub use core::{Expr, Function, Program, parse};
 pub use eval::{FakeHost, Host, HostChain, Runtime, value_to_json as to_json};
 pub use lisp::{Compiled as CompiledLisp, compile_source as compile_lisp};
+pub use native_host::NativeHost;
 pub use records_host::SoilRecordsHost;
 pub use sexp::{Comment, Document, Form, Span, parse_document, print_document};
 pub use time_host::SystemTimeHost;

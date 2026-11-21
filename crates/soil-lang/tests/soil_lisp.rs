@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use soil_lang::sexp::Value;
-use soil_lang::{HostChain, Runtime, SoilRecordsHost, SystemTimeHost, parse_document};
+use soil_lang::{NativeHost, Runtime, parse_document};
 
 fn soil_tests() -> Vec<PathBuf> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/soil");
@@ -22,10 +22,10 @@ fn soil_tests() -> Vec<PathBuf> {
 }
 
 fn runtime(root: &Path) -> Runtime {
-    let host = HostChain::new(vec![
-        Box::new(SystemTimeHost),
-        Box::new(SoilRecordsHost::open(root, "soil").unwrap()),
-    ]);
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(workspace.join("hello.txt"), b"hello from vfs\n").unwrap();
+    let host = NativeHost::open(&workspace, root, "soil").unwrap();
     let mut runtime = Runtime::new(Box::new(host));
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     for file in [
