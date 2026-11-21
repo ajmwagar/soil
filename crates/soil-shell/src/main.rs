@@ -104,8 +104,57 @@ fn run() -> Result<()> {
             println!("{}", usage());
             Ok(())
         }
-        other => bail!("unknown soil command {other}\n{}", usage()),
+        other => external_subcommand(other, &args, &root),
     }
+}
+
+/// Run `soil-<command>` from PATH for commands this binary does not own.
+///
+/// Built-ins always win. The child receives the remaining arguments and
+/// `SOIL_ROOT`, so a modular command sees the same workspace root the built-in
+/// commands use. The spawn is not `exec`: Soil's caller may need the exit code
+/// preserved while the parent still unwinds normally.
+fn external_subcommand(command: &str, args: &[String], root: &Path) -> Result<()> {
+    let name = external_command_name(command)
+        .with_context(|| format!("unknown soil command {command}\n{}", usage()))?;
+    let binary = find_in_path(&name).with_context(|| {
+        format!(
+            "unknown soil command {command}\n{}; no `{name}` in PATH",
+            usage()
+        )
+    })?;
+    let status = Command::new(&binary)
+        .args(args)
+        .env("SOIL_ROOT", root)
+        .status()
+        .with_context(|| format!("run {}", binary.display()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+}
+
+/// A subcommand is one path-free program segment. Slashes and `..` would turn a
+/// typo into an arbitrary executable, and a leading `-` would look like a flag.
+fn external_command_name(command: &str) -> Option<String> {
+    if command.is_empty()
+        || command.len() > 64
+        || command.starts_with('-')
+        || !command
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return None;
+    }
+    Some(format!("soil-{command}"))
+}
+
+fn find_in_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|directory| directory.join(name))
+        .find(|candidate| candidate.is_file())
 }
 
 /// `soil command …`: the registry and runner, the same CLI the standalone
@@ -452,6 +501,22 @@ fn bundle_package() -> Option<PathBuf> {
 fn bundle_package_at(executable: &Path) -> Option<PathBuf> {
     let resources = executable.parent()?.parent()?.join("Resources");
     resources.join("spore.toml").is_file().then_some(resources)
+}
+
+#[cfg(test)]
+mod external_subcommand_tests {
+    use super::*;
+
+    #[test]
+    fn a_subcommand_is_one_safe_program_segment() {
+        assert_eq!(
+            external_command_name("store").as_deref(),
+            Some("soil-store")
+        );
+        for bad in ["", "-flag", "../store", "a/b", "Store", "store.exe"] {
+            assert!(external_command_name(bad).is_none(), "{bad}");
+        }
+    }
 }
 
 #[cfg(test)]
