@@ -17,7 +17,7 @@ use rustyline::history::FileHistory;
 use rustyline::validate::Validator;
 use rustyline::{Context, Editor, Helper};
 use soil_lang::sexp::{Value, parse_document};
-use soil_lang::{FakeHost, HostChain, Runtime, SystemTimeHost};
+use soil_lang::{FakeHost, Host, HostChain, NativeHost, Runtime, SoilRecordsHost, SystemTimeHost};
 
 const REPL_SOIL: &str = include_str!("../../repl/repl.soil");
 
@@ -72,6 +72,13 @@ struct Session {
 fn main() -> Result<()> {
     let mut prelude: Option<PathBuf> = None;
     let mut source: Option<PathBuf> = None;
+    let mut loads: Vec<PathBuf> = Vec::new();
+    let mut records_root: Option<PathBuf> = None;
+    let mut workspace_root: Option<PathBuf> = None;
+    let mut book = "soil".to_string();
+    let mut allow_exec = false;
+    let mut inference_config: Option<PathBuf> = None;
+    let mut inference_profile: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -87,11 +94,48 @@ fn main() -> Result<()> {
                         .ok_or_else(|| anyhow::anyhow!("--source needs a file"))?,
                 ));
             }
+            "--load" => {
+                loads.push(PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("--load needs a file"))?,
+                ));
+            }
+            "--records-root" => {
+                records_root =
+                    Some(PathBuf::from(args.next().ok_or_else(|| {
+                        anyhow::anyhow!("--records-root needs a path")
+                    })?));
+            }
+            "--workspace-root" => {
+                workspace_root =
+                    Some(PathBuf::from(args.next().ok_or_else(|| {
+                        anyhow::anyhow!("--workspace-root needs a path")
+                    })?));
+            }
+            "--book" => {
+                book = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--book needs a name"))?
+            }
+            "--allow-exec" => allow_exec = true,
+            "--inference-config" => {
+                inference_config =
+                    Some(PathBuf::from(args.next().ok_or_else(|| {
+                        anyhow::anyhow!("--inference-config needs a file")
+                    })?));
+            }
+            "--inference-profile" => {
+                inference_profile = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("--inference-profile needs a name"))?,
+                );
+            }
             "-h" | "--help" => {
                 println!(
-                    "usage: soil-repl [--prelude FILE] [--source FILE]\n\
-                     commands: :load FILE, :reload, :eval FORM, :time FORM, \
-                     :inspect FORM, :source, :help, :quit"
+                    "usage: soil-repl [--prelude FILE] [--load FILE]... [--source FILE]\n\
+                     [--records-root DIR] [--workspace-root DIR] [--book NAME]\n\
+                     [--allow-exec] [--inference-config FILE] [--inference-profile NAME]\n\
+                     commands: :load, :reload, :eval, :time, :inspect, :source, :agent, :help, :quit"
                 );
                 return Ok(());
             }
@@ -99,10 +143,33 @@ fn main() -> Result<()> {
         }
     }
 
-    let host = HostChain::new(vec![Box::new(SystemTimeHost), Box::new(FakeHost::new())]);
-    let mut runtime = Runtime::new(Box::new(host));
+    let host: Box<dyn Host> = match (workspace_root, records_root) {
+        (Some(workspace), Some(records)) => {
+            let mut native = NativeHost::open(workspace, records, book)?;
+            if allow_exec {
+                native = native.with_session(std::env::current_dir()?)?;
+            }
+            if let Some(config) = inference_config {
+                native = native.with_inference(config, inference_profile.as_deref())?;
+            }
+            Box::new(native)
+        }
+        (Some(_), None) => anyhow::bail!("--workspace-root requires --records-root"),
+        (None, Some(records)) => Box::new(HostChain::new(vec![
+            Box::new(SystemTimeHost),
+            Box::new(SoilRecordsHost::open(records, book)?),
+        ])),
+        (None, None) => Box::new(HostChain::new(vec![
+            Box::new(SystemTimeHost),
+            Box::new(FakeHost::new()),
+        ])),
+    };
+    let mut runtime = Runtime::new(host);
     if let Some(prelude) = prelude {
         runtime.load_file(&prelude)?;
+    }
+    for file in loads {
+        runtime.load_file(file)?;
     }
     runtime.load(REPL_SOIL)?;
 
@@ -113,6 +180,7 @@ fn main() -> Result<()> {
         ":time".into(),
         ":inspect".into(),
         ":source".into(),
+        ":agent".into(),
         ":help".into(),
         ":quit".into(),
     ];
@@ -280,6 +348,18 @@ impl Session {
                 Some(path) => println!("{}", path.display()),
                 None => println!("no source file"),
             },
+            "agent" => {
+                if let Some(task) = arg.and_then(Value::as_str) {
+                    if !self.runtime.has_function("theseus/run") {
+                        eprintln!("theseus/run is not loaded");
+                    } else if let Err(error) = self
+                        .runtime
+                        .call("theseus/run", &[Value::String(task.to_string())])
+                    {
+                        eprintln!("{error:#}");
+                    }
+                }
+            }
             _ => eprintln!("invalid REPL action: {action}"),
         }
         true

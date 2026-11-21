@@ -10,6 +10,7 @@
        ":time FORM   evaluate and report elapsed time\n"
        ":inspect F   evaluate and print the value\n"
        ":source      print the current source path\n"
+       ":agent TASK  run the loaded Theseus agent on TASK\n"
        ":quit        leave"))
 
 (defun repl/command (command rest)
@@ -25,6 +26,10 @@
     ((eq command ":time") (list :time rest))
     ((eq command ":inspect") (list :inspect rest))
     ((eq command ":source") (list :source))
+    ((eq command ":agent")
+     (if (= rest "")
+         (list :error ":agent needs a task")
+         (list :agent rest)))
     (else (list :error (str "unknown command " command "; try :help")))))
 
 (defun repl/lookup (id forms)
