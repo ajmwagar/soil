@@ -29,6 +29,14 @@
           (el "strong" nil (list (txt title)))
           (el "p" nil (list (txt body))))))))
 
+(defun example-card (slug title body)
+  (a (str "examples/" slug ".html") "example-card"
+    (list
+      (el "span" (list (attr :class "example-slug")) (list (txt slug)))
+      (el "h3" nil (list (txt title)))
+      (el "p" nil (list (txt body)))
+      (el "span" (list (attr :class "example-open")) (list (txt "Open →"))))))
+
 (defun view (state)
   (el "div" (list (attr :class "site"))
     (list
@@ -45,6 +53,7 @@
                   (a "#why" "" (list (txt "Why Soil")))
                   (a "#substrate" "" (list (txt "Substrate")))
                   (a "#learn" "" (list (txt "Learn")))
+                  (a "#examples" "" (list (txt "Examples")))
                   (a "#spores" "" (list (txt "Spores")))
                   (a "#community" "" (list (txt "Community")))))
               (a "https://github.com/mycelium-linux/soil" "nav-cta" (list (txt "GitHub")))))))
@@ -122,6 +131,26 @@
                       (step "03" "Write a spore" "One manifest and one entry form. A library and an app are the same artifact.")))))
               (el "pre" (list (attr :class "code block"))
                 (highlight-soil ";; tend build\n;; tend run\n\n(defun view (state)\n  (el \"main\" (list (attr :class \"app\"))\n    (list\n      (el \"h1\" nil (list (txt \"Hello from Soil\")))\n      (el \"p\" nil (list (txt \"This is a form, not a template.\"))))))"))))
+          (el "section" (list (attr :class "section") (attr :id "examples"))
+            (list
+              (el "p" (list (attr :class "kicker")) (list (txt "EXAMPLES")))
+              (el "h2" nil (list (txt "Six small tools. All of them are .soil.")))
+              (el "p" (list (attr :class "body"))
+                (list (txt "Each one is a four-function UI spore: state, update, view, styles. These pages are the server-rendered initial state; run soil-ui-proto for the live loop.")))
+              (el "div" (list (attr :class "grid three examples-grid"))
+                (list
+                  (example-card "counter" "Counter"
+                    "State, actions, and real CSS.")
+                  (example-card "todo" "TODO"
+                    "Forms, keyed rows, and JSON action payloads.")
+                  (example-card "calculator" "Calculator"
+                    "A numeric state machine with a grid layout.")
+                  (example-card "tictactoe" "Tic-tac-toe"
+                    "Lists, immutable updates, and win detection.")
+                  (example-card "tabs" "Tabs"
+                    "Conditional rendering and active styling.")
+                  (example-card "form" "Form"
+                    "Named inputs, validation, and a success state.")))))
           (el "section" (list (attr :class "section") (attr :id "spores"))
             (list
               (el "p" (list (attr :class "kicker")) (list (txt "SPORES")))
@@ -235,6 +264,13 @@
     ".grid { display: grid; gap: 16px; }\n"
     ".grid.three { grid-template-columns: repeat(3, 1fr); }\n"
     ".grid.two { grid-template-columns: repeat(2, 1fr); }\n"
+    ".examples-grid { margin-top: 26px; }\n"
+    ".example-card { display: block; padding: 22px; border: 1px solid var(--line); border-radius: 16px; background: linear-gradient(180deg, rgba(255,255,255,.035), transparent 58%), var(--panel); color: var(--ink); text-decoration: none; transition: border-color .15s ease, transform .15s ease; }\n"
+    ".example-card:hover { border-color: rgba(200,241,105,.45); transform: translateY(-2px); }\n"
+    ".example-slug { color: var(--accent); font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; }\n"
+    ".example-card h3 { margin: 10px 0 8px; font-size: 18px; letter-spacing: -.01em; }\n"
+    ".example-card p { margin: 0 0 16px; color: var(--muted); }\n"
+    ".example-open { color: var(--accent); font-size: 12px; font-weight: 700; }\n"
     ".feature, .card { padding: 24px; border: 1px solid var(--line); border-radius: 16px; background: linear-gradient(180deg, rgba(255,255,255,.035), transparent 58%), var(--panel); }\n"
     ".feature h3, .card h3 { margin: 0 0 10px; font-size: 18px; letter-spacing: -.01em; }\n"
     ".feature p, .card p { margin: 0; color: var(--muted); }\n"

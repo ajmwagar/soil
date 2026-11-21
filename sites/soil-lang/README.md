@@ -19,13 +19,15 @@ open 'http://127.0.0.1:7883/?bare=1'
 The page is a static landscape: nav, hero, why, substrate, learn, spores,
 community, footer. It has no actions and no state.
 
-Build the static page through the Soil standard library:
+Build the static page and every example through the Soil standard library:
 
 ```sh
 ./sites/soil-lang/build.sh
 # sites/soil-lang/dist/index.html
+# sites/soil-lang/dist/examples/*.html
 ```
 
-The output is plain HTML with server-rendered syntax highlighting. No client
-JavaScript is required. `dist/index.html` is generated and checked in for
-deployment.
+Cargo is frozen for this step: the script uses an existing `target/debug/soil-lang`
+and fails rather than building. The output is plain HTML with server-rendered
+syntax highlighting. No client JavaScript is required. `dist/` is generated and
+checked in for deployment.
