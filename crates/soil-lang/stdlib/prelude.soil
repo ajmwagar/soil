@@ -84,6 +84,24 @@
     ((apply p (list (first xs) arg)) (cons (first xs) (filter-with p arg (rest xs))))
     (else (filter-with p arg (rest xs)))))
 
+(defun take-while (pred xs)
+  (if (nil? xs)
+      nil
+      (if (apply pred (list (first xs)))
+          (cons (first xs) (take-while pred (rest xs)))
+          nil)))
+
+(defun drop-while (pred xs)
+  (cond
+    ((nil? xs) nil)
+    ((apply pred (list (first xs))) (drop-while pred (rest xs)))
+    (else xs)))
+
+(defun last-of (xs)
+  (if (nil? (rest xs))
+      (first xs)
+      (last-of (rest xs))))
+
 (defun reduce (f acc xs)
   (if (nil? xs)
       acc
