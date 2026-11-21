@@ -44,7 +44,13 @@ node crates/soil-ui-proto/web/dev-proxy.mjs
 ```
 
 It serves the two static files from disk and proxies `/view`, `/examples`, and
-`/source` to the running Rust host.
+`/source` to the running Rust host. It also watches `.soil`, `ui.js`, and
+`index.html`, and pushes a reload over SSE: the open page re-renders or reloads
+instead of opening a new tab.
+
+The site page mounts `examples/ui/*.soil` as live inline components in Shadow
+DOM. Each component gets its own state, CSS, and event loop; the carousel and
+the grid use the same mount path.
 
 ## Examples
 

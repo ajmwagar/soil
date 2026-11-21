@@ -29,5 +29,5 @@ Build the static page and every example through the Soil standard library:
 
 Cargo is frozen for this step: the script uses an existing `target/debug/soil-lang`
 and fails rather than building. The output is plain HTML with server-rendered
-syntax highlighting. No client JavaScript is required. `dist/` is generated and
-checked in for deployment.
+syntax highlighting. `dist/` is generated and checked in for deployment; the
+live component path is the dev proxy at http://127.0.0.1:7883/?bare=1.
