@@ -41,6 +41,10 @@ struct CommandMeta {
     version: String,
     summary: String,
     module: String,
+    /// Capabilities the command imports. A standalone package has no
+    /// `spore.toml` grants section, so it declares them here.
+    #[serde(default)]
+    requires: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -573,9 +577,9 @@ fn standalone_command(package: &Path) -> Result<CommandEntry> {
         version: manifest.command.version,
         summary: manifest.command.summary,
         package: package.to_path_buf(),
-        // A standalone `command.toml` has no grants section; it is the package's
-        // whole contract, and the runner either satisfies it or does not.
-        requires: Vec::new(),
+        // A standalone `command.toml` is the package's whole contract; the
+        // runner either satisfies `requires` or refuses the command.
+        requires: manifest.command.requires,
         module,
         timeout_ms: manifest.limits.timeout_ms,
         max_stdout_bytes: manifest.limits.max_stdout_bytes,
@@ -761,7 +765,9 @@ impl CommandRunner {
         let result = match command.wasi_cli_run().call_run(&mut store) {
             Ok(result) => result,
             Err(error) => {
-                let said = String::from_utf8_lossy(&stderr.contents()).trim().to_string();
+                let said = String::from_utf8_lossy(&stderr.contents())
+                    .trim()
+                    .to_string();
                 if said.is_empty() {
                     return Err(error.into());
                 }
@@ -853,10 +859,8 @@ impl ::soil::records_host::records::Host for Host {
         collection: String,
         cursor: Option<String>,
         limit: u32,
-    ) -> Result<
-        ::soil::records_host::records::PackedPage,
-        ::soil::records_host::records::Error,
-    > {
+    ) -> Result<::soil::records_host::records::PackedPage, ::soil::records_host::records::Error>
+    {
         self.records
             .as_mut()
             .ok_or(::soil::records_host::records::Error::Denied)?
@@ -878,7 +882,8 @@ impl ::soil::records_host::records::Host for Host {
         key: ::soil::records_host::records::Key,
         expected: Option<::soil::records_host::records::Version>,
         entry: ::soil::records_host::records::Entry,
-    ) -> Result<::soil::records_host::records::CasResult, ::soil::records_host::records::Error> {
+    ) -> Result<::soil::records_host::records::CasResult, ::soil::records_host::records::Error>
+    {
         self.records
             .as_mut()
             .ok_or(::soil::records_host::records::Error::Denied)?
@@ -909,7 +914,8 @@ impl ::soil::records_host::records::Host for Host {
     fn apply(
         &mut self,
         entries: Vec<::soil::records_host::records::Entry>,
-    ) -> Result<::soil::records_host::records::ApplyResult, ::soil::records_host::records::Error> {
+    ) -> Result<::soil::records_host::records::ApplyResult, ::soil::records_host::records::Error>
+    {
         self.records
             .as_mut()
             .ok_or(::soil::records_host::records::Error::Denied)?
@@ -981,6 +987,25 @@ mod tests {
         assert_eq!(registry.path(), vec!["a", "b"]);
         assert!(registry.get("a").is_some());
         assert!(registry.refused().is_empty());
+    }
+
+    #[test]
+    fn a_standalone_command_declares_its_capabilities() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = dir.path().join("mb");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("module.wasm"), b"\0asm").unwrap();
+        std::fs::write(
+            package.join("command.toml"),
+            "schema = 1\n[command]\nname = \"mb\"\nversion = \"0.1.0\"\nsummary = \"test\"\nmodule = \"module.wasm\"\nrequires = [\"soil:records\", \"soil:unibus\"]\n",
+        )
+        .unwrap();
+        let registry = CommandRegistry::scan(dir.path()).unwrap();
+        let entry = registry.get("mb").unwrap();
+        assert_eq!(
+            entry.requires,
+            vec!["soil:records".to_string(), "soil:unibus".to_string()]
+        );
     }
 
     #[test]
