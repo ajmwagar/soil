@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use soil_lang::sexp::Value;
-use soil_lang::{NativeHost, Runtime, parse_document};
+use soil_lang::{Host, NativeHost, Runtime, parse_document};
 
 fn soil_tests() -> Vec<PathBuf> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/soil");
@@ -26,7 +26,7 @@ fn runtime(root: &Path) -> Runtime {
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::write(workspace.join("hello.txt"), b"hello from vfs\n").unwrap();
     let host = NativeHost::open(&workspace, root, "soil").unwrap();
-    let mut runtime = Runtime::new(Box::new(host));
+    let mut runtime = Runtime::new(Box::new(MockHttpHost { inner: host }));
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     for file in [
         "stdlib/prelude.soil",
@@ -39,6 +39,7 @@ fn runtime(root: &Path) -> Runtime {
         "bindings/soil-records.soil",
         "bindings/soil-http.soil",
         "../../examples/hue/hue.soil",
+        "../../examples/playback/playback.soil",
         "boot/boot.soil",
     ] {
         runtime.load_file(dir.join(file)).unwrap();
@@ -60,6 +61,97 @@ fn test_names(source: &str) -> Vec<String> {
             name.starts_with("test/").then(|| name.to_string())
         })
         .collect()
+}
+
+/// A scoped `soil:http` host that echoes the request as JSON.
+///
+/// The test assertions live in `tests/soil/*.soil`; this only supplies a
+/// deterministic transport so a Soil test can read the URL, method and body a
+/// capability would have sent.
+struct MockHttpHost {
+    inner: NativeHost,
+}
+
+impl Host for MockHttpHost {
+    fn granted(&self, interface: &str, function: &str) -> bool {
+        (interface == "soil:http" && function == "fetch") || self.inner.granted(interface, function)
+    }
+
+    fn call(&mut self, interface: &str, function: &str, args: &[Value]) -> Result<Value, String> {
+        if interface == "soil:http" && function == "fetch" {
+            return echo_http(args);
+        }
+        self.inner.call(interface, function, args)
+    }
+}
+
+fn echo_http(args: &[Value]) -> Result<Value, String> {
+    let request = args.first().ok_or("soil:http/fetch needs a request")?;
+    let url = record_text(request, "url").unwrap_or_default();
+    let method = record_text(request, "method").unwrap_or_default();
+    let body = match record_field(request, "body") {
+        Value::String(text) => text.clone(),
+        Value::List(bytes) => bytes
+            .iter()
+            .filter_map(|byte| match byte {
+                Value::Int(byte) if (0..=255).contains(byte) => Some(*byte as u8),
+                _ => None,
+            })
+            .map(char::from)
+            .collect(),
+        _ => String::new(),
+    };
+    let echoed = serde_json::json!({
+        "url": url,
+        "method": method,
+        "body": body,
+    });
+    let body = serde_json::to_vec(&echoed).unwrap();
+    Ok(Value::List(vec![
+        Value::Symbol("ok".into()),
+        Value::List(vec![
+            pair("status", Value::Int(200)),
+            pair("final-url", Value::String(url)),
+            pair("headers", Value::Nil),
+            pair(
+                "body",
+                Value::List(
+                    body.into_iter()
+                        .map(|byte| Value::Int(i64::from(byte)))
+                        .collect(),
+                ),
+            ),
+        ]),
+    ]))
+}
+
+fn record_field<'a>(record: &'a Value, name: &str) -> &'a Value {
+    let Some(items) = record.as_list() else {
+        return &Value::Nil;
+    };
+    for item in items {
+        let Some(pair) = item.as_list() else { continue };
+        if pair
+            .first()
+            .and_then(Value::as_keyword)
+            .is_some_and(|field| field == name)
+        {
+            return pair.get(1).unwrap_or(&Value::Nil);
+        }
+    }
+    &Value::Nil
+}
+
+fn record_text(record: &Value, name: &str) -> Option<String> {
+    match record_field(record, name) {
+        Value::String(text) | Value::Symbol(text) | Value::Keyword(text) => Some(text.clone()),
+        Value::Nil => None,
+        other => Some(other.to_string()),
+    }
+}
+
+fn pair(name: &str, value: Value) -> Value {
+    Value::List(vec![Value::Keyword(name.into()), value])
 }
 
 #[test]

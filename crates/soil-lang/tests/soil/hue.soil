@@ -94,3 +94,12 @@
         (= (field body :on) #t)
         (= (field body :bri) 207)
         (= (field body :xy) (list 0.5 0.4))))))
+
+(defun test/hue-find-scene-by-name ()
+  (let ((scenes
+          (list
+            (list "7" (list (list :name "Relax")))
+            (list "8" (list (list :name "Focus"))))))
+    (and
+      (= (hue/find-scene-id scenes "Relax") "7")
+      (nil? (hue/find-scene-id scenes "Missing")))))
