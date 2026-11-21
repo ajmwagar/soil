@@ -61,8 +61,12 @@ cargo test -p soil-lang
 ```
 
 `tests/document.rs` pins top-level spans/comments/ids and canonical round-trip.
-`tests/boot.rs` runs the Soil bootstrap evaluator on arithmetic, `if`, `cond`,
-`let`, lambdas, environments, and lists.
+`tests/soil_lisp.rs` is one Rust harness for tests written in Soil:
+`tests/soil/*.soil` files define `test/...` functions. This keeps most language
+and WIT behavior tests in Lisp and avoids one Rust test binary per area.
+`tests/soil/boot.soil` covers the bootstrap evaluator.
+`tests/soil/prelude.soil` covers list/JSON helpers.
+`tests/soil/wit_call.soil` calls `soil:time` and `soil:records` from Lisp.
 `tests/jmc.rs` runs McCarthy's `eval.` in the interpreter.
 `tests/jmc_wasm.rs` compiles the same `eval.` and runs it on wasmtime.
 `tests/fixtures/jmc.lisp` is Paul Graham's CL translation of McCarthy's 1960

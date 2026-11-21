@@ -1,0 +1,13 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+(defun inc (n) (+ n 1))
+(defun even? (n) (or (= n 2) (= n 4)))
+(defun over-two? (n) (> n 2))
+
+(defun test/map ()
+  (= (map (quote inc) (list 1 2 3)) (list 2 3 4)))
+
+(defun test/filter ()
+  (= (filter (quote even?) (list 1 2 3 4)) (list 2 4)))
+
+(defun test/any ()
+  (any? (quote over-two?) (list 1 2 3)))

@@ -37,7 +37,8 @@ the evaluator, and the primitive table — is in `boot.soil`.
 5. `boot/primitive`, `boot/primitive?` — the native floor.
 6. `boot/eval` — the metacircular evaluator.
 
-The test suite `crates/soil-lang/tests/boot.rs` pins each layer.
+The Lisp test `crates/soil-lang/tests/soil/boot.soil` pins each layer; the
+single Rust harness in `tests/soil_lisp.rs` runs it.
 
 ## What this is not yet
 
