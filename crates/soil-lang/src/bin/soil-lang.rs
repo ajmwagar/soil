@@ -14,6 +14,7 @@ fn main() -> Result<()> {
     let mut workspace_root: Option<PathBuf> = None;
     let mut inference_config: Option<PathBuf> = None;
     let mut inference_profile: Option<String> = None;
+    let mut allow_exec = false;
     let mut book = "soil".to_string();
     let mut repl = false;
     let mut args = std::env::args().skip(1);
@@ -62,12 +63,14 @@ fn main() -> Result<()> {
                         .ok_or_else(|| anyhow::anyhow!("--inference-profile needs a name"))?,
                 );
             }
+            "--allow-exec" => allow_exec = true,
             "--repl" => repl = true,
             "-h" | "--help" => {
                 println!(
                     "usage: soil-lang [--call NAME | --no-call] [--repl] [--prelude FILE] \
                      [--records-root DIR] [--book NAME] [--workspace-root DIR] \
-                     [--inference-config FILE] [--inference-profile NAME] FILE..."
+                     [--inference-config FILE] [--inference-profile NAME] \
+                     [--allow-exec] FILE..."
                 );
                 return Ok(());
             }
@@ -84,7 +87,11 @@ fn main() -> Result<()> {
 
     let host: Box<dyn Host> = match (workspace_root, records_root) {
         (Some(workspace), Some(records)) => {
+            let workspace_root = workspace.clone();
             let mut native = NativeHost::open(workspace, records, book)?;
+            if allow_exec {
+                native = native.with_session(&workspace_root)?;
+            }
             if let Some(config) = inference_config {
                 native = native.with_inference(config, inference_profile.as_deref())?;
             } else if inference_profile.is_some() {

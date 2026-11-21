@@ -9,13 +9,14 @@ use soil::vfs_host::vfs::Host as VfsHostTrait;
 use soil::vfs_host::{VfsHost, vfs};
 
 use crate::sexp::Value;
-use crate::{Host, SoilRecordsHost, SystemTimeHost};
+use crate::{Host, SessionHost, SoilRecordsHost, SystemTimeHost};
 
 pub struct NativeHost {
     vfs: VfsHost,
     records: SoilRecordsHost,
     time: SystemTimeHost,
     inference: Option<soil_inference_host::InferenceHost>,
+    session: Option<SessionHost>,
 }
 
 impl NativeHost {
@@ -29,6 +30,7 @@ impl NativeHost {
             records: SoilRecordsHost::open(records_root, book)?,
             time: SystemTimeHost,
             inference: None,
+            session: None,
         })
     }
 
@@ -73,6 +75,7 @@ impl Host for NativeHost {
             "soil:inference" => {
                 self.inference.is_some() && matches!(function, "complete" | "models")
             }
+            "session" => self.session.is_some() && function == "exec",
             _ => false,
         }
     }
@@ -88,6 +91,11 @@ impl Host for NativeHost {
             "soil:records" => self.records.call(interface, function, args),
             "soil:vfs" => self.call_vfs(function, args),
             "soil:inference" => self.call_inference(function, args),
+            "session" => self
+                .session
+                .as_mut()
+                .ok_or_else(|| "session.exec is not enabled".to_string())?
+                .call(interface, function, args),
             other => Err(format!("unknown interface `{other}`")),
         }
     }
@@ -201,15 +209,22 @@ fn err(code: &str) -> Value {
 // --- soil:inference -------------------------------------------------------
 
 impl NativeHost {
+    pub fn with_session(mut self, root: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
+        self.session = Some(SessionHost::open(root)?);
+        Ok(self)
+    }
+
     pub fn with_inference(
         mut self,
         config_path: impl AsRef<std::path::Path>,
         profile: Option<&str>,
     ) -> anyhow::Result<Self> {
-        self.inference = Some(soil_inference_host::InferenceHost::open(
-            config_path.as_ref(),
-            profile,
-        )?);
+        let session =
+            std::env::var("SOIL_INFERENCE_SESSION").unwrap_or_else(|_| "soil-lang".to_string());
+        self.inference = Some(
+            soil_inference_host::InferenceHost::open(config_path.as_ref(), profile)?
+                .with_session(session),
+        );
         Ok(self)
     }
 
