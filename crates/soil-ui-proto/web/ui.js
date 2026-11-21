@@ -332,6 +332,15 @@ async function mountComponents() {
     await mountComponent(figure, figure.dataset.soilComponent);
   }
 }
+function actionFromElement(element) {
+  if (!element.dataset || !element.dataset.op) return null;
+  const payload = { op: element.dataset.op };
+  for (const [key, value] of Object.entries(element.dataset)) {
+    if (key !== "op") payload[key] = value;
+  }
+  return JSON.stringify(payload);
+}
+
 async function render(action = "") {
   if (!currentName && !bare) return;
   let response;
