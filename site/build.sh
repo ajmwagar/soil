@@ -15,12 +15,15 @@ if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
 fi
 
 mkdir -p site/dist/examples
+python3 site/gen-examples.py
+cp site/loam.svg site/dist/loam.svg
 
 "$BIN" \
   core/prelude.soil \
   core/ui.soil \
   core/highlight.soil \
   site/copy.soil \
+  site/examples-code.soil \
   site/soil-lang.soil \
   site/build.soil \
   > site/dist/index.html
