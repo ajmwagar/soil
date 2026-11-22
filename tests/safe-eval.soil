@@ -1,0 +1,24 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+
+(defun spin (x) (spin x))
+
+(defun test/try-eval-ok ()
+  (ok? (try-eval (+ 20 22))))
+
+(defun test/try-eval-error ()
+  (let ((result (try-eval (missing))))
+    (and
+      (err? result)
+      (= (field (value result) :kind) "eval"))))
+
+(defun test/try-eval-limit ()
+  (let ((result (try-eval (spin 1) 1000)))
+    (and
+      (err? result)
+      (string-contains? (field (value result) :message) "step limit"))))
+
+(defun test/try-load-atomic ()
+  (let ((result (try-load "(defun rolled () 1) (missing)")))
+    (and
+      (err? result)
+      (err? (try-eval (rolled))))))

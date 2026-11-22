@@ -63,6 +63,7 @@ TESTS=(
   tests/image.soil
   tests/selfhost.soil
   tests/edit.soil
+  tests/safe-eval.soil
 )
 
 base_files() {
