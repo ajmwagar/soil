@@ -13,8 +13,9 @@
     (list :nav
       (list
         (list :start "Get started")
-        (list :language "Language")
+        (list :language "Why")
         (list :core "Core")
+        (list :loam "Runtime")
         (list :examples "Examples")
         (list :api "API")
         (list :github "Source")))
@@ -32,14 +33,23 @@
 
     (list :language
       (list
-        (list :title "One form, all the way down.")
-        (list :body "Soil keeps the Lisp bargain: code is data, macros are ordinary forms, and the compiler is a Soil program. There is no second language for the build.")
-        (list :body-2 "It emits WebAssembly. Run the module in Loam, in the browser, or in any compatible host.")
+        (list :title "Why another language?")
+        (list :body "WebAssembly is fast, portable, and already where the work runs. Soil compiles to it without a framework between the source and the machine.")
+        (list :body-2 "In 2026, agents write most of the code and humans review less of it. The source has to be legible to both. Soil is homoiconic: code, data, macros, and tests are one tree. An agent can read the whole program without translating it into a second shape.")
+        (list :body-3 "That idea is old. Paul Graham's Viaweb used Lisp macros to ship faster than its competitors. Sometimes looking backwards is how you go forwards.")
+        (list :essay-label "Read Beating the Averages")
         (list :facts
           (list
-            "compiler written in Soil"
-            "core has no soil:* imports"
-            "std is the capability layer"))))
+            "Wasm target"
+            "homoiconic source"
+            "agent-readable by construction"))))
+
+    (list :loam
+      (list
+        (list :title "Loam runs it.")
+        (list :body "Loam is the Rust runtime for Soil: Wasmtime and Cranelift for near-native execution, wgpu for GPU surfaces. Run the same module natively or in the browser.")
+        (list :body-2 "Soil is the language. Loam is the host. The boundary is WIT capabilities, so a program can run on a laptop, a phone, or the web.")
+        (list :label "Visit Loam")))
 
     (list :library
       (list
@@ -112,6 +122,7 @@
     (list :footer
       (list
         (list :left "Soil · soil-lang.org")
+        (list :sponsor "Sponsored by Future Present Labs")
         (list :license "MIT OR Apache-2.0")))))
 
 ;;; Read one section or one key inside a section from `site-copy`.

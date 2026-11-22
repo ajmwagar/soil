@@ -98,4 +98,4 @@
     ".field-label { color: var(--muted); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }\n"
     ".form-card form { margin-top: 18px; }\n"
     ".form-card .btn { justify-self: start; margin-top: 4px; }\n"
-    ".error { margin: 0 0 14px; padding: 10px 12px; border: 1px solid rgba(255,120,120,.35); border-radius: 10px; color: var(--danger); background: rgba(255,120,120,.07); }\n"))
+    ".error { margin: 0 0 14px; padding: 10px 12px; border: 1px solid var(--danger-line); border-radius: 10px; color: var(--danger); background: var(--danger-soft); }\n"))

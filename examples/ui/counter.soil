@@ -48,4 +48,4 @@
 (defun styles ()
   (str
     (base-styles)
-    ".value { display: block; font: 700 clamp(64px, 12vw, 128px)/.9 ui-sans-serif, system-ui, sans-serif; letter-spacing: -.05em; font-variant-numeric: tabular-nums; }\n"))
+    ".value { display: block; font-family: var(--font-body); font-size: clamp(64px, 12vw, 128px); font-weight: 700; line-height: .9; letter-spacing: -.05em; font-variant-numeric: tabular-nums; }\n"))

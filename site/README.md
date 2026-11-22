@@ -1,5 +1,7 @@
 # soil-lang.org
 
+Design brief: [`DESIGN.md`](DESIGN.md).
+
 The Soil landing page and getting-started guide, written as `.soil` views.
 
 All wording lives in `site/copy.soil`. `site/soil-lang.soil` owns the landing
