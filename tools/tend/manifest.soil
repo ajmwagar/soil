@@ -130,6 +130,101 @@
         (else
           (tend/err (str "unknown dependency source " kind)))))))
 
+(defun tend/mapping-package (name source exports)
+  (list
+    (list :name name)
+    (list :source source)
+    (list :exports exports)))
+
+(defun tend/mapping-package-names (values)
+  (if (nil? values)
+      nil
+      (cons (str (first values)) (tend/mapping-package-names (rest values)))))
+
+(defun tend/parse-mapping-package-opt (opt opts name source exports)
+  (let ((key (first opt)))
+    (cond
+      ((= key 'source)
+        (tend/parse-mapping-package-opts opts name (nth 1 opt) exports))
+      ((= key 'export)
+        (tend/parse-mapping-package-opts opts name source
+          (tend/mapping-package-names (rest opt))))
+      (else (tend/err (str "unknown package mapping option " key))))))
+
+(defun tend/parse-mapping-package-opts (opts name source exports)
+  (if (nil? opts)
+      (let ((result (tend/mapping-package name source exports)))
+        (tend/ok result))
+      (let ((opt (first opts)))
+        (tend/parse-mapping-package-opt opt (rest opts) name source exports))))
+
+(defun tend/parse-mapping-package (item)
+  (let ((result (tend/parse-mapping-package-opts (drop 2 item) (nth 1 item) nil nil)))
+    result))
+
+(defun tend/mapping-interface (name packages)
+  (list (list :name name) (list :packages packages)))
+
+(defun tend/parse-mapping-interface-opts (opts packages)
+  (if (nil? opts)
+      (tend/ok (tend/mapping-interface nil packages))
+      (let ((item (first opts)))
+        (if (= (first item) 'package)
+            (let ((result (tend/parse-mapping-package item)))
+              (if (ok? result)
+                  (tend/parse-mapping-interface-opts
+                    (rest opts)
+                    (append packages (list (value result))))
+                  result))
+            (tend/err (str "unknown interface mapping option " (first item)))))))
+
+(defun tend/parse-mapping-interface (item)
+  (if (nil? (nth 1 item))
+      (tend/err "interface mapping needs a name")
+      (let ((result (tend/parse-mapping-interface-opts (drop 2 item) nil)))
+        (if (ok? result)
+            (tend/ok (assoc :name (nth 1 item) (value result)))
+            result))))
+
+(defun tend/component-with (name world wit interfaces)
+  (list
+    (list :name name)
+    (list :world world)
+    (list :wit wit)
+    (list :interfaces interfaces)))
+
+(defun tend/parse-component-opts (opts world wit interfaces)
+  (if (nil? opts)
+      (if (or (nil? world) (nil? wit))
+          (tend/err "component needs world and wit")
+          (tend/ok (tend/component-with nil world wit interfaces)))
+      (let ((item (first opts)))
+        (let ((key (first item)))
+          (cond
+            ((= key 'world)
+              (tend/parse-component-opts (rest opts) (nth 1 item) wit interfaces))
+            ((= key 'wit)
+              (tend/parse-component-opts (rest opts) world (nth 1 item) interfaces))
+            ((= key 'interface)
+              (let ((result (tend/parse-mapping-interface item)))
+                (if (ok? result)
+                    (tend/parse-component-opts (rest opts) world wit
+                      (append interfaces (list (value result))))
+                    result)))
+            (else
+              (tend/err (str "unknown component option " key))))))))
+
+(defun tend/parse-component (item manifest)
+  (if (nil? (nth 1 item))
+      (tend/err "component needs a name")
+      (let ((result (tend/parse-component-opts (drop 2 item) nil nil nil)))
+        (if (ok? result)
+            (let ((component (assoc :name (nth 1 item) (value result)))
+                  (components (or-empty (field manifest :components))))
+              (tend/ok (tend/set manifest :components
+                (append components (list component)))))
+            result))))
+
 (defun tend/command-with (name summary run usage)
   (list
     (list :name name)
@@ -177,6 +272,7 @@
       ((= key 'bench) (tend/parse-bench item manifest))
       ((= key 'dependency) (tend/parse-dependency item manifest))
       ((= key 'command) (tend/parse-command item manifest))
+      ((= key 'component) (tend/parse-component item manifest))
       (else (tend/err (str "unknown tend key " key))))))
 
 (defun tend/parse-entries (entries manifest)
@@ -209,7 +305,8 @@
                       (list :tests nil)
                       (list :benches nil)
                       (list :dependencies nil)
-                      (list :commands nil)))))))))
+                      (list :commands nil)
+                      (list :components nil)))))))))
 
 (defun tend/emit-option (key values)
   (if (nil? values)
@@ -270,6 +367,44 @@
       (str (tend/emit-command (first commands))
            (tend/emit-commands (rest commands)))))
 
+(defun tend/emit-mapping-package (package)
+  (str "      (package " (tend/quote (field package :name)) "\n"
+       (if (nil? (field package :source)) ""
+           (str "        (source " (tend/quote (field package :source)) ")\n"))
+       (if (nil? (field package :exports)) ""
+           (str "        (export" (tend/string-list (field package :exports)) ")\n"))
+       "      )\n"))
+
+(defun tend/emit-mapping-packages (packages)
+  (if (nil? packages)
+      ""
+      (str (tend/emit-mapping-package (first packages))
+           (tend/emit-mapping-packages (rest packages)))))
+
+(defun tend/emit-mapping-interface (interface)
+  (str "    (interface " (tend/quote (field interface :name)) "\n"
+       (tend/emit-mapping-packages (field interface :packages))
+       "    )\n"))
+
+(defun tend/emit-mapping-interfaces (interfaces)
+  (if (nil? interfaces)
+      ""
+      (str (tend/emit-mapping-interface (first interfaces))
+           (tend/emit-mapping-interfaces (rest interfaces)))))
+
+(defun tend/emit-component (component)
+  (str "  (component " (tend/quote (field component :name)) "\n"
+       "    (world " (tend/quote (field component :world)) ")\n"
+       "    (wit " (tend/quote (field component :wit)) ")\n"
+       (tend/emit-mapping-interfaces (field component :interfaces))
+       "  )\n"))
+
+(defun tend/emit-components (components)
+  (if (nil? components)
+      ""
+      (str (tend/emit-component (first components))
+           (tend/emit-components (rest components)))))
+
 (defun tend/emit (manifest)
   (str "(tend\n"
        "  (version " (field manifest :version) ")\n"
@@ -278,4 +413,23 @@
        (tend/emit-benches (field manifest :benches))
        (tend/emit-dependencies (field manifest :dependencies))
        (tend/emit-commands (field manifest :commands))
+       (tend/emit-components (field manifest :components))
        ")\n"))
+
+;;; Find one component declaration by package name.
+(defun tend/find-component (manifest name)
+  (find (lambda (component) (= (field component :name) name))
+    (or-empty (field manifest :components))))
+
+;;; Return the source-package -> WIT interface mapping for one component.
+;;; The mapping is data; the compiler consumes it, tend does not invent types.
+(defun tend/wit-plan (manifest name)
+  (let ((component (tend/find-component manifest name)))
+    (if (nil? component)
+        (tend/err (str "unknown component " name))
+        (tend/ok
+          (list
+            (list :component name)
+            (list :world (field component :world))
+            (list :wit (field component :wit))
+            (list :interfaces (field component :interfaces)))))))

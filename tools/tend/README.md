@@ -26,3 +26,20 @@ wasmtime run --dir . target/wasm32-wasip2/release/soil-wasm.wasm \
   tools/tend/manifest.soil tools/tend/dispatch.soil tools/tend/run.soil \
   tools/tend/main.soil --arg fmt
 ```
+
+## Component WIT mapping
+
+A component maps source packages to WIT interfaces at the manifest level, not
+in each implementation file:
+
+```lisp
+(component "acme:counter@0.1.0"
+  (world "counter")
+  (wit "wit/counter.wit")
+  (interface "acme:counter/math"
+    (package "acme/counter"
+      (source "counter.soil")
+      (export "add" "greet"))))
+```
+
+`tend/wit-plan` returns the mapping as data for the compiler or build step.

@@ -1,0 +1,23 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Package/in-package test for the new Soil runner.
+
+(defpackage "acme/counter"
+  (:use "soil")
+  (:export "add" "greet"))
+
+(in-package "acme/counter")
+
+(defun add (a b)
+  (+ a b))
+
+(defun greet (name)
+  (str "hello, " name))
+
+(defun package/main ()
+  (and
+    (= (add 20 22) 42)
+    (= (greet "soil") "hello, soil")))
+
+(defun main () (package/main))
+
+(defun test/package () (package/main))

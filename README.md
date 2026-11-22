@@ -134,3 +134,26 @@ Dual-licensed under either of
 - MIT license ([LICENSE-MIT](LICENSE-MIT))
 
 at your option.
+
+## Tests
+
+The test harness is Soil plus a shell driver; it does not use Python:
+
+```sh
+SOIL_WASM=/path/to/soil-wasm.wasm scripts/run-core-tests.sh
+```
+
+Each test runs in its own Wasmtime process.
+
+## Local install
+
+```sh
+scripts/install.sh \
+  --soil-run /path/to/soil-run \
+  --soil-c /path/to/soil-c \
+  --soil-wasm /path/to/soil-wasm.wasm
+```
+
+This installs under `~/.local/share/soil/versions/<sha>` and links
+`~/.local/bin/soil` and `~/.local/bin/tend`. It does not replace the legacy
+`~/.local/share/soil/bin` runtime.

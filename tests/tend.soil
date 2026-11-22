@@ -109,3 +109,45 @@
             (list 'a 'b))))
     (and (ok? result)
          (= (field (value result) :repeated) (list (list 'b 'a))))))
+
+
+(defun component/sample ()
+  "(tend
+  (version 1)
+  (members \"src/*\")
+  (component \"acme:counter@0.1.0\"
+    (world \"counter\")
+    (wit \"wit/counter.wit\")
+    (interface \"acme:counter/math\"
+      (package \"acme/counter\"
+        (source \"counter.soil\")
+        (export \"add\" \"greet\")))))")
+
+(defun test/tend-component ()
+  (let ((result (tend/parse (component/sample))))
+    (and (ok? result)
+         (= (field (first (field (value result) :components)) :name) "acme:counter@0.1.0")
+         (= (field (first (field (value result) :components)) :world) "counter")
+         (= (field (first (field (value result) :components)) :wit) "wit/counter.wit")
+         (let ((interface (first (field (first (field (value result) :components)) :interfaces))))
+           (and (= (field interface :name) "acme:counter/math")
+                (let ((package (first (field interface :packages))))
+                  (and (= (field package :name) "acme/counter")
+                       (= (field package :source) "counter.soil")
+                       (= (field package :exports) (list "add" "greet")))))))))
+
+(defun test/tend-component-roundtrip ()
+  (let ((result (tend/parse (component/sample))))
+    (and (ok? result)
+         (string-contains? (tend/emit (value result)) "(component \"acme:counter@0.1.0\""))))
+
+(defun test/tend-wit-plan ()
+  (let ((manifest (tend/parse (component/sample))))
+    (if (ok? manifest)
+        (let ((plan (tend/wit-plan (value manifest) "acme:counter@0.1.0")))
+          (and (ok? plan)
+               (= (field (value plan) :world) "counter")
+               (= (field (value plan) :wit) "wit/counter.wit")
+               (= (field (first (field (value plan) :interfaces)) :name)
+                  "acme:counter/math")))
+        #f)))

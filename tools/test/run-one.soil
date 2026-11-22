@@ -1,0 +1,12 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Run one named test from a loaded Soil image.
+;
+; The shell harness builds the image, then passes the test name as the first
+; program argument. Keeping one test per process preserves isolation and lets
+; the process status carry load/eval failures.
+
+(defun main ()
+  (let ((name (getenv "SOIL_TEST")))
+    (if (nil? name)
+        (println "run-one: missing test name")
+        (println (eval (list (first (read name))))))))
