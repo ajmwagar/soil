@@ -71,6 +71,10 @@
     (list :method method)
     (list :params params)))
 
+(defun lsp/char-width (character)
+  (let ((bytes (string->bytes character)))
+    (if (and (not (nil? bytes)) (>= (first bytes) 240)) 2 1)))
+
 (defun lsp/position (text offset)
   (lsp/position-loop (string-chars text) offset 0 0 0))
 
@@ -85,7 +89,8 @@
         (if (= current "\n")
             (lsp/position-loop (rest characters) offset (+ line 1) 0
               (+ consumed (length (string->bytes current))))
-            (lsp/position-loop (rest characters) offset line (+ character 1)
+            (lsp/position-loop (rest characters) offset line
+              (+ character (lsp/char-width current))
               (+ consumed (length (string->bytes current)))))))))
 
 (defun lsp/range (text start end)
@@ -107,7 +112,7 @@
               (+ current-line 1) 0
               (+ consumed (length (string->bytes current))))
             (lsp/offset-loop (rest characters) line character
-              current-line (+ current-character 1)
+              current-line (+ current-character (lsp/char-width current))
               (+ consumed (length (string->bytes current)))))))))
 
 (defun lsp/position-value (value)

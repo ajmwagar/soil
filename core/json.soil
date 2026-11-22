@@ -53,11 +53,6 @@
       #f
       (not (nil? (find-with 'json/key-is? key value)))))
 
-(defun find-with (predicate arg xs)
-  (cond
-    ((nil? xs) nil)
-    ((apply predicate (list (first xs) arg)) (first xs))
-    (else (find-with predicate arg (rest xs)))))
 
 ;;; Read `key`, returning `fallback` when it is absent.
 (defun json/get-or (value key fallback)

@@ -112,6 +112,14 @@
     ((apply p (list (first xs) arg)) (cons (first xs) (filter-with p arg (rest xs))))
     (else (filter-with p arg (rest xs)))))
 
+
+;;; Return the first element of `xs` for which `(predicate element arg)` is true.
+(defun find-with (predicate arg xs)
+  (cond
+    ((nil? xs) nil)
+    ((apply predicate (list (first xs) arg)) (first xs))
+    (else (find-with predicate arg (rest xs)))))
+
 ;;; Return the prefix of `xs` for which `pred` stays true.
 (defun take-while (pred xs)
   (if (nil? xs)

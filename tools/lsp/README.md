@@ -49,3 +49,12 @@ data. The server never keeps a second Rust parser.
 The LSP only needs stdio. Under the Wasmtime runner that is `wasi:cli` +
 `wasi:io`; it does not need `soil:records` or `soil:time`. The capability
 boundary is the command grant, not a second Rust crate.
+
+## Tests
+
+```sh
+scripts/test-lsp.sh
+```
+
+All LSP tests run under the Wasmtime runner. The old native interpreter is not
+required.

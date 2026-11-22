@@ -58,7 +58,13 @@
 (defun lsp/did-close (message docs)
   (let ((params (field message :params)))
     (let ((item (field params :textDocument)))
-      (lsp/doc-remove (field item :uri) docs))))
+      (begin
+        (lsp/send
+          (lsp/notification "textDocument/publishDiagnostics"
+            (list
+              (list :uri (field item :uri))
+              (list :diagnostics (list)))))
+        (lsp/doc-remove (field item :uri) docs)))))
 
 (defun lsp/document-symbols (message docs)
   (let ((params (field message :params)))
