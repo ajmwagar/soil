@@ -28,6 +28,18 @@ struct Closure {
     env: HashMap<String, Value>,
 }
 
+struct CallFrame {
+    name: String,
+    params: Vec<String>,
+    body: Vec<Value>,
+    env: HashMap<String, Value>,
+}
+
+enum Tail {
+    Value(Value),
+    Call(Value, Vec<Value>),
+}
+
 pub struct Runtime {
     functions: HashMap<String, Function>,
     macros: HashMap<String, Function>,
@@ -159,41 +171,202 @@ impl Runtime {
     }
 
     fn call_function(&mut self, function: &Function, args: Vec<Value>) -> Result<Value> {
-        if args.len() != function.params.len() {
-            bail!(
-                "function expects {} arguments, got {}",
-                function.params.len(),
-                args.len()
-            );
-        }
-
-        let mut env = HashMap::new();
-        for (name, value) in function.params.iter().zip(args) {
-            env.insert(name.clone(), value);
-        }
-        self.eval_body(&function.body, &mut env)
-            .with_context(|| format!("in function `{}`", function.name))
+        let frame = CallFrame {
+            name: function.name.clone(),
+            params: function.params.clone(),
+            body: function.body.clone(),
+            env: HashMap::new(),
+        };
+        self.run_call(frame, args)
     }
 
-    fn call_closure(&mut self, id: u64, args: Vec<Value>) -> Result<Value> {
-        let closure = self
-            .closures
-            .get(&id)
-            .ok_or_else(|| anyhow!("unknown function object {id}"))?;
-        if args.len() != closure.params.len() {
-            bail!(
-                "function expects {} arguments, got {}",
-                closure.params.len(),
-                args.len()
-            );
+    fn resolve_frame(&mut self, function: &Value) -> Result<CallFrame> {
+        if let Some(id) = function_id(function) {
+            let closure = self
+                .closures
+                .get(&id)
+                .ok_or_else(|| anyhow!("unknown function object {id}"))?;
+            return Ok(CallFrame {
+                name: "lambda".to_string(),
+                params: closure.params.clone(),
+                body: closure.body.clone(),
+                env: closure.env.clone(),
+            });
         }
-        let mut env = closure.env.clone();
-        for (name, value) in closure.params.iter().zip(args) {
-            env.insert(name.clone(), value);
+        let name = value_text(function);
+        let function = self
+            .functions
+            .get(&name)
+            .cloned()
+            .ok_or_else(|| anyhow!("unknown function `{name}`"))?;
+        Ok(CallFrame {
+            name: function.name,
+            params: function.params,
+            body: function.body,
+            env: HashMap::new(),
+        })
+    }
+
+    /// Evaluate a call in a loop. A tail call returns a new frame and arguments
+    /// instead of growing the Rust stack.
+    fn run_call(&mut self, mut frame: CallFrame, mut args: Vec<Value>) -> Result<Value> {
+        loop {
+            if args.len() != frame.params.len() {
+                bail!(
+                    "{} expects {} arguments, got {}",
+                    frame.name,
+                    frame.params.len(),
+                    args.len()
+                );
+            }
+            let mut env = frame.env.clone();
+            for (name, value) in frame.params.iter().zip(args) {
+                env.insert(name.clone(), value);
+            }
+            let mut body = frame.body.clone();
+            let last = body.pop();
+            for form in &body {
+                self.eval(form, &mut env)?;
+            }
+            let Some(last) = last else {
+                return Ok(Value::Nil);
+            };
+            match self.eval_tail(&last, &mut env)? {
+                Tail::Value(value) => return Ok(value),
+                Tail::Call(function, arguments) => {
+                    frame = self.resolve_frame(&function)?;
+                    args = arguments;
+                }
+            }
         }
-        let body = closure.body.clone();
-        self.eval_body(&body, &mut env)
-            .with_context(|| "in lambda".to_string())
+    }
+
+    fn eval_tail(&mut self, expression: &Value, env: &mut HashMap<String, Value>) -> Result<Tail> {
+        self.evals += 1;
+        let Value::List(items) = expression else {
+            return Ok(Tail::Value(self.eval(expression, env)?));
+        };
+        let Some(head) = items.first().and_then(Value::as_symbol) else {
+            return Ok(Tail::Value(self.eval(expression, env)?));
+        };
+        if self.macros.contains_key(head) {
+            let expanded = self.expand_macro(head, &items[1..])?;
+            return self.eval_tail(&expanded, env);
+        }
+        match head {
+            "if" => {
+                let test = self.eval(require(items, 1, "if")?, env)?;
+                let branch = if truthy(&test) { 2 } else { 3 };
+                match items.get(branch) {
+                    Some(value) => self.eval_tail(value, env),
+                    None => Ok(Tail::Value(Value::Nil)),
+                }
+            }
+            "cond" => self.eval_tail_cond(&items[1..], env),
+            "let" => self.eval_tail_let(&items[1..], env),
+            "begin" | "do" => self.eval_tail_body(&items[1..], env),
+            "and" => {
+                if items.len() <= 1 {
+                    return Ok(Tail::Value(Value::Bool(true)));
+                }
+                for item in &items[1..items.len() - 1] {
+                    let value = self.eval(item, env)?;
+                    if !truthy(&value) {
+                        return Ok(Tail::Value(value));
+                    }
+                }
+                self.eval_tail(items.last().expect("and has a last form"), env)
+            }
+            "or" => {
+                if items.len() <= 1 {
+                    return Ok(Tail::Value(Value::Bool(false)));
+                }
+                for item in &items[1..items.len() - 1] {
+                    let value = self.eval(item, env)?;
+                    if truthy(&value) {
+                        return Ok(Tail::Value(value));
+                    }
+                }
+                self.eval_tail(items.last().expect("or has a last form"), env)
+            }
+            "funcall" => {
+                let function = self.eval(require(items, 1, "funcall")?, env)?;
+                let arguments = self.eval_args(&items[2..], env)?;
+                Ok(Tail::Call(function, arguments))
+            }
+            "apply" => {
+                let function = self.eval(require(items, 1, "apply")?, env)?;
+                let arguments = self.eval(require(items, 2, "apply")?, env)?;
+                let arguments = match arguments {
+                    Value::Nil => Vec::new(),
+                    Value::List(values) => values,
+                    _ => bail!("apply expects a list of arguments"),
+                };
+                Ok(Tail::Call(function, arguments))
+            }
+            _ if self.functions.contains_key(head) => {
+                let arguments = self.eval_args(&items[1..], env)?;
+                Ok(Tail::Call(Value::Symbol(head.to_string()), arguments))
+            }
+            _ => Ok(Tail::Value(self.eval(expression, env)?)),
+        }
+    }
+
+    fn eval_tail_body(&mut self, body: &[Value], env: &mut HashMap<String, Value>) -> Result<Tail> {
+        if body.is_empty() {
+            return Ok(Tail::Value(Value::Nil));
+        }
+        for form in &body[..body.len() - 1] {
+            self.eval(form, env)?;
+        }
+        self.eval_tail(&body[body.len() - 1], env)
+    }
+
+    fn eval_tail_cond(
+        &mut self,
+        clauses: &[Value],
+        env: &mut HashMap<String, Value>,
+    ) -> Result<Tail> {
+        for clause in clauses {
+            let list = clause
+                .as_list()
+                .ok_or_else(|| anyhow!("cond clause is not a list"))?;
+            let test = list
+                .first()
+                .ok_or_else(|| anyhow!("cond clause has no test"))?;
+            let matched = match test {
+                Value::Symbol(name) if name == "else" => true,
+                _ => truthy(&self.eval(test, env)?),
+            };
+            if matched {
+                return self.eval_tail_body(&list[1..], env);
+            }
+        }
+        Ok(Tail::Value(Value::Nil))
+    }
+
+    fn eval_tail_let(&mut self, args: &[Value], env: &mut HashMap<String, Value>) -> Result<Tail> {
+        let bindings = args
+            .first()
+            .and_then(Value::as_list)
+            .ok_or_else(|| anyhow!("let needs a binding list"))?;
+        let mut next = env.clone();
+        for binding in bindings {
+            let pair = binding
+                .as_list()
+                .ok_or_else(|| anyhow!("let binding is not a list"))?;
+            let name = pair
+                .first()
+                .and_then(Value::as_symbol)
+                .ok_or_else(|| anyhow!("let binding needs a name"))?;
+            let value = self.eval(
+                pair.get(1)
+                    .ok_or_else(|| anyhow!("let binding needs a value"))?,
+                &mut next,
+            )?;
+            next.insert(name.to_string(), value);
+        }
+        self.eval_tail_body(&args[1..], &mut next)
     }
 
     fn call_macro(&mut self, function: &Function, args: Vec<Value>) -> Result<Value> {
@@ -256,16 +429,8 @@ impl Runtime {
     }
 
     fn call_value(&mut self, function: &Value, args: Vec<Value>) -> Result<Value> {
-        if let Some(id) = function_id(function) {
-            return self.call_closure(id, args);
-        }
-        let name = value_text(function);
-        let function = self
-            .functions
-            .get(&name)
-            .cloned()
-            .ok_or_else(|| anyhow!("unknown function `{name}`"))?;
-        self.call_function(&function, args)
+        let frame = self.resolve_frame(function)?;
+        self.run_call(frame, args)
     }
 
     fn eval_quasiquote(
