@@ -138,6 +138,29 @@
 (defun tend/arity-report (defs out)
   (tend/flatten (map-with (quote tend/arity-one) defs defs) out))
 
+
+(defun tend/repeated-with (body-def defs out)
+  (if (nil? defs)
+      out
+      (if (= (str (field (first defs) :body)) (str (field body-def :body)))
+          (tend/repeated-with body-def (rest defs)
+            (cons (field (first defs) :name) out))
+          (tend/repeated-with body-def (rest defs) out))))
+
+(defun tend/repeated (defs checked out)
+  (if (nil? defs)
+      (reverse out)
+      (let ((definition (first defs)))
+        (let ((name (field definition :name)))
+          (if (tend/member? name checked)
+              (tend/repeated (rest defs) checked out)
+              (let ((group (cons name
+                             (tend/repeated-with definition (rest defs) nil))))
+                (tend/repeated (rest defs) (tend/add name checked)
+                  (if (nil? (rest group))
+                      out
+                      (cons (reverse group) out)))))))))
+
 (defun tend/lint (source entries)
   (let ((forms (read source)))
     (if (nil? forms)
@@ -149,4 +172,5 @@
                 (list :functions (tend/def-names defs))
                 (list :dead (tend/dead defs reachable nil))
                 (list :duplicates (tend/duplicates defs nil nil))
+                (list :repeated (tend/repeated defs nil nil))
                 (list :arity (tend/arity-report defs nil)))))))))

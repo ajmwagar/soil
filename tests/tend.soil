@@ -100,3 +100,12 @@
 (defun test/tend-fmt-comments ()
   (let ((source "(defun f (x)\n  ; nested\n  (if x 1 2))\n"))
     (string-contains? (tend/fmt source) "; nested")))
+
+(defun test/tend-repeated ()
+  (let ((result
+          (tend/lint
+            "(defun a () (+ 1 1))
+             (defun b () (+ 1 1))"
+            (list 'a 'b))))
+    (and (ok? result)
+         (= (field (value result) :repeated) (list (list 'b 'a))))))
