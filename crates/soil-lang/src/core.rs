@@ -71,6 +71,7 @@ pub struct Function {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
     pub functions: Vec<Function>,
+    pub constants: HashMap<String, i64>,
 }
 
 impl Program {
@@ -93,7 +94,8 @@ impl std::error::Error for CoreError {}
 pub fn parse(source: &str) -> Result<Program, CoreError> {
     let forms =
         crate::sexp::parse_all(source).map_err(|error| CoreError(format!("parse: {error}")))?;
-    let mut functions = Vec::new();
+    let mut constants = HashMap::new();
+    let mut defuns = Vec::new();
 
     for form in forms {
         let Some(list) = form.as_list() else {
@@ -103,19 +105,27 @@ pub fn parse(source: &str) -> Result<Program, CoreError> {
             return Err(CoreError("top-level form has no name".into()));
         };
         match head {
-            "defun" => functions.push(parse_defun(list)?),
+            "defconst" => {
+                let (name, value) = parse_const(list, &constants)?;
+                constants.insert(name, value);
+            }
+            "defun" => defuns.push(list.to_vec()),
             // Generated WIT metadata is not code.
             name if name.starts_with("define-") => {}
             other => {
                 return Err(CoreError(format!(
-                    "unsupported top-level form `{other}`; the numeric core is defun-only"
+                    "unsupported top-level form `{other}`; the numeric core is defconst/defun-only"
                 )));
             }
         }
     }
 
-    if functions.is_empty() {
+    if defuns.is_empty() {
         return Err(CoreError("program has no defun".into()));
+    }
+    let mut functions = Vec::with_capacity(defuns.len());
+    for list in &defuns {
+        functions.push(parse_defun(list, &constants)?);
     }
     let names: std::collections::HashSet<&str> = functions
         .iter()
@@ -124,10 +134,71 @@ pub fn parse(source: &str) -> Result<Program, CoreError> {
     for function in &functions {
         validate_calls(&function.body, &names)?;
     }
-    Ok(Program { functions })
+    Ok(Program {
+        functions,
+        constants,
+    })
 }
 
-fn parse_defun(list: &[Value]) -> Result<Function, CoreError> {
+fn parse_const(
+    list: &[Value],
+    constants: &HashMap<String, i64>,
+) -> Result<(String, i64), CoreError> {
+    let name = list
+        .get(1)
+        .and_then(Value::as_symbol)
+        .ok_or_else(|| CoreError("defconst needs a name".into()))?
+        .to_string();
+    let value = list
+        .get(2)
+        .ok_or_else(|| CoreError(format!("defconst `{name}` needs a value")))?;
+    if list.len() != 3 {
+        return Err(CoreError(format!(
+            "defconst `{name}` takes exactly a name and a value"
+        )));
+    }
+    let mut env = HashMap::new();
+    let expr = lower(value, &mut env, constants)?;
+    let value = eval_const(&expr)?;
+    Ok((name, value))
+}
+
+fn eval_const(expression: &Expr) -> Result<i64, CoreError> {
+    match expression {
+        Expr::Lit(value) => Ok(*value),
+        Expr::Binary { op, left, right } => {
+            let left = eval_const(left)?;
+            let right = eval_const(right)?;
+            Ok(match op {
+                BinOp::Add => left.wrapping_add(right),
+                BinOp::Sub => left.wrapping_sub(right),
+                BinOp::Mul => left.wrapping_mul(right),
+                BinOp::Div => {
+                    if right == 0 {
+                        return Err(CoreError("division by zero in defconst".into()));
+                    }
+                    left.wrapping_div(right)
+                }
+                BinOp::Eq => i64::from(left == right),
+                BinOp::Gt => i64::from(left > right),
+                BinOp::Lt => i64::from(left < right),
+                BinOp::Ge => i64::from(left >= right),
+                BinOp::Le => i64::from(left <= right),
+                BinOp::And => left & right,
+                BinOp::Or => left | right,
+            })
+        }
+        Expr::Unary {
+            op: UnOp::Not,
+            value,
+        } => Ok(i64::from(eval_const(value)? == 0)),
+        other => Err(CoreError(format!(
+            "defconst value is not a constant expression: {other:?}"
+        ))),
+    }
+}
+
+fn parse_defun(list: &[Value], constants: &HashMap<String, i64>) -> Result<Function, CoreError> {
     let name = list
         .get(1)
         .and_then(Value::as_symbol)
@@ -158,7 +229,7 @@ fn parse_defun(list: &[Value]) -> Result<Function, CoreError> {
     for param in &params {
         env.insert(param.clone(), ());
     }
-    let body = lower(body, &mut env)?;
+    let body = lower(body, &mut env, constants)?;
     Ok(Function { name, params, body })
 }
 
@@ -194,13 +265,19 @@ fn validate_calls(
     }
 }
 
-fn lower(value: &Value, env: &mut HashMap<String, ()>) -> Result<Expr, CoreError> {
+fn lower(
+    value: &Value,
+    env: &mut HashMap<String, ()>,
+    constants: &HashMap<String, i64>,
+) -> Result<Expr, CoreError> {
     match value {
         Value::Int(number) => Ok(Expr::Lit(*number)),
         Value::Bool(boolean) => Ok(Expr::Lit(i64::from(*boolean))),
         Value::Symbol(name) => {
             if env.contains_key(name) {
                 Ok(Expr::Var(name.clone()))
+            } else if let Some(value) = constants.get(name) {
+                Ok(Expr::Lit(*value))
             } else {
                 Err(CoreError(format!("unbound symbol `{name}`")))
             }
@@ -211,11 +288,11 @@ fn lower(value: &Value, env: &mut HashMap<String, ()>) -> Result<Expr, CoreError
                 .and_then(Value::as_symbol)
                 .ok_or_else(|| CoreError("call has no head".into()))?;
             match head {
-                "let" => lower_let(items, env),
-                "if" => lower_if(items, env),
-                "cond" => lower_cond(items, env),
+                "let" => lower_let(items, env, constants),
+                "if" => lower_if(items, env, constants),
+                "cond" => lower_cond(items, env, constants),
                 "and" | "or" | "+" | "-" | "*" | "/" | "=" | ">" | "<" | ">=" | "<=" => {
-                    lower_binary(head, items, env)
+                    lower_binary(head, items, env, constants)
                 }
                 "not" => {
                     let value = items
@@ -223,7 +300,7 @@ fn lower(value: &Value, env: &mut HashMap<String, ()>) -> Result<Expr, CoreError
                         .ok_or_else(|| CoreError("not needs an argument".into()))?;
                     Ok(Expr::Unary {
                         op: UnOp::Not,
-                        value: Box::new(lower(value, env)?),
+                        value: Box::new(lower(value, env, constants)?),
                     })
                 }
                 name => {
@@ -232,7 +309,7 @@ fn lower(value: &Value, env: &mut HashMap<String, ()>) -> Result<Expr, CoreError
                     }
                     let args = items[1..]
                         .iter()
-                        .map(|arg| lower(arg, env))
+                        .map(|arg| lower(arg, env, constants))
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Expr::Call {
                         name: name.to_string(),
@@ -247,7 +324,11 @@ fn lower(value: &Value, env: &mut HashMap<String, ()>) -> Result<Expr, CoreError
     }
 }
 
-fn lower_let(items: &[Value], env: &mut HashMap<String, ()>) -> Result<Expr, CoreError> {
+fn lower_let(
+    items: &[Value],
+    env: &mut HashMap<String, ()>,
+    constants: &HashMap<String, i64>,
+) -> Result<Expr, CoreError> {
     let mut local_env = env.clone();
     let bindings = items
         .get(1)
@@ -278,12 +359,12 @@ fn lower_let(items: &[Value], env: &mut HashMap<String, ()>) -> Result<Expr, Cor
         let value = pair
             .get(1)
             .ok_or_else(|| CoreError("let binding needs a value".into()))?;
-        let value = lower(value, &mut local_env)?;
+        let value = lower(value, &mut local_env, constants)?;
         local_env.insert(name.clone(), ());
         lowered_bindings.push((name, value));
     }
 
-    let mut lowered = lower(body, &mut local_env)?;
+    let mut lowered = lower(body, &mut local_env, constants)?;
     for (name, value) in lowered_bindings.into_iter().rev() {
         lowered = Expr::Let {
             name,
@@ -294,7 +375,11 @@ fn lower_let(items: &[Value], env: &mut HashMap<String, ()>) -> Result<Expr, Cor
     Ok(lowered)
 }
 
-fn lower_if(items: &[Value], env: &mut HashMap<String, ()>) -> Result<Expr, CoreError> {
+fn lower_if(
+    items: &[Value],
+    env: &mut HashMap<String, ()>,
+    constants: &HashMap<String, i64>,
+) -> Result<Expr, CoreError> {
     if items.len() != 4 {
         return Err(CoreError(
             "if needs a condition, a then branch, and an else branch".into(),
@@ -303,13 +388,17 @@ fn lower_if(items: &[Value], env: &mut HashMap<String, ()>) -> Result<Expr, Core
     let mut then_env = env.clone();
     let mut else_env = env.clone();
     Ok(Expr::If {
-        cond: Box::new(lower(&items[1], env)?),
-        then: Box::new(lower(&items[2], &mut then_env)?),
-        else_: Box::new(lower(&items[3], &mut else_env)?),
+        cond: Box::new(lower(&items[1], env, constants)?),
+        then: Box::new(lower(&items[2], &mut then_env, constants)?),
+        else_: Box::new(lower(&items[3], &mut else_env, constants)?),
     })
 }
 
-fn lower_cond(items: &[Value], env: &mut HashMap<String, ()>) -> Result<Expr, CoreError> {
+fn lower_cond(
+    items: &[Value],
+    env: &mut HashMap<String, ()>,
+    constants: &HashMap<String, i64>,
+) -> Result<Expr, CoreError> {
     let clauses = &items[1..];
     if clauses.is_empty() {
         return Err(CoreError("cond needs at least one clause".into()));
@@ -329,11 +418,11 @@ fn lower_cond(items: &[Value], env: &mut HashMap<String, ()>) -> Result<Expr, Co
             return Err(CoreError("cond clause has more than one body form".into()));
         }
         let mut clause_env = env.clone();
-        let body = lower(body, &mut clause_env)?;
+        let body = lower(body, &mut clause_env, constants)?;
         if test.as_symbol() == Some("else") {
             lowered = Some(body);
         } else {
-            let cond = lower(test, &mut clause_env)?;
+            let cond = lower(test, &mut clause_env, constants)?;
             let else_ = lowered
                 .ok_or_else(|| CoreError("cond needs an else clause in the numeric core".into()))?;
             lowered = Some(Expr::If {
@@ -350,13 +439,14 @@ fn lower_binary(
     head: &str,
     items: &[Value],
     env: &mut HashMap<String, ()>,
+    constants: &HashMap<String, i64>,
 ) -> Result<Expr, CoreError> {
     if items.len() < 3 {
         return Err(CoreError(format!("`{head}` needs at least two arguments")));
     }
     let mut args = items[1..]
         .iter()
-        .map(|value| lower(value, env))
+        .map(|value| lower(value, env, constants))
         .collect::<Result<Vec<_>, _>>()?;
     let mut left = args.remove(0);
     for right in args {

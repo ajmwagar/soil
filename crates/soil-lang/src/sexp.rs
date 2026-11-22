@@ -335,7 +335,7 @@ fn form_id(value: &Value, index: usize) -> String {
     let head = items.first().and_then(Value::as_symbol);
     let name = items.get(1).and_then(Value::as_symbol);
     match (head, name) {
-        (Some("defun" | "def" | "defmacro" | "defspore"), Some(name)) => {
+        (Some("defun" | "def" | "defconst" | "defmacro" | "defspore"), Some(name)) => {
             format!("{}:{name}", head.unwrap())
         }
         (Some(head), _) => format!("{head}:{index}"),

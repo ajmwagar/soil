@@ -106,6 +106,21 @@ fn matches_the_interpreter_on_the_numeric_core() {
 }
 
 #[test]
+fn compiles_defconst_values_into_the_numeric_core() {
+    let source = r#"
+        (defconst LIMIT 3)
+        (defconst DERIVED (+ LIMIT 1))
+        (defun at-limit () LIMIT)
+        (defun derived () DERIVED)
+        (defun under (x) (< x LIMIT))
+    "#;
+    assert_eq!(call(source, "at-limit", &[]), 3);
+    assert_eq!(call(source, "derived", &[]), 4);
+    assert_eq!(call(source, "under", &[2]), 1);
+    assert_eq!(call(source, "under", &[4]), 0);
+}
+
+#[test]
 fn rejects_values_outside_the_numeric_core() {
     let error = soil_lang::parse("(defun f () (list 1 2))").unwrap_err();
     assert!(error.to_string().contains("unknown function `list`"));
