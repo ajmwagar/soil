@@ -40,3 +40,19 @@ host-free runner:
 ```sh
 SOIL_LANG=soil-lang python3 scripts/run-core-tests.py
 ```
+
+## UI
+
+`ui.soil` is a complete HTML/CSS view over the same `vitals.view.v1` shape a
+GPUI renderer reads. `page.soil` renders it to one document:
+
+```sh
+$SOIL_LANG --prelude core/prelude.soil \
+  core/ui.soil examples/vitals/vitals.soil examples/vitals/ui.soil \
+  examples/vitals/page.soil > /tmp/vitals.html
+open /tmp/vitals.html
+```
+
+The rings, cards and sleep hypnogram are ordinary Soil forms; the host only
+turns them into HTML. This is the second backend the view model needs before a
+GPUI adapter is worth building.
