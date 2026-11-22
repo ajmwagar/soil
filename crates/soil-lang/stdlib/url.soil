@@ -55,7 +55,8 @@
 
 (defun url/decode-chars (characters spaces out)
   (cond
-    ((nil? characters) (bytes->string (reverse out)))
+    ((nil? characters)
+      (if (nil? out) "" (bytes->string (reverse out))))
     ((and (= (first characters) "%")
           (>= (length characters) 3))
       (let ((high (url/hex-value (nth 1 characters)))
