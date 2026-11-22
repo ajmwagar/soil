@@ -3,6 +3,8 @@
 //! and Wasm backends.
 
 pub mod core;
+#[cfg(feature = "witgen")]
+pub mod dispatchgen;
 pub mod eval;
 pub mod lisp;
 #[cfg(feature = "native")]
@@ -15,6 +17,8 @@ pub mod wasm;
 pub mod witgen;
 
 pub use core::{Expr, Function, Program, parse};
+#[cfg(feature = "witgen")]
+pub use dispatchgen::{GeneratedDispatch, generate as generate_dispatch};
 pub use eval::{
     FakeHost, Host, HostChain, Runtime, json_to_value as from_json, value_to_json as to_json,
 };
