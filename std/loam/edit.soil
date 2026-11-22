@@ -38,63 +38,67 @@
                 value))
           (list 'err (edit/stdout result)))))
 
+(defun edit/session-id (session)
+  (let ((id (field session :session)))
+    (if (nil? id) session id)))
+
 (defun edit/call-with (exec op args)
   (edit/decode (apply exec (list (edit/command op args)))))
 
 (defun edit/call (op args)
-  (edit/call-with edit/exec-command op args))
+  (edit/call-with (quote edit/exec-command) op args))
 
 (defun edit/open-with (exec spore-id)
   (edit/call-with exec "open" (list spore-id)))
 
 (defun edit/open (spore-id)
-  (edit/open-with edit/exec-command spore-id))
+  (edit/open-with (quote edit/exec-command) spore-id))
 
 (defun edit/read-with (exec session path)
-  (edit/call-with exec "read" (list session path)))
+  (edit/call-with exec "read" (list (edit/session-id session) path)))
 
 (defun edit/read (session path)
-  (edit/read-with edit/exec-command session path))
+  (edit/read-with (quote edit/exec-command) session path))
 
 (defun edit/list-with (exec session)
-  (edit/call-with exec "list" (list session)))
+  (edit/call-with exec "list" (list (edit/session-id session))))
 
 (defun edit/list (session)
-  (edit/list-with edit/exec-command session))
+  (edit/list-with (quote edit/exec-command) session))
 
 (defun edit/paths-with (exec session)
   (map (lambda (file) (field file :path))
     (or-empty (field (edit/list-with exec session) :files))))
 
 (defun edit/paths (session)
-  (edit/paths-with edit/exec-command session))
+  (edit/paths-with (quote edit/exec-command) session))
 
 (defun edit/checkpoint-with (exec session message)
-  (edit/call-with exec "checkpoint" (list session message)))
+  (edit/call-with exec "checkpoint" (list (edit/session-id session) message)))
 
 (defun edit/checkpoint (session message)
-  (edit/checkpoint-with edit/exec-command session message))
+  (edit/checkpoint-with (quote edit/exec-command) session message))
 
 (defun edit/build-with (exec session)
-  (edit/call-with exec "build" (list session)))
+  (edit/call-with exec "build" (list (edit/session-id session))))
 
 (defun edit/build (session)
-  (edit/build-with edit/exec-command session))
+  (edit/build-with (quote edit/exec-command) session))
 
 (defun edit/save-with (exec session message)
-  (edit/call-with exec "save" (list session message)))
+  (edit/call-with exec "save" (list (edit/session-id session) message)))
 
 (defun edit/save (session message)
-  (edit/save-with edit/exec-command session message))
+  (edit/save-with (quote edit/exec-command) session message))
 
 (defun edit/apply-with (exec session)
-  (edit/call-with exec "apply" (list session)))
+  (edit/call-with exec "apply" (list (edit/session-id session))))
 
 (defun edit/apply (session)
-  (edit/apply-with edit/exec-command session))
+  (edit/apply-with (quote edit/exec-command) session))
 
 (defun edit/discard-with (exec session)
-  (edit/call-with exec "discard" (list session)))
+  (edit/call-with exec "discard" (list (edit/session-id session))))
 
 (defun edit/discard (session)
-  (edit/discard-with edit/exec-command session))
+  (edit/discard-with (quote edit/exec-command) session))

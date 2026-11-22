@@ -9,7 +9,16 @@
   (lambda (path) (edit/read-text session path)))
 
 (defun edit/lsp-doc (session path)
-  (workspace/doc-with (edit/lsp-reader session) path))
+  (let ((text (edit/read-text session path)))
+    (if (nil? text)
+        nil
+        (let ((parsed (lsp/parse-doc text)))
+          (if (ok? parsed)
+              (list
+                (list :uri (workspace/uri path))
+                (list :text text)
+                (list :parsed (value parsed)))
+              nil)))))
 
 (defun edit/lsp-diagnostics (text)
   (lsp/diagnostics-text text))
