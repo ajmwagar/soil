@@ -1,0 +1,11 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Minimal WASI filesystem seam for the image server.
+;
+; The runner implements these with std::fs on wasm32-wasip2, which is backed by
+; WASI filesystem access. Wasmtime preopens the directory with --dir.
+
+(defun fs/read (path)
+  (host-call "wasi:filesystem" "read" (list path)))
+
+(defun fs/write (path text)
+  (host-call "wasi:filesystem" "write" (list path (string->bytes text))))
