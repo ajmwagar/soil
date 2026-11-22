@@ -22,8 +22,18 @@ struct Function {
     body: Vec<Value>,
 }
 
+struct Closure {
+    params: Vec<String>,
+    body: Vec<Value>,
+    env: HashMap<String, Value>,
+}
+
 pub struct Runtime {
     functions: HashMap<String, Function>,
+    macros: HashMap<String, Function>,
+    closures: HashMap<u64, Closure>,
+    next_closure: u64,
+    gensym: u64,
     host: Box<dyn Host>,
     args: Vec<String>,
     started: Instant,
@@ -79,6 +89,10 @@ impl Runtime {
     pub fn new(host: Box<dyn Host>) -> Self {
         Self {
             functions: HashMap::new(),
+            macros: HashMap::new(),
+            closures: HashMap::new(),
+            next_closure: 1,
+            gensym: 0,
             host,
             args: Vec::new(),
             started: Instant::now(),
@@ -116,6 +130,11 @@ impl Runtime {
                 if head == Some("defun") {
                     let (name, function) = parse_defun(list)?;
                     self.functions.insert(name, function);
+                    continue;
+                }
+                if head == Some("defmacro") {
+                    let (name, function) = parse_defun(list)?;
+                    self.macros.insert(name, function);
                     continue;
                 }
                 if head.is_some_and(|name| name.starts_with("define-")) {
@@ -156,6 +175,159 @@ impl Runtime {
             .with_context(|| format!("in function `{}`", function.name))
     }
 
+    fn call_closure(&mut self, id: u64, args: Vec<Value>) -> Result<Value> {
+        let closure = self
+            .closures
+            .get(&id)
+            .ok_or_else(|| anyhow!("unknown function object {id}"))?;
+        if args.len() != closure.params.len() {
+            bail!(
+                "function expects {} arguments, got {}",
+                closure.params.len(),
+                args.len()
+            );
+        }
+        let mut env = closure.env.clone();
+        for (name, value) in closure.params.iter().zip(args) {
+            env.insert(name.clone(), value);
+        }
+        let body = closure.body.clone();
+        self.eval_body(&body, &mut env)
+            .with_context(|| "in lambda".to_string())
+    }
+
+    fn call_macro(&mut self, function: &Function, args: Vec<Value>) -> Result<Value> {
+        if args.len() != function.params.len() {
+            bail!(
+                "macro {} expects {} arguments, got {}",
+                function.name,
+                function.params.len(),
+                args.len()
+            );
+        }
+        let mut env = HashMap::new();
+        for (name, value) in function.params.iter().zip(args) {
+            env.insert(name.clone(), value);
+        }
+        self.eval_body(&function.body, &mut env)
+            .with_context(|| format!("in macro `{}`", function.name))
+    }
+
+    fn expand_macro(&mut self, name: &str, args: &[Value]) -> Result<Value> {
+        let function = self
+            .macros
+            .get(name)
+            .cloned()
+            .ok_or_else(|| anyhow!("unknown macro `{name}`"))?;
+        self.call_macro(&function, args.to_vec())
+    }
+
+    fn macroexpand(&mut self, mut form: Value) -> Result<Value> {
+        loop {
+            let expanded = match &form {
+                Value::List(items) => {
+                    let Some(head) = items.first().and_then(Value::as_symbol) else {
+                        return Ok(form);
+                    };
+                    if !self.macros.contains_key(head) {
+                        return Ok(form);
+                    }
+                    self.expand_macro(head, &items[1..])?
+                }
+                _ => return Ok(form),
+            };
+            form = expanded;
+        }
+    }
+
+    fn macroexpand_one(&mut self, form: Value) -> Result<Value> {
+        match &form {
+            Value::List(items) => {
+                let Some(head) = items.first().and_then(Value::as_symbol) else {
+                    return Ok(form);
+                };
+                if !self.macros.contains_key(head) {
+                    return Ok(form);
+                }
+                self.expand_macro(head, &items[1..])
+            }
+            _ => Ok(form),
+        }
+    }
+
+    fn call_value(&mut self, function: &Value, args: Vec<Value>) -> Result<Value> {
+        if let Some(id) = function_id(function) {
+            return self.call_closure(id, args);
+        }
+        let name = value_text(function);
+        let function = self
+            .functions
+            .get(&name)
+            .cloned()
+            .ok_or_else(|| anyhow!("unknown function `{name}`"))?;
+        self.call_function(&function, args)
+    }
+
+    fn eval_quasiquote(
+        &mut self,
+        form: &Value,
+        depth: usize,
+        env: &mut HashMap<String, Value>,
+    ) -> Result<Value> {
+        let Some(items) = form.as_list() else {
+            return Ok(form.clone());
+        };
+        if items.is_empty() {
+            return Ok(Value::Nil);
+        }
+        let head = items.first().and_then(Value::as_symbol);
+        if head == Some("unquote") {
+            if depth == 1 {
+                return self.eval(require(items, 1, "unquote")?, env);
+            }
+            return Ok(Value::List(vec![
+                Value::Symbol("unquote".to_string()),
+                self.eval_quasiquote(require(items, 1, "unquote")?, depth - 1, env)?,
+            ]));
+        }
+        if head == Some("unquote-splicing") {
+            if depth == 1 {
+                return self.eval(require(items, 1, "unquote-splicing")?, env);
+            }
+            return Ok(Value::List(vec![
+                Value::Symbol("unquote-splicing".to_string()),
+                self.eval_quasiquote(require(items, 1, "unquote-splicing")?, depth - 1, env)?,
+            ]));
+        }
+        if head == Some("quasiquote") {
+            return Ok(Value::List(vec![
+                Value::Symbol("quasiquote".to_string()),
+                self.eval_quasiquote(require(items, 1, "quasiquote")?, depth + 1, env)?,
+            ]));
+        }
+
+        let mut out = Vec::new();
+        for item in items {
+            let item_list = item.as_list();
+            if depth == 1
+                && item_list
+                    .and_then(|parts| parts.first())
+                    .and_then(Value::as_symbol)
+                    == Some("unquote-splicing")
+            {
+                let value = self.eval(require(item_list.unwrap(), 1, "unquote-splicing")?, env)?;
+                match value {
+                    Value::Nil => {}
+                    Value::List(values) => out.extend(values),
+                    _ => bail!("unquote-splicing expects a list"),
+                }
+            } else {
+                out.push(self.eval_quasiquote(item, depth, env)?);
+            }
+        }
+        Ok(Value::List(out))
+    }
+
     fn eval_body(&mut self, body: &[Value], env: &mut HashMap<String, Value>) -> Result<Value> {
         let mut last = Value::Nil;
         for expression in body {
@@ -183,11 +355,90 @@ impl Runtime {
                     .and_then(Value::as_symbol)
                     .ok_or_else(|| anyhow!("empty or invalid call `{expression}`"))?;
 
+                if self.macros.contains_key(head) {
+                    let expanded = self.expand_macro(head, &items[1..])?;
+                    return self.eval(&expanded, env);
+                }
+
                 match head {
                     "quote" => Ok(items
                         .get(1)
                         .cloned()
                         .ok_or_else(|| anyhow!("quote needs one argument"))?),
+                    "quasiquote" => {
+                        let form = require(items, 1, "quasiquote")?;
+                        self.eval_quasiquote(form, 1, env)
+                    }
+                    "unquote" | "unquote-splicing" => {
+                        bail!("{head} outside quasiquote")
+                    }
+                    "defmacro" => {
+                        let (name, function) = parse_defun(items)?;
+                        self.macros.insert(name, function);
+                        Ok(Value::Nil)
+                    }
+                    "lambda" => {
+                        let params = items
+                            .get(1)
+                            .and_then(Value::as_list)
+                            .ok_or_else(|| anyhow!("lambda needs a parameter list"))?
+                            .iter()
+                            .map(|value| {
+                                value
+                                    .as_symbol()
+                                    .map(str::to_string)
+                                    .ok_or_else(|| anyhow!("lambda parameter is not a symbol"))
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        let body = items[2..].to_vec();
+                        if body.is_empty() {
+                            bail!("lambda needs a body");
+                        }
+                        let id = self.next_closure;
+                        self.next_closure += 1;
+                        self.closures.insert(
+                            id,
+                            Closure {
+                                params,
+                                body,
+                                env: env.clone(),
+                            },
+                        );
+                        Ok(function_object(id))
+                    }
+                    "function" => {
+                        let target = require(items, 1, "function")?;
+                        match target {
+                            Value::Symbol(name) => Ok(Value::Symbol(name.clone())),
+                            Value::List(parts)
+                                if parts.first().and_then(Value::as_symbol) == Some("lambda") =>
+                            {
+                                self.eval(target, env)
+                            }
+                            _ => bail!("function expects a symbol or lambda"),
+                        }
+                    }
+                    "funcall" => {
+                        let function = self.eval(require(items, 1, "funcall")?, env)?;
+                        let args = self.eval_args(&items[2..], env)?;
+                        self.call_value(&function, args)
+                    }
+                    "macroexpand" | "macroexpand-1" => {
+                        let form = self.eval(require(items, 1, head)?, env)?;
+                        if head == "macroexpand-1" {
+                            self.macroexpand_one(form)
+                        } else {
+                            self.macroexpand(form)
+                        }
+                    }
+                    "gensym" => {
+                        let prefix = items
+                            .get(1)
+                            .map(value_text)
+                            .unwrap_or_else(|| "g".to_string());
+                        self.gensym += 1;
+                        Ok(Value::Symbol(format!("{prefix}{}", self.gensym)))
+                    }
                     "if" => {
                         let test = self.eval(require(items, 1, "if")?, env)?;
                         let branch = if truthy(&test) { 2 } else { 3 };
@@ -317,11 +568,13 @@ impl Runtime {
                             _ => bail!("value expects a two-element tagged list"),
                         })
                     }
-                    "nil?" => Ok(Value::Bool(match self.eval(require(items, 1, "nil?")?, env)? {
-                        Value::Nil => true,
-                        Value::List(items) if items.is_empty() => true,
-                        _ => false,
-                    })),
+                    "nil?" => Ok(Value::Bool(
+                        match self.eval(require(items, 1, "nil?")?, env)? {
+                            Value::Nil => true,
+                            Value::List(items) if items.is_empty() => true,
+                            _ => false,
+                        },
+                    )),
                     "first" => {
                         let value = self.eval(require(items, 1, "first")?, env)?;
                         Ok(value
@@ -369,18 +622,12 @@ impl Runtime {
                     "apply" => {
                         let function = self.eval(require(items, 1, "apply")?, env)?;
                         let arguments = self.eval(require(items, 2, "apply")?, env)?;
-                        let name = value_text(&function);
                         let arguments = match arguments {
                             Value::Nil => Vec::new(),
                             Value::List(values) => values,
                             _ => bail!("apply expects a list of arguments"),
                         };
-                        let function = self
-                            .functions
-                            .get(&name)
-                            .cloned()
-                            .ok_or_else(|| anyhow!("apply: unknown function `{name}`"))?;
-                        self.call_function(&function, arguments)
+                        self.call_value(&function, arguments)
                     }
                     "symbol?" => Ok(Value::Bool(matches!(
                         self.eval(require(items, 1, "symbol?")?, env)?,
@@ -880,7 +1127,9 @@ pub fn value_to_json(value: &Value) -> serde_json::Value {
         Value::String(text) | Value::Symbol(text) | Value::Keyword(text) => {
             serde_json::Value::String(text.clone())
         }
-        Value::List(items) if is_json_object(items) => serde_json::Value::Object(Default::default()),
+        Value::List(items) if is_json_object(items) => {
+            serde_json::Value::Object(Default::default())
+        }
         Value::List(items) => {
             let is_object = items.iter().all(|item| {
                 item.as_list().is_some_and(|pair| {
@@ -945,6 +1194,24 @@ fn is_tag(value: &Value, tag: &str) -> bool {
         .and_then(|items| items.first())
         .and_then(Value::as_symbol)
         == Some(tag)
+}
+
+fn function_object(id: u64) -> Value {
+    Value::List(vec![
+        Value::Symbol("#<function>".to_string()),
+        Value::Int(id as i64),
+    ])
+}
+
+fn function_id(value: &Value) -> Option<u64> {
+    let items = value.as_list()?;
+    if items.first().and_then(Value::as_symbol) != Some("#<function>") {
+        return None;
+    }
+    match items.get(1) {
+        Some(Value::Int(id)) => u64::try_from(*id).ok(),
+        _ => None,
+    }
 }
 
 fn value_text(value: &Value) -> String {

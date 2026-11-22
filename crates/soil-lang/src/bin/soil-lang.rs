@@ -14,6 +14,7 @@ fn run() -> Result<()> {
     let mut workspace_root: Option<PathBuf> = None;
     let mut book = "soil".to_string();
     let mut repl = false;
+    let mut image = false;
     let mut http_origins: Vec<String> = Vec::new();
     let mut http_credential: Option<String> = None;
     let mut bearer: Option<String> = None;
@@ -56,6 +57,7 @@ fn run() -> Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("--book needs a name"))?;
             }
             "--repl" => repl = true,
+            "--image" => image = true,
             "--allow" => {
                 http_origins.push(
                     args.next()
@@ -108,7 +110,7 @@ fn run() -> Result<()> {
             }
             "-h" | "--help" => {
                 println!(
-                    "usage: soil-lang [--call NAME | --no-call] [--repl] [--prelude FILE] \
+                    "usage: soil-lang [--call NAME | --no-call] [--repl | --image] [--prelude FILE] \
                      [--records-root DIR] [--book NAME] [--workspace-root DIR] \
                      [--allow ORIGIN]... \
                      [--http-credential VALUE | --http-credential-env VAR \
@@ -201,6 +203,10 @@ fn run() -> Result<()> {
         last = runtime.load_file(&file)?;
     }
 
+    if image {
+        return run_image(&mut runtime);
+    }
+
     if repl {
         return run_repl(&mut runtime);
     }
@@ -228,6 +234,37 @@ fn main() -> Result<()> {
         .spawn(run)?
         .join()
         .map_err(|_| anyhow::anyhow!("soil-lang worker panicked"))?
+}
+
+/// A persistent image pipe: one form per line, one result per line, no prompt.
+/// The runtime and its function cells survive from one form to the next.
+fn run_image(runtime: &mut Runtime) -> Result<()> {
+    let stdin = io::stdin();
+    let mut buffer = String::new();
+    loop {
+        let mut line = String::new();
+        if stdin.read_line(&mut line)? == 0 {
+            return Ok(());
+        }
+        buffer.push_str(&line);
+        match runtime.load(&buffer) {
+            Ok(value) => {
+                if !matches!(value, Value::Nil) {
+                    println!("{value}");
+                }
+                buffer.clear();
+            }
+            Err(error) => {
+                let message = format!("{error:#}");
+                if message.contains("unterminated list") || message.contains("unterminated string")
+                {
+                    continue;
+                }
+                eprintln!("{message}");
+                buffer.clear();
+            }
+        }
+    }
 }
 
 fn run_repl(runtime: &mut Runtime) -> Result<()> {
@@ -264,10 +301,9 @@ fn run_repl(runtime: &mut Runtime) -> Result<()> {
                 ":time" => {
                     let started = std::time::Instant::now();
                     match runtime.load(rest) {
-                        Ok(value) => println!(
-                            "{value}  ({ms} ms)",
-                            ms = started.elapsed().as_millis()
-                        ),
+                        Ok(value) => {
+                            println!("{value}  ({ms} ms)", ms = started.elapsed().as_millis())
+                        }
                         Err(error) => eprintln!("{error:#}"),
                     }
                 }
@@ -287,7 +323,9 @@ fn run_repl(runtime: &mut Runtime) -> Result<()> {
                         ms = started.elapsed().as_millis()
                     );
                 }
-                _ => eprintln!("unknown REPL command {command}; try :stats, :time FORM, :bench N FORM, :reset, :quit"),
+                _ => eprintln!(
+                    "unknown REPL command {command}; try :stats, :time FORM, :bench N FORM, :reset, :quit"
+                ),
             }
             buffer.clear();
             continue;
