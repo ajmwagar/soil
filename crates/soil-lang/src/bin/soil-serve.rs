@@ -81,7 +81,7 @@ fn main() -> Result<()> {
         };
         let _ = thread::Builder::new()
             .name("soil-session".into())
-            .stack_size(64 * 1024 * 1024)
+            .stack_size(128 * 1024 * 1024)
             .spawn(move || {
                 if let Err(error) = serve(stream, &config) {
                     eprintln!("session: {error:#}");
