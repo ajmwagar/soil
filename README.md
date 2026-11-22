@@ -1,6 +1,6 @@
 # Soil
 
-**A Lisp-like language for performant applications and automation.**
+**A Lisp language for WebAssembly.**
 
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![language](https://img.shields.io/badge/language-Soil-c8f169.svg)](compiler/core.soil)
@@ -16,10 +16,7 @@
 ```
 
 Soil is the language, compiler, standard library, and examples. It compiles to
-WebAssembly. The Wasm runtime is [Loam](https://github.com/mycelium-linux/loam).
-
-This repository is **100% Soil source**: no Rust crates, Cargo files, or
-generated bindings live here.
+WebAssembly. You may use any Wasm runtime you like. However Soil is designed to run in [Loam](https://github.com/mycelium-linux/loam).
 
 ## What is here
 
@@ -49,23 +46,9 @@ generated bindings live here.
 | [`doc.soil`](stdlib/doc.soil) | Documentation extraction and rendering |
 | [`perf.soil`](stdlib/perf.soil) | Counters and timing helpers |
 
-## Example site
+## Documentation
 
-The actual landing page and getting-started guide are Soil views:
-
-- [`site/soil-lang.soil`](site/soil-lang.soil) — landing page structure and CSS
-- [`site/getting-started.soil`](site/getting-started.soil) — build, run, examples
-- [`site/pages/`](site/pages) — the inline UI demos
-- [`site/copy.soil`](site/copy.soil) — all editable site text
-
-Render it with a compatible bootstrap compiler or host:
-
-```sh
-SOIL_LANG=/path/to/soil-lang ./site/build.sh
-# site/dist/index.html
-# site/dist/getting-started.html
-# site/dist/examples/*.html
-```
+You can learn more about Soil at [https://soil-lang.org](https://soil-lang.org)
 
 ## Examples
 
