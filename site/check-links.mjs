@@ -2,10 +2,10 @@
 // Check generated site links and assets. No dependencies.
 //
 //   node site/check-links.mjs site/dist
-//   node site/check-links.mjs --base http://soil-lang.org site/dist
+//   node site/check-links.mjs --base http://soil-lang.org
 //
-// In local mode every root-relative/relative href and src must resolve to a
-// file. In live mode the same paths are fetched from --base.
+// Local mode checks every href/src against files in the dist tree. Live mode
+// discovers pages from sitemap.xml and fetches every local target.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -18,10 +18,7 @@ for (let i = 0; i < args.length; i += 1) {
   else rootArg = args[i];
 }
 const root = path.resolve(rootArg);
-if (!fs.existsSync(root)) {
-  console.error(`no such directory: ${root}`);
-  process.exit(2);
-}
+const origin = base ? new URL(base) : null;
 
 function walk(dir, out = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -43,7 +40,7 @@ function isLocal(raw) {
     !/^[a-z][a-z0-9+.-]*:/i.test(value);
 }
 
-function resolveTarget(page, raw) {
+function localTarget(page, raw) {
   const clean = raw.split("#")[0].split("?")[0];
   if (!clean) return null;
   const baseDir = path.posix.dirname(page.replaceAll("\\", "/"));
@@ -53,34 +50,84 @@ function resolveTarget(page, raw) {
   return withIndex || "/index.html";
 }
 
-const problems = [];
-const urls = new Set();
-const pages = walk(root);
-for (const file of pages) {
-  const page = `/${path.relative(root, file).replaceAll("\\", "/")}`;
-  const html = fs.readFileSync(file, "utf8");
+function liveTarget(pageUrl, raw) {
+  if (!isLocal(raw)) return null;
+  const url = new URL(raw, pageUrl);
+  return url.origin === origin.origin ? url.href : null;
+}
+
+function collect(html, page, localTargets, liveUrls) {
   const refs = html.matchAll(/\b(?:href|src)="([^"]+)"/g);
   for (const [, raw] of refs) {
     if (!isLocal(raw)) continue;
-    const target = resolveTarget(page, raw);
-    if (!target) continue;
-    urls.add(target);
-    if (!base) {
-      const disk = path.join(root, target);
-      if (!fs.existsSync(disk) || !fs.statSync(disk).isFile()) {
-        problems.push(`${page} -> ${raw} (missing ${target})`);
-      }
+    if (origin) {
+      const target = liveTarget(page, raw);
+      if (target) liveUrls.add(target);
+    } else {
+      const target = localTarget(page, raw);
+      if (target) localTargets.add(target);
     }
   }
 }
 
-if (base) {
-  const origin = new URL(base);
-  const queue = [...urls].sort();
+const problems = [];
+const localTargets = new Set();
+const liveUrls = new Set();
+let pageCount = 0;
+
+if (!origin && !fs.existsSync(root)) {
+  console.error(`no such directory: ${root}`);
+  process.exit(2);
+}
+
+if (!origin && fs.existsSync(root)) {
+  for (const file of walk(root)) {
+    const page = `/${path.relative(root, file).replaceAll("\\", "/")}`;
+    const html = fs.readFileSync(file, "utf8");
+    pageCount += 1;
+    collect(html, page, localTargets, liveUrls);
+  }
+  for (const target of localTargets) {
+    const disk = path.join(root, target);
+    if (!fs.existsSync(disk) || !fs.statSync(disk).isFile()) {
+      problems.push(`missing ${target}`);
+    }
+  }
+}
+
+if (origin) {
+  let sitemap = "";
+  try {
+    const response = await fetch(new URL("/sitemap.xml", origin));
+    if (!response.ok) throw new Error(String(response.status));
+    sitemap = await response.text();
+  } catch (error) {
+    problems.push(`${origin.origin}/sitemap.xml -> ${error.message}`);
+  }
+  const pages = [...sitemap.matchAll(/<loc>(.*?)<\/loc>/g)].map((match) => {
+    const loc = new URL(match[1]);
+    return new URL(loc.pathname + loc.search, origin).href;
+  });
+  for (const page of pages) {
+    let response;
+    try {
+      response = await fetch(page);
+    } catch (error) {
+      problems.push(`${page} -> ${error.message}`);
+      continue;
+    }
+    if (!response.ok) {
+      problems.push(`${page} -> ${response.status}`);
+      continue;
+    }
+    pageCount += 1;
+    collect(await response.text(), page, localTargets, liveUrls);
+  }
+
+  const queue = [...liveUrls].sort();
   const workers = Array.from({ length: 6 }, async () => {
     while (queue.length) {
-      const target = queue.shift();
-      const url = new URL(target, origin).href;
+      const url = queue.shift();
       let response;
       try {
         response = await fetch(url, { redirect: "follow" });
@@ -95,8 +142,8 @@ if (base) {
 }
 
 if (problems.length) {
-  for (const problem of problems) console.error(problem);
-  console.error(`${problems.length} broken link${problems.length === 1 ? "" : "s"}`);
+  for (const problem of [...new Set(problems)]) console.error(problem);
+  console.error(`${new Set(problems).size} broken link${new Set(problems).size === 1 ? "" : "s"}`);
   process.exit(1);
 }
-console.log(`checked ${pages.length} pages, ${urls.size} local targets${base ? ` at ${base}` : ""}`);
+console.log(`checked ${pageCount} pages, ${origin ? liveUrls.size : localTargets.size} targets${origin ? ` at ${origin.origin}` : ""}`);
