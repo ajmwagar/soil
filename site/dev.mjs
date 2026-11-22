@@ -132,6 +132,7 @@ const types = new Map([
 ]);
 
 const livereload = `<script>
+if (window.top === window) {
 (() => {
   const source = new EventSource("/__reload");
   source.addEventListener("reload", () => location.reload());
@@ -151,6 +152,7 @@ const livereload = `<script>
     node.textContent = JSON.parse(event.data);
   });
 })();
+}
 </script>`;
 
 
