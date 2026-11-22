@@ -58,6 +58,29 @@ The native `--repl` accepts:
 The REPL keeps one `Runtime`, so `:stats` after repeated work shows cumulative
 evaluator and host counters until `:reset`.
 
+## Records query and aggregate pushdown
+
+Load `stdlib/records.soil` for the ergonomic wrappers:
+
+```soil
+(records/select "issue/" (list "project" "status"))
+(records/where "issue/" "project" "marbles")
+(records/aggregate "" "issue/" nil (list "project" "status") "" 0)
+```
+
+The underlying WIT-shaped types are records, not SQL strings:
+
+```soil
+(records/filter "project" "eq" "marbles")
+(records/spec "" "issue/" filters fields nil 4096)
+```
+
+`aggregate` supports exact/prefix/contains/exists filters, dotted field paths,
+and an optional numeric time bucket. `mb stats` uses it directly. `mb burndown`
+uses it for project/all scopes; a goal/epic-scoped burndown still needs
+descendant ids and falls back to the issue list. SQL remains inside the records
+host; Soil sees typed groups.
+
 ## Why both counters
 
 A records command can be slow because it evaluates a large list or because it
