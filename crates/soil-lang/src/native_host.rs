@@ -103,6 +103,20 @@ impl NativeHost {
         Ok(self)
     }
 
+    /// Read opaque bytes from the VFS, bounded like source reads.
+    pub fn read_bytes(&mut self, path: &str) -> anyhow::Result<Vec<u8>> {
+        let entry = VfsHostTrait::stat(&mut self.vfs, path.to_string())
+            .map_err(|error| anyhow::anyhow!("stat {path}: {error:?}"))?;
+        if entry.size > 16 * 1024 * 1024 {
+            anyhow::bail!("artifact {path} is too large: {} bytes", entry.size);
+        }
+        let length = u32::try_from(entry.size)
+            .map_err(|_| anyhow::anyhow!("artifact {path} is too large"))?;
+        let chunk = VfsHostTrait::read(&mut self.vfs, path.to_string(), 0, length)
+            .map_err(|error| anyhow::anyhow!("read {path}: {error:?}"))?;
+        Ok(chunk.data)
+    }
+
     /// Write opaque bytes through the same VFS writer used for source.
     ///
     /// Compilation artifacts are not Soil source; they need a media type and

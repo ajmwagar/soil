@@ -162,6 +162,33 @@ fn compile_writes_a_wasm_artifact_to_vfs() {
     let entry = VfsHostTrait::stat(&mut vfs, path.to_string()).unwrap();
     let page = VfsHostTrait::read(&mut vfs, path.to_string(), 0, entry.size as u32).unwrap();
     assert_eq!(&page.data[..4], b"\0asm");
+
+    let by_source = request(
+        &mut stream,
+        json!({
+            "op": "call-compiled",
+            "session": "s3",
+            "source": "(defun add (a b) (+ a b))",
+            "function": "add",
+            "args": [20, 22],
+        }),
+    );
+    assert_eq!(by_source["ok"], true, "{by_source}");
+    assert_eq!(by_source["result"]["result"], 42);
+    assert_eq!(by_source["result"]["compiled"], true);
+
+    let by_path = request(
+        &mut stream,
+        json!({
+            "op": "call-compiled",
+            "session": "s3",
+            "path": path,
+            "function": "add",
+            "args": [1, 2],
+        }),
+    );
+    assert_eq!(by_path["ok"], true);
+    assert_eq!(by_path["result"]["result"], 3);
 }
 
 #[test]
