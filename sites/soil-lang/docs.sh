@@ -38,7 +38,11 @@ prelude = [
 ]
 sources = [
     ("prelude", "Prelude", "Lists, records, JSON, and the small helpers every Soil program uses."),
-    ("ui", "UI forms", "Forms, escaping, and HTML rendering for the four-function UI contract."),
+    ("date", "Date", "UTC date/time formatting, parsing, day boundaries, and relative labels."),
+    ("url", "URL", "Percent encoding, query strings, joining, and validation."),
+    ("json", "JSON", "Object helpers, deep merge, path set, and pretty printing."),
+    ("events", "Events", "Unibus subscriptions, bounded polling, object publishing, and dedupe."),
+    ("ui", "UI forms", "Forms, escaping, HTML rendering, and the Soil component library."),
     ("highlight", "Highlighter", "A small Soil tokenizer used by code blocks and the landing page."),
     ("cli", "CLI", "A data-driven command spec, argv parser, help renderer, and man-page generator."),
 ]

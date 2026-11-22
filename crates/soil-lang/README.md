@@ -18,7 +18,11 @@ backends. This is the language side of Soil; the host and capabilities live in
 - `witgen.rs` — WIT -> `.soil` binding stubs.
 - `bindings/` — generated Soil capability bindings.
 - `stdlib/prelude.soil` — list, JSON, records, and time helpers.
-- `stdlib/ui.soil` — UI forms, HTML escaping, `render-html`, and `render-page`.
+- `stdlib/date.soil` — UTC date/time formatting, parsing, day boundaries, and relative labels.
+- `stdlib/url.soil` — percent encoding, query strings, joining, and validation.
+- `stdlib/json.soil` — object helpers, deep merge, path set, and pretty printing.
+- `stdlib/events.soil` — Unibus subscriptions, bounded polling, object publishing, and dedupe.
+- `stdlib/ui.soil` — UI forms, HTML escaping, `render-html`, `render-page`, and the component library (`ui/card`, `ui/table`, `ui/form`, `ui/cover`, `ui/sparkline`, …).
 - `stdlib/highlight.soil` — a Soil tokenizer that emits highlighted form nodes.
 - `boot/boot.soil` — the first evaluator written in Soil: environments,
   binding, special forms, application, and a primitive table. This is the seed
@@ -121,8 +125,14 @@ cargo test -p soil-lang
 and WIT behavior tests in Lisp and avoids one Rust test binary per area.
 `tests/soil/boot.soil` covers the bootstrap evaluator.
 `tests/soil/prelude.soil` covers list/JSON helpers.
+`tests/soil/date.soil`, `url.soil`, and `json.soil` cover the data helpers.
+`tests/soil/events.soil` covers subscriptions, bodies, and dedupe; `tests/unibus_events.rs` drives the same library over `MemoryBus`.
 `tests/soil/wit_call.soil` calls `soil:time` and `soil:records` from Lisp.
-`tests/soil/ui.soil` covers HTML escaping, form rendering, and highlighting.
+`tests/soil/ui.soil` covers HTML escaping, form rendering, highlighting, and the component library.
+
+Runnable examples live in `examples/stdlib/` (`ui_components.soil`,
+`data.soil`, `events.soil`, `unibus_events.soil`). The event contract and
+cursor semantics are described in [`docs/soil-events.md`](../../docs/soil-events.md).
 `tests/jmc.rs` runs McCarthy's `eval.` in the interpreter.
 `tests/jmc_wasm.rs` compiles the same `eval.` and runs it on wasmtime.
 `tests/fixtures/jmc.lisp` is Paul Graham's CL translation of McCarthy's 1960
