@@ -32,6 +32,7 @@ function walk(dir, out = []) {
 function isLocal(raw) {
   const value = raw.trim();
   return value &&
+    !value.startsWith("/cdn-cgi/") &&
     !value.startsWith("#") &&
     !value.startsWith("//") &&
     !value.startsWith("data:") &&
