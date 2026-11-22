@@ -185,18 +185,19 @@ async function git(pi: ExtensionAPI, root: string, args: string[], timeout = 30_
 	return pi.exec("git", args, { cwd: root, timeout });
 }
 
-async function repoRoot(pi: ExtensionAPI, cwd: string): Promise<string> {
-	const result = await git(pi, cwd, ["rev-parse", "--show-toplevel"]);
+async function repoRoot(pi: ExtensionAPI, start: string): Promise<string> {
+	if (process.env.SOIL_ROOT) return resolve(process.env.SOIL_ROOT);
+	const isSoil = (path: string) =>
+		existsSync(join(path, "crates/soil-lang")) || existsSync(join(path, "soil/crates/soil-lang"));
+	const result = await git(pi, start, ["rev-parse", "--show-toplevel"]);
 	if (result.code === 0 && result.stdout.trim()) {
 		const root = result.stdout.trim();
-		if (existsSync(join(root, "crates/soil-lang"))) return root;
-		// The extension can be installed outside the Soil repo; prefer SOIL_ROOT.
+		if (isSoil(root)) return root;
 	}
-	if (process.env.SOIL_ROOT) return resolve(process.env.SOIL_ROOT);
-	if (existsSync(join(cwd, "crates/soil-lang"))) return cwd;
-	let current = cwd;
+	if (isSoil(start)) return start;
+	let current = start;
 	for (;;) {
-		if (existsSync(join(current, "crates/soil-lang"))) return current;
+		if (isSoil(current)) return current;
 		const parent = dirname(current);
 		if (parent === current) break;
 		current = parent;
@@ -357,8 +358,8 @@ export default function (pi: ExtensionAPI) {
 			file: Type.String({ description: "Path to a .soil file" }),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const root = await repoRoot(pi, ctx.cwd);
 			const file = isAbsolute(params.file) ? params.file : join(ctx.cwd, params.file);
+			const root = await repoRoot(pi, dirname(file));
 			const source = await readFile(file, "utf8");
 			const parsed = parseSoil(source);
 			const text = parsed.error
@@ -399,8 +400,8 @@ export default function (pi: ExtensionAPI) {
 			check: Type.Optional(Type.Boolean({ description: "Load-check the candidate before apply (default true)" })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const root = await repoRoot(pi, ctx.cwd);
 			const file = isAbsolute(params.file) ? params.file : join(ctx.cwd, params.file);
+			const root = await repoRoot(pi, dirname(file));
 			const source = await readFile(file, "utf8");
 			const parsed = parseSoil(source);
 			if (parsed.error) {
@@ -479,8 +480,8 @@ export default function (pi: ExtensionAPI) {
 			tests: Type.Optional(Type.Boolean({ description: "Run cargo test -p soil-lang --test soil_lisp" })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const root = await repoRoot(pi, ctx.cwd);
 			const file = isAbsolute(params.file) ? params.file : join(ctx.cwd, params.file);
+			const root = await repoRoot(pi, dirname(file));
 			const check = await checkSource(pi, root, undefined, file);
 			await rm(check.tempFile!, { recursive: true, force: true }).catch(() => {});
 			let testOutput = "";
@@ -516,15 +517,15 @@ export default function (pi: ExtensionAPI) {
 			file: Type.Optional(Type.String({ description: "Optional .soil file to load first" })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const root = await repoRoot(pi, ctx.cwd);
-			const temp = await mkdtemp(join(tmpdir(), "pi-soil-eval-"));
-			const records = join(temp, "records");
-			await mkdir(records, { recursive: true });
 			const file = params.file
 				? isAbsolute(params.file)
 					? params.file
 					: join(ctx.cwd, params.file)
 				: undefined;
+			const root = await repoRoot(pi, file ? dirname(file) : ctx.cwd);
+			const temp = await mkdtemp(join(tmpdir(), "pi-soil-eval-"));
+			const records = join(temp, "records");
+			await mkdir(records, { recursive: true });
 			const { command, prefix } = soilCommand(root);
 			const args = [
 				...prefix,
@@ -563,8 +564,13 @@ export default function (pi: ExtensionAPI) {
 			file: Type.Optional(Type.String({ description: "Optional .soil file" })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const root = await repoRoot(pi, ctx.cwd);
-			const args = ["diff", "--"].concat(params.file ? [params.file] : ["*.soil"]);
+			const file = params.file
+				? isAbsolute(params.file)
+					? params.file
+					: join(ctx.cwd, params.file)
+				: undefined;
+			const root = await repoRoot(pi, file ? dirname(file) : ctx.cwd);
+			const args = ["diff", "--"].concat(file ? [file] : ["*.soil"]);
 			const result = await git(pi, root, args);
 			return {
 				content: textContent(result.stdout || result.stderr || "(no diff)"),
@@ -604,13 +610,13 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("soil-check", {
 		description: "Parse/load a .soil file: /soil-check path/to/file.soil",
 		handler: async (args, ctx) => {
-			const root = await repoRoot(pi, ctx.cwd);
 			const file = args?.trim();
 			if (!file) {
 				if (ctx.hasUI) ctx.ui.notify("usage: /soil-check path/to/file.soil", "warning");
 				return;
 			}
 			const path = isAbsolute(file) ? file : join(ctx.cwd, file);
+			const root = await repoRoot(pi, dirname(path));
 			const check = await checkSource(pi, root, undefined, path);
 			await rm(check.tempFile!, { recursive: true, force: true }).catch(() => {});
 			if (ctx.hasUI) ctx.ui.notify(check.ok ? "load: ok" : `load failed:\n${check.output}`, check.ok ? "info" : "error");
