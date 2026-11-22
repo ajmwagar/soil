@@ -144,9 +144,10 @@ def extract(chunk):
 pages = []
 def source_path(slug):
     for directory in ("core", "std"):
-        path = os.path.join(root, directory, slug + ".soil")
-        if os.path.exists(path):
-            return path
+        for dirpath, _, filenames in os.walk(os.path.join(root, directory)):
+            path = os.path.join(dirpath, slug + ".soil")
+            if slug + ".soil" in filenames and os.path.exists(path):
+                return path
     raise SystemExit("no source for %s" % slug)
 
 for slug, title, summary in sources:
