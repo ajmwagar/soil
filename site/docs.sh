@@ -36,6 +36,7 @@ prelude = [
     "core/highlight.soil",
     "core/doc.soil",
     "site/docs-copy.soil",
+    "site/doc-examples.soil",
 ]
 
 def top_level_units(text):

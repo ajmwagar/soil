@@ -2,6 +2,10 @@
 // Boot every Soil REPL on the page from the wasm evaluator and core prelude.
 import init, { Session } from "./repl/soil_repl_wasm.js";
 
+const STORAGE_SOURCE = "soil-repl-source";
+const STORAGE_HISTORY = "soil-repl-history";
+const HISTORY_LIMIT = 20;
+
 const panels = Array.from(document.querySelectorAll(".repl"));
 if (panels.length) {
   const preludeUrl = new URL("./repl/prelude.soil", import.meta.url);
@@ -41,13 +45,64 @@ if (panels.length) {
     return out + escapeHtml(code.slice(last));
   }
 
+  function encodeSource(text) {
+    const bytes = new TextEncoder().encode(text);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  }
+
+  function decodeSource(value) {
+    const padded = value.replaceAll("-", "+").replaceAll("_", "/");
+    const binary = atob(padded + "=".repeat((4 - padded.length % 4) % 4));
+    return new TextDecoder().decode(Uint8Array.from(binary, (char) => char.charCodeAt(0)));
+  }
+
+  function readStorage(key, fallback) {
+    try {
+      return localStorage.getItem(key) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function writeStorage(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      // Private mode or a file:// page; the REPL still works in memory.
+    }
+  }
+
+  function readHistory() {
+    try {
+      const value = JSON.parse(readStorage(STORAGE_HISTORY, "[]"));
+      return Array.isArray(value) ? value : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function sharedSource() {
+    if (!location.hash.startsWith("#repl=")) return null;
+    try {
+      return decodeSource(location.hash.slice("#repl=".length));
+    } catch {
+      return null;
+    }
+  }
+
   function setup(panel) {
     const input = panel.querySelector(".repl-input");
     const highlighted = panel.querySelector(".repl-highlight code");
+    const highlightBox = panel.querySelector(".repl-highlight");
     const output = panel.querySelector(".repl-output");
     const status = panel.querySelector(".repl-status");
     const runButton = panel.querySelector(".repl-run");
+    const shareButton = panel.querySelector(".repl-share");
     const liveToggle = panel.querySelector(".repl-live-toggle");
+    const past = readHistory();
+    let historyIndex = past.length;
     let session = null;
     let timer = null;
 
@@ -56,10 +111,21 @@ if (panels.length) {
       status.classList.toggle("is-error", error);
     }
 
+    function syncScroll() {
+      highlightBox.scrollTop = input.scrollTop;
+      highlightBox.scrollLeft = input.scrollLeft;
+    }
+
     function paint() {
       highlighted.innerHTML = `${highlight(input.value)}\n`;
-      highlighted.parentElement.scrollTop = input.scrollTop;
-      highlighted.parentElement.scrollLeft = input.scrollLeft;
+      syncScroll();
+    }
+
+    function saveSource() {
+      writeStorage(STORAGE_SOURCE, input.value);
+      if (location.hash.startsWith("#repl=")) {
+        history.replaceState(null, "", `${location.pathname}${location.search}`);
+      }
     }
 
     function run() {
@@ -75,6 +141,9 @@ if (panels.length) {
       const error = result.startsWith("error:");
       output.classList.toggle("is-error", error);
       setStatus(error ? "error" : "ran", error);
+      past.push(source);
+      historyIndex = past.length;
+      writeStorage(STORAGE_HISTORY, JSON.stringify(past.slice(-HISTORY_LIMIT)));
     }
 
     function schedule() {
@@ -83,15 +152,30 @@ if (panels.length) {
       timer = setTimeout(run, 450);
     }
 
+    const shared = sharedSource();
+    const saved = readStorage(STORAGE_SOURCE, "");
+    if (shared !== null) input.value = shared;
+    else if (saved) input.value = saved;
+
     input.addEventListener("input", () => {
       paint();
+      saveSource();
       schedule();
     });
-    input.addEventListener("scroll", paint);
+    input.addEventListener("scroll", syncScroll);
     input.addEventListener("keydown", (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
         event.preventDefault();
         run();
+      }
+      if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+        if (!past.length) return;
+        event.preventDefault();
+        if (event.key === "ArrowUp") historyIndex = Math.max(0, historyIndex - 1);
+        else historyIndex = Math.min(past.length, historyIndex + 1);
+        input.value = historyIndex >= past.length ? "" : past[historyIndex];
+        paint();
+        saveSource();
       }
       if (event.key === "Tab") {
         event.preventDefault();
@@ -100,15 +184,39 @@ if (panels.length) {
         input.value = `${input.value.slice(0, start)}  ${input.value.slice(end)}`;
         input.selectionStart = input.selectionEnd = start + 2;
         paint();
+        saveSource();
         schedule();
       }
     });
     runButton.addEventListener("click", run);
+    if (shareButton) {
+      shareButton.addEventListener("click", async () => {
+        const encoded = encodeSource(input.value);
+        history.replaceState(null, "", `#repl=${encoded}`);
+        try {
+          await navigator.clipboard.writeText(location.href);
+          setStatus("link copied");
+        } catch {
+          setStatus("link updated");
+        }
+      });
+    }
     liveToggle.addEventListener("change", () => {
       if (liveToggle.checked) run();
     });
 
+    document.addEventListener("click", (event) => {
+      const button = event.target instanceof Element ? event.target.closest(".doc-try") : null;
+      if (!button) return;
+      input.value = button.dataset.try || "";
+      panel.scrollIntoView({ behavior: "smooth", block: "center" });
+      input.dispatchEvent(new Event("input"));
+      if (session) run();
+      else setTimeout(run, 800);
+    });
+
     paint();
+    if (shared !== null) panel.scrollIntoView({ block: "center" });
     Promise.all([prelude, wasm])
       .then(([preludeText]) => {
         session = new Session(preludeText);

@@ -41,6 +41,9 @@ jobs:
           SOIL_DOCS: "1"
         run: ./site/build.sh
 
+      - name: Check local links
+        run: node site/check-links.mjs site/dist
+
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
@@ -56,3 +59,10 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
+      - uses: actions/checkout@v4
+
+      - name: Check deployed links
+        run: |
+          sleep 5
+          node site/check-links.mjs --base http://soil-lang.org

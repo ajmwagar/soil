@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#14120f"/>
+  <path d="M0 536h1200v28H0z" fill="#241f19"/>
+  <path d="M0 564h1200v24H0z" fill="#4a422c"/>
+  <path d="M0 588h1200v20H0z" fill="#8a563d"/>
+  <path d="M0 608h1200v22H0z" fill="#0f0d0b"/>
+  <text x="86" y="190" font-family="Georgia, 'Times New Roman', serif" font-size="120" font-weight="700" letter-spacing="-6" fill="#f1ece3">Soil</text>
+  <text x="90" y="270" font-family="ui-sans-serif, system-ui, sans-serif" font-size="38" fill="#b8afa1">A Lisp for WebAssembly.</text>
+  <text x="92" y="360" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="24" fill="#d77b52">(defun view (state)</text>
+  <text x="92" y="398" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="24" fill="#f1ece3">  (el "main" nil</text>
+  <text x="92" y="436" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="24" fill="#f1ece3">    (list (txt "Hello from Soil"))))</text>
+  <text x="1110" y="600" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="20" fill="#8b8173">soil-lang.org</text>
+</svg>
