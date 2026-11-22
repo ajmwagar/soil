@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use soil_lang::sexp::Value;
-use soil_lang::{FakeHost, Host, HostChain, NativeHost, Runtime, SoilRecordsHost, SystemTimeHost};
+use soil_lang::{FakeHost, Host, NativeHost, Runtime};
 
 fn run() -> Result<()> {
     let mut files: Vec<PathBuf> = Vec::new();
@@ -183,14 +183,8 @@ fn run() -> Result<()> {
             Box::new(native)
         }
         (Some(_), None) => bail!("--workspace-root requires --records-root"),
-        (None, Some(records)) => Box::new(HostChain::new(vec![
-            Box::new(SystemTimeHost),
-            Box::new(SoilRecordsHost::open(records, book)?),
-        ])),
-        (None, None) => Box::new(HostChain::new(vec![
-            Box::new(SystemTimeHost),
-            Box::new(FakeHost::new()),
-        ])),
+        (None, Some(records)) => Box::new(NativeHost::open(".", records, book)?),
+        (None, None) => Box::new(FakeHost::new()),
     };
     let mut runtime = Runtime::new(host);
     runtime.set_args(program_args);
