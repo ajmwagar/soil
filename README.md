@@ -1,6 +1,6 @@
 # Soil
 
-**A Lisp language for WebAssembly.**
+**A Lisp for WebAssembly.**
 
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![language](https://img.shields.io/badge/language-Soil-c8f169.svg)](compiler/core.soil)
