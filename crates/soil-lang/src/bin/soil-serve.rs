@@ -166,6 +166,10 @@ fn serve(stream: TcpStream, config: &Config) -> Result<()> {
         && let Some(handle) = items.get(1).and_then(Value::as_f64)
     {
         let page = items.get(2).and_then(Value::as_f64).unwrap_or(0.0) as i64;
+        let conversation = match items.get(3) {
+            Some(Value::String(conversation)) => conversation.clone(),
+            _ => String::new(),
+        };
         let mut last_head = runtime
             .call("server/head", &[])
             .ok()
@@ -193,7 +197,11 @@ fn serve(stream: TcpStream, config: &Config) -> Result<()> {
             thread::sleep(std::time::Duration::from_millis(80));
             if let Err(error) = runtime.call(
                 "server/stream-tick",
-                &[Value::Int(handle as i64), Value::Int(page)],
+                &[
+                    Value::Int(handle as i64),
+                    Value::Int(page),
+                    Value::String(conversation.clone()),
+                ],
             ) {
                 eprintln!("stream-tick: {error:#}");
                 break;
