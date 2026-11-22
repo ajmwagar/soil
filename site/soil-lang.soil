@@ -57,7 +57,7 @@
         (el "details" (list (attr :class "work-code"))
           (list
             (el "summary" nil (list (txt "Source")))
-            (code-block (example-code-for slug example-code))))))))
+            (el "pre" (list (attr :class "code")) (list (txt (example-code-for slug example-code))))))))))
 
 (defun view (state)
   (el "div" (list (attr :class "site") (attr :id "top"))
