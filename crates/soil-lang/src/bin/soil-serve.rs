@@ -151,6 +151,7 @@ fn serve(stream: TcpStream, config: &Config) -> Result<()> {
         config
             .soil_root
             .join("crates/soil-lang/bindings/soil-vfs.soil"),
+        config.harness.join("ui/markdown.soil"),
         config.harness.join("ui/components.soil"),
         config.harness.join("themes/theseus-dark.soil"),
         config.harness.join("src/ui.soil"),
