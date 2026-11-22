@@ -181,3 +181,7 @@ return-area loading
 
 Resources, nested records, options/results, and `soil:records`/`soil:vfs`/
 `soil:inference` are still ahead.
+
+```sh
+scripts/test-component-list.sh     # list<u32> export: [10, 20, 30]
+```

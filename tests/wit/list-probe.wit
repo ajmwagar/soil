@@ -1,0 +1,5 @@
+package test:lists@0.1.0;
+
+world probe {
+  export run: func() -> list<u32>;
+}

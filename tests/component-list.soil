@@ -1,0 +1,12 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Canonical ABI list export: [10, 20, 30].
+(defun-i32 run ()
+  (begin
+    (i32.store (i32.const 512) (i32.const 2048))
+    (i32.store (i32.add (i32.const 512) (i32.const 4)) (i32.const 3))
+    (i32.store (i32.const 2048) (i32.const 10))
+    (i32.store (i32.const 2052) (i32.const 20))
+    (i32.store (i32.const 2056) (i32.const 30))
+    (i32.const 512)))
+
+(defun-i32-void run_post (ptr))
