@@ -176,7 +176,7 @@ impl NamespacedRecordsHost {
         records::Entry {
             key: records::Key {
                 collection: namespace.name.clone(),
-                id: Self::unscoped(&namespace, &record.entity_id),
+                id: Self::unscoped(namespace, &record.entity_id),
             },
             schema: record.schema_id,
             revision: record.updated_hlc,
@@ -258,6 +258,18 @@ impl records::Host for NamespacedRecordsHost {
             }
         }
         Err(records::Error::OverBudget)
+    }
+
+    fn query(&mut self, spec: records::QuerySpec) -> Result<records::Page, records::Error> {
+        crate::records_host::query(self, spec)
+    }
+
+    fn aggregate(
+        &mut self,
+        collection: String,
+        spec: records::AggregateSpec,
+    ) -> Result<Vec<records::AggregateGroup>, records::Error> {
+        crate::records_host::aggregate(self, collection, spec)
     }
 
     fn scan_packed(
@@ -450,7 +462,7 @@ impl records::Host for NamespacedRecordsHost {
         Ok(records::Page {
             entries: entries
                 .into_iter()
-                .map(|record| Self::entry(&namespace, record))
+                .map(|record| Self::entry(namespace, record))
                 .collect(),
             next,
         })
