@@ -188,73 +188,11 @@
           (el "div" (list (attr :class "footer-bottom"))
             (list
               (el "div" nil (list (txt (copy :footer :left))))
-              (el "div" nil (list (txt (copy :footer :license))))))))
-      (el "section" (list (attr :class "strata"))
+              (el "div" nil (list (txt (copy :footer :license))))
+              (a "#top" "" (list (txt (copy :footer :back-to-top))))))))
+      (el "section" (list (attr :class "strata") (attr :aria-hidden "true"))
         (list
-          (el "div" (list (attr :class "stratum stratum-topsoil"))
-            (list
-              (el "div" (list (attr :class "stratum-inner"))
-                (list
-                  (el "div" nil
-                    (list
-                      (el "p" (list (attr :class "stratum-label")) (list (txt (copy :footer :strata-label))))
-                      (el "h3" nil (list (txt (copy :footer :strata-topsoil))))
-                      (el "p" nil (list (txt (copy :footer :strata-topsoil-body))))))
-                  (el "div" (list (attr :class "stratum-links"))
-                    (list
-                      (a "https://github.com/ajmwagar/soil/tree/master/compiler" "" (list (txt (copy :footer :compiler-label))))
-                      (a "https://github.com/ajmwagar/soil/tree/master/core" "" (list (txt (copy :footer :core-label))))
-                      (a "https://github.com/ajmwagar/soil/tree/master/std" "" (list (txt (copy :footer :std-label))))))))))
-          (el "div" (list (attr :class "stratum stratum-loam"))
-            (list
-              (el "div" (list (attr :class "stratum-inner"))
-                (list
-                  (el "div" nil
-                    (list
-                      (el "h3" nil (list (txt (copy :footer :strata-loam))))
-                      (el "p" nil (list (txt (copy :footer :strata-loam-body))))))
-                  (el "div" (list (attr :class "stratum-links"))
-                    (list
-                      (a "https://github.com/mycelium-linux/loam" "" (list (txt (copy :footer :loam-label))))
-                      (a "https://wasmtime.dev/" "" (list (txt (copy :footer :wasmtime-label))))
-                      (a "https://wgpu.rs/" "" (list (txt (copy :footer :wgpu-label))))))))))
-          (el "div" (list (attr :class "stratum stratum-clay"))
-            (list
-              (el "div" (list (attr :class "stratum-inner"))
-                (list
-                  (el "div" nil
-                    (list
-                      (el "h3" nil (list (txt (copy :footer :strata-clay))))
-                      (el "p" nil (list (txt (copy :footer :strata-clay-body))))))
-                  (el "div" (list (attr :class "stratum-links"))
-                    (list
-                      (a "getting-started.html" "" (list (txt (copy :nav :start))))
-                      (a "https://github.com/ajmwagar/soil/tree/master/site" "" (list (txt (copy :footer :site-source-label))))
-                      (a "https://github.com/ajmwagar/soil/tree/master/examples" "" (list (txt (copy :footer :examples-label))))))))))
-          (el "div" (list (attr :class "stratum stratum-sand"))
-            (list
-              (el "div" (list (attr :class "stratum-inner"))
-                (list
-                  (el "div" nil
-                    (list
-                      (el "h3" nil (list (txt (copy :footer :strata-sand))))
-                      (el "p" nil (list (txt (copy :footer :strata-sand-body))))))
-                  (el "div" (list (attr :class "stratum-links"))
-                    (list
-                      (a "https://github.com/ajmwagar/soil" "" (list (txt (copy :footer :github-label))))
-                      (a "https://github.com/ajmwagar/soil/blob/master/LICENSE-APACHE" "" (list (txt (copy :footer :license-label))))
-                      (a "https://fpl.dev/" "" (list (txt (copy :footer :sponsor))))))))))
-          (el "div" (list (attr :class "stratum stratum-bedrock"))
-            (list
-              (el "div" (list (attr :class "stratum-inner"))
-                (list
-                  (el "div" nil
-                    (list
-                      (el "h3" nil (list (txt (copy :footer :strata-bedrock))))
-                      (el "p" nil (list (txt (copy :footer :strata-bedrock-body))))))
-                  (el "div" (list (attr :class "stratum-links"))
-                    (list
-                      (a "#top" "" (list (txt (copy :footer :back-to-top)))))))))))))))
+          (el "img" (list (attr :src "strata.svg") (attr :alt "") (attr :class "strata-art")) nil))))))
 
 (defun styles ()
   (str
@@ -273,11 +211,6 @@
     "  --color-accent: #d77b52;\n"
     "  --color-accent-ink: #1d120d;\n"
     "  --color-moss: #a9b88a;\n"
-    "  --stratum-topsoil: #241f19;\n"
-    "  --stratum-loam: #1e1a16;\n"
-    "  --stratum-clay: #1a1713;\n"
-    "  --stratum-sand: #16130f;\n"
-    "  --stratum-bedrock: #0f0d0b;\n"
     "  --tok-comment: #82786b;\n"
     "  --tok-string: #b7c99a;\n"
     "  --tok-keyword: #d9a06b;\n"
@@ -382,19 +315,8 @@
     ".footer a:hover { color: var(--color-ink); }\n"
     ".sponsor { color: var(--color-muted); text-decoration: none; border-bottom: 1px solid var(--color-line); }\n"
     ".sponsor:hover { color: var(--color-accent); border-bottom-color: var(--color-accent); }\n"
-    ".strata { border-top: 1px solid var(--color-line); }\n"
-    ".stratum { min-height: 32vh; display: flex; align-items: center; border-bottom: 1px solid var(--color-line); background: var(--stratum-topsoil); }\n"
-    ".stratum-loam { background: var(--stratum-loam); }\n"
-    ".stratum-clay { background: var(--stratum-clay); }\n"
-    ".stratum-sand { background: var(--stratum-sand); }\n"
-    ".stratum-bedrock { min-height: 38vh; background: var(--stratum-bedrock); }\n"
-    ".stratum-inner { width: 100%; max-width: 1120px; margin: 0 auto; padding: 48px 28px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 24px; }\n"
-    ".stratum-label { margin: 0 0 4px; color: var(--color-dim); font-family: var(--font-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }\n"
-    ".stratum h3 { margin: 4px 0 6px; font-family: var(--font-display); font-size: clamp(30px, 5vw, 56px); letter-spacing: -.04em; overflow-wrap: anywhere; }\n"
-    ".stratum p { margin: 0; color: var(--color-muted); }\n"
-    ".stratum-links { display: flex; flex-wrap: wrap; gap: 8px 18px; }\n"
-    ".stratum-links a { color: var(--color-muted); text-decoration: none; white-space: nowrap; border-bottom: 1px solid var(--color-line); }\n"
-    ".stratum-links a:hover { color: var(--color-accent); border-bottom-color: var(--color-accent); }\n"
+    ".strata { line-height: 0; background: #0f0d0b; border-top: 1px solid var(--color-line); }\n"
+    ".strata-art { display: block; width: 100%; height: clamp(560px, 105vh, 1000px); object-fit: cover; object-position: center top; }\n"
     "@media (max-width: 860px) {\n"
     "  .hero, .library, .works { grid-template-columns: minmax(0, 1fr); }\n"
     "  .hero { gap: 32px; }\n"
@@ -411,6 +333,5 @@
     "  .closing { padding: 24px 18px; }\n"
     "  .footer { flex-direction: column; align-items: flex-start; }\n"
     "  .footer-grid { grid-template-columns: minmax(0, 1fr); }\n"
-    "  .stratum { min-height: 28vh; }\n"
-    "  .stratum-inner { padding: 40px 18px; }\n"
+    "  .strata-art { height: clamp(520px, 110vh, 900px); }\n"
     "}\n"))

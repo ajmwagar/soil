@@ -138,17 +138,6 @@
         (list :github-label "GitHub")
         (list :site-source-label "Site source")
         (list :license-label "License")
-        (list :strata-label "Dig")
-        (list :strata-topsoil "Topsoil")
-        (list :strata-loam "Loam")
-        (list :strata-clay "Clay")
-        (list :strata-sand "Sand")
-        (list :strata-bedrock "Bedrock")
-        (list :strata-topsoil-body "The language, the compiler, and the library.")
-        (list :strata-loam-body "The runtime, the engine, and the GPU boundary.")
-        (list :strata-clay-body "The site, the examples, and the source.")
-        (list :strata-sand-body "The parts that keep it honest.")
-        (list :strata-bedrock-body "Nothing below but the license.")
         (list :back-to-top "Back to top")))))
 
 ;;; Read one section or one key inside a section from `site-copy`.

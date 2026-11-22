@@ -17,6 +17,7 @@ fi
 mkdir -p site/dist/examples
 python3 site/gen-examples.py
 cp site/loam.svg site/dist/loam.svg
+cp site/strata.svg site/dist/strata.svg
 
 "$BIN" \
   core/prelude.soil \

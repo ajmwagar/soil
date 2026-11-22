@@ -6,7 +6,7 @@
 // Builds with site/build.sh, watches Soil sources, and reloads open pages after
 // a successful build. No npm dependencies. No Rust in this checkout.
 
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -25,6 +25,9 @@ let pending = false;
 const watchDirs = ["site", "core", "std", "examples/ui"]
   .map((dir) => path.join(root, dir))
   .filter((dir) => fs.existsSync(dir));
+const generated = new Set([
+  path.join(root, "site", "examples-code.soil"),
+]);
 
 function broadcast(event, data = "") {
   for (const client of clients) {
@@ -38,27 +41,34 @@ function build() {
     return;
   }
   building = true;
-  const result = spawnSync("./site/build.sh", {
+  let stdout = "";
+  let stderr = "";
+  const child = spawn("./site/build.sh", {
     cwd: root,
-    encoding: "utf8",
     env: { ...process.env, SOIL_LANG: bin },
   });
-  building = false;
 
-  if (result.status === 0) {
-    process.stdout.write(result.stdout);
-    if (result.stderr.trim()) process.stderr.write(result.stderr);
-    broadcast("reload");
-  } else {
-    const error = `${result.stdout}${result.stderr}`.trim() || "site build failed";
-    console.error(error);
-    broadcast("build-error", error);
-  }
-
-  if (pending) {
-    pending = false;
-    build();
-  }
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+    process.stdout.write(chunk);
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+    process.stderr.write(chunk);
+  });
+  child.on("close", (code) => {
+    building = false;
+    if (code === 0) {
+      broadcast("reload");
+    } else {
+      const error = `${stdout}${stderr}`.trim() || "site build failed";
+      broadcast("build-error", error);
+    }
+    if (pending) {
+      pending = false;
+      build();
+    }
+  });
 }
 
 function scheduleBuild() {
@@ -74,6 +84,7 @@ for (const dir of watchDirs) {
     }
     const changed = path.resolve(dir, filename);
     if (changed === dist || changed.startsWith(`${dist}${path.sep}`)) return;
+    if (generated.has(changed)) return;
     if (filename.endsWith(".soil") || filename.endsWith(".md")) scheduleBuild();
   });
 }
