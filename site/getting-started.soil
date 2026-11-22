@@ -8,13 +8,13 @@
   (str
     (styles)
     ".guide { max-width: 820px; margin: 0 auto; padding: clamp(44px, 7vw, 88px) 28px 24px; }\n"
-    ".guide h1 { margin: 0 0 16px; font-size: clamp(38px, 6vw, 64px); }\n"
-    ".guide h2 { margin: 42px 0 12px; font-size: 24px; letter-spacing: -.02em; }\n"
-    ".guide p, .guide li { color: var(--muted); max-width: 62ch; }\n"
+    ".guide h1 { margin: 0 0 16px; font-family: var(--font-display); font-size: clamp(38px, 6vw, 64px); letter-spacing: -.04em; }\n"
+    ".guide h2 { margin: 42px 0 12px; font-family: var(--font-display); font-size: 26px; letter-spacing: -.02em; }\n"
+    ".guide p, .guide li { color: var(--color-muted); max-width: 62ch; }\n"
     ".guide .code { margin: 16px 0; }\n"
     ".guide .actions { margin-top: 18px; }\n"
-    ".guide .next { margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--line); }\n"
-    ".guide .next a { color: var(--ink); }\n"
+    ".guide .next { margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--color-line); }\n"
+    ".guide .next a { color: var(--color-ink); }\n"
     ".guide .next li { margin: 6px 0; }\n"))
 
 (defun guide-header ()
@@ -22,16 +22,13 @@
     (list
       (el "div" (list (attr :class "nav-inner"))
         (list
-          (a "/" "logo"
-            (list
-              (el "span" (list (attr :class "logo-mark")) (list (txt "S")))
-              (el "span" (list (attr :class "logo-word")) (list (txt "Soil")))))
+          (a "/" "wordmark" (list (txt "Soil")))
           (el "nav" (list (attr :class "nav-links"))
             (list
               (a "/" "" (list (txt (copy :guide :home-label))))
               (a "/#examples" "" (list (txt (copy :nav :examples))))
               (a "docs/" "" (list (txt (copy :nav :api))))
-          (a "https://github.com/ajmwagar/soil" "nav-cta"
+          (a "https://github.com/ajmwagar/soil" "nav-source"
             (list (txt (copy :nav :github)))))))))))
 
 (defun guide-footer ()
