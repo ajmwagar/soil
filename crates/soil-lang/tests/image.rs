@@ -76,3 +76,38 @@ fn image_append_unattached_definition_to_vfs() {
     assert!(file.source.contains("(defun scratch"));
     assert!(runtime.unattached_definitions().is_empty());
 }
+
+#[test]
+fn image_detects_a_vfs_change_and_reloads_it() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let records = root.path().join("records");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&records).unwrap();
+
+    let mut host = NativeHost::open(&workspace, &records, "soil").unwrap();
+    host.write_source("lib/hello.soil", "(defun greet () \"first\")\n")
+        .unwrap();
+    let mut runtime = Runtime::new(Box::new(host));
+    runtime.load_file(prelude()).unwrap();
+    runtime.clear_provenance();
+    runtime.load_vfs("lib/hello.soil").unwrap();
+    let before = runtime.source_hash("lib/hello.soil").unwrap();
+    assert_eq!(
+        runtime.call("greet", &[]).unwrap(),
+        Value::String("first".into())
+    );
+
+    let mut writer = NativeHost::open(&workspace, &records, "soil").unwrap();
+    writer
+        .write_source("lib/hello.soil", "(defun greet () \"second\")\n")
+        .unwrap();
+    let after = runtime.source_hash("lib/hello.soil").unwrap();
+    assert_ne!(before, after);
+
+    runtime.load_vfs("lib/hello.soil").unwrap();
+    assert_eq!(
+        runtime.call("greet", &[]).unwrap(),
+        Value::String("second".into())
+    );
+}
