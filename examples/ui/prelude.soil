@@ -1,7 +1,7 @@
 ; SPDX-License-Identifier: MIT OR Apache-2.0
 ; Shared UI prelude for the examples: action decoding and the base theme.
 ;
-; The host loads this after stdlib/prelude.soil. Examples only define their
+; The host loads this after core/prelude.soil. Examples only define their
 ; own state, update, view, and any additional CSS.
 
 (defun action-decode (action)

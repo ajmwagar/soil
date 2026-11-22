@@ -1,0 +1,7 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Host time helpers over soil:time.
+
+;;; Return the host wall clock as Unix milliseconds.
+(defun now-ms ()
+  (field (value (soil:time/wall-clock)) :unix-ms))
+

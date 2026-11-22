@@ -17,18 +17,18 @@ fi
 mkdir -p site/dist/examples
 
 "$BIN" \
-  stdlib/prelude.soil \
-  stdlib/ui.soil \
-  stdlib/highlight.soil \
+  core/prelude.soil \
+  core/ui.soil \
+  core/highlight.soil \
   site/copy.soil \
   site/soil-lang.soil \
   site/build.soil \
   > site/dist/index.html
 
 "$BIN" \
-  stdlib/prelude.soil \
-  stdlib/ui.soil \
-  stdlib/highlight.soil \
+  core/prelude.soil \
+  core/ui.soil \
+  core/highlight.soil \
   site/copy.soil \
   site/soil-lang.soil \
   site/getting-started.soil \
@@ -36,9 +36,9 @@ mkdir -p site/dist/examples
 
 for slug in counter todo calculator tictactoe tabs form; do
   "$BIN" \
-    stdlib/prelude.soil \
-    stdlib/ui.soil \
-    stdlib/highlight.soil \
+    core/prelude.soil \
+    core/ui.soil \
+    core/highlight.soil \
     examples/ui/prelude.soil \
     "examples/ui/$slug.soil" \
     "site/pages/$slug.soil" \

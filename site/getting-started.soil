@@ -75,7 +75,7 @@
             (list
               (a "/#examples" "btn primary"
                 (list (txt (copy :guide :examples-site-label))))
-              (a "https://github.com/ajmwagar/soil/tree/master/examples/stdlib" "btn"
+              (a "https://github.com/ajmwagar/soil/tree/master/examples" "btn"
                 (list (txt (copy :guide :examples-repo-label))))))
 
           (el "section" (list (attr :class "next"))

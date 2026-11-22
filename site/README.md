@@ -24,5 +24,5 @@ SOIL_LANG=/path/to/soil-lang ./site/serve.sh
 # after the first build: SKIP_BUILD=1 ./site/serve.sh
 ```
 
-The generated API pages come from the `;;;` comments in `stdlib/`. The page
+The generated API pages come from the `;;;` comments in `core/` and `std/`. The page
 catalog — order, titles, summaries — lives in `site/docs-copy.soil`.
