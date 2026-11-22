@@ -1,0 +1,43 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; LSP workspace-index tests with Soil-only fake host providers.
+
+(defun fake/source (path)
+  (cond
+    ((= path "a.soil") "(defun foo (x) (+ x 1))\n")
+    ((= path "b.soil") "(defun bar (y) (+ y 1))\n")
+    (else "(defun baz () 0)\n")))
+
+(defun soil:vfs/read (path offset length)
+  (list 'ok
+    (list
+      (list :offset 0)
+      (list :data (string->bytes (fake/source path)))
+      (list :eof #t)
+      (list :content-id path))))
+
+(defun fake/hit (path)
+  (list
+    (list :path path)
+    (list :content-id path)
+    (list :score 1)
+    (list :snippet nil)
+    (list :matched-by :path)))
+
+(defun soil:index/search (query)
+  (list 'ok
+    (list
+      (list :hits (list (fake/hit "a.soil") (fake/hit "b.soil")))
+      (list :next nil)
+      (list :generation 1))))
+
+(defun test/lsp-workspace-symbols ()
+  (let ((symbols (workspace/symbols "foo" 10)))
+    (and
+      (= (length symbols) 2)
+      (= (field (first symbols) :name) "foo"))))
+
+(defun test/lsp-workspace-definition ()
+  (let ((found (workspace/definition "foo")))
+    (and
+      (not (nil? found))
+      (= (first found) "a.soil"))))

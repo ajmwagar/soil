@@ -60,3 +60,6 @@ scripts/test-lsp.sh
 
 All LSP tests run under the Wasmtime runner. The old native interpreter is not
 required.
+
+Workspace indexing is tested without a host by `scripts/test-lsp-workspace.sh`,
+which provides Soil-only fake `soil:index` and `soil:vfs` providers.

@@ -46,7 +46,7 @@
   (let ((parsed (field doc :parsed)))
     (if (nil? parsed)
         nil
-        (map-with (lambda (form) (lsp/form-symbol form (field doc :text)))
+        (map-with (lambda (form text) (lsp/form-symbol form text))
           (field doc :text)
           (filter 'lsp/definition-form? (field parsed :forms))))))
 
