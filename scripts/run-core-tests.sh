@@ -36,6 +36,7 @@ STD=(
   std/soil/events.soil
   std/loam/edit.soil
   std/inference/ooda.soil
+  std/inference/ooda-provider.soil
 )
 FIXTURES=(
   boot/boot.soil
@@ -69,6 +70,7 @@ TESTS=(
   tests/safe-eval.soil
   tests/edit-lsp.soil
   tests/inference/ooda.soil
+  tests/inference/provider.soil
   tests/vitals.soil
 )
 

@@ -1,0 +1,17 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; OODA provider behind the semantic soil:inference shape.
+
+(defun inference/complete-with (fetch url credential request)
+  (ooda/complete-response-with fetch url
+    (field request :model)
+    (field request :messages)
+    (field request :max-output-tokens)
+    (field request :temperature)
+    credential))
+
+(defun inference/state (provider model)
+  (list 'ok
+    (list
+      (list :ready #t)
+      (list :provider provider)
+      (list :model model))))

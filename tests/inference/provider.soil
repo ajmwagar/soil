@@ -1,0 +1,32 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+
+(defun fake/provider-fetch (request)
+  (list 'ok
+    (list
+      (list :status 200)
+      (list :body (string->bytes
+                    "{\"model\":\"fpl/decide\",\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"hello\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}")))))
+
+(defun test/inference-complete ()
+  (let ((request
+          (list
+            (list :model "fpl/decide")
+            (list :messages
+              (list
+                (list (list :role 'system) (list :content "system"))
+                (list (list :role 'user) (list :content "user"))))
+            (list :max-output-tokens 64)
+            (list :temperature 0.2)))
+        (result
+          (inference/complete-with (quote fake/provider-fetch)
+            "https://ai.example/v1/chat/completions" nil request)))
+    (and
+      (ok? result)
+      (= (field (field (value result) :message) :content) "hello")
+      (= (field (field (value result) :usage) :total-tokens) 4)
+      (= (field (value result) :finish-reason) "stop"))))
+
+(defun test/inference-state ()
+  (let ((state (inference/state "ooda" "fpl/decide")))
+    (and (ok? state)
+         (= (field (value state) :provider) "ooda"))))

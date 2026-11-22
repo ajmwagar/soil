@@ -1,0 +1,64 @@
+// Host-mediated language-model inference.
+//
+// The host owns provider selection, endpoint discovery, authentication, model
+// aliases, budgets, and transport. A Spore names a model, messages, and tools.
+// Credentials and provider routes never cross this boundary.
+package soil:inference@0.4.0;
+
+interface inference {
+  enum role { system, user, assistant, tool }
+
+  enum error {
+    denied,
+    not-ready,
+    over-budget,
+    invalid,
+    unavailable,
+    auth,
+    io,
+    unsupported,
+  }
+
+  record usage {
+    prompt-tokens: u32,
+    completion-tokens: u32,
+    total-tokens: u32,
+  }
+
+  record message {
+    role: role,
+    content: option<string>,
+    name: option<string>,
+  }
+
+  record request {
+    model: string,
+    messages: list<message>,
+    max-output-tokens: option<u32>,
+    temperature: option<f32>,
+  }
+
+  record response {
+    model: string,
+    message: message,
+    finish-reason: option<string>,
+    usage: option<usage>,
+  }
+
+  record inference-state {
+    ready: bool,
+    provider: string,
+    model: string,
+  }
+
+  complete: func(request: request) -> result<response, error>;
+  state: func() -> result<inference-state, error>;
+}
+
+world guest {
+  import inference;
+}
+
+world provider {
+  export inference;
+}
