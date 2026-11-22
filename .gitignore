@@ -32,3 +32,6 @@ target/
 # Checked-in cpal threaded process fixture.
 !crates/soil-process/fixtures/cpal-tone.wasm
 
+
+# Local frozen binaries (cargo freeze)
+.bin/
