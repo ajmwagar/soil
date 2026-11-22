@@ -107,7 +107,7 @@
                   nil)))
           (list
             (list :ok #t)
-            (list :count (length actions))
+            (list :count (if (nil? actions) 0 (length actions)))
             (list :actions actions)))
         (list
           (list :ok #f)
