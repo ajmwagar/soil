@@ -63,6 +63,7 @@ enum Tail {
 pub struct Runtime {
     functions: HashMap<String, Function>,
     macros: HashMap<String, Function>,
+    constants: HashMap<String, Value>,
     origins: HashMap<String, Origin>,
     forms: HashMap<String, Value>,
     closures: HashMap<u64, Closure>,
@@ -154,6 +155,7 @@ impl Runtime {
         Self {
             functions: HashMap::new(),
             macros: HashMap::new(),
+            constants: HashMap::new(),
             origins: HashMap::new(),
             forms: HashMap::new(),
             closures: HashMap::new(),
@@ -223,6 +225,26 @@ impl Runtime {
                     } else {
                         self.macros.insert(name.clone(), function);
                     }
+                    self.forms.insert(name.clone(), form.value.clone());
+                    if let Some(path) = origin {
+                        self.origins.insert(
+                            name,
+                            Origin {
+                                path: path.to_string(),
+                                start: form.span.start,
+                                end: form.span.end,
+                                source_hash: source_hash.clone(),
+                                form: form.value.clone(),
+                            },
+                        );
+                    }
+                    continue;
+                }
+                if head == Some("defconst") {
+                    let (name, value) = parse_defconst(list)?;
+                    let mut env = HashMap::new();
+                    let value = self.eval(&value, &mut env)?;
+                    self.constants.insert(name.clone(), value);
                     self.forms.insert(name.clone(), form.value.clone());
                     if let Some(path) = origin {
                         self.origins.insert(
@@ -735,6 +757,7 @@ impl Runtime {
             Value::Symbol(name) => env
                 .get(name)
                 .cloned()
+                .or_else(|| self.constants.get(name).cloned())
                 .ok_or_else(|| anyhow!("unbound symbol `{name}`")),
             Value::List(items) => {
                 let head = items
@@ -1620,6 +1643,22 @@ fn require<'a>(items: &'a [Value], index: usize, form: &str) -> Result<&'a Value
     items
         .get(index)
         .ok_or_else(|| anyhow!("{form} needs argument {index}"))
+}
+
+fn parse_defconst(list: &[Value]) -> Result<(String, Value)> {
+    let name = list
+        .get(1)
+        .and_then(Value::as_symbol)
+        .ok_or_else(|| anyhow!("defconst needs a name"))?
+        .to_string();
+    let value = list
+        .get(2)
+        .cloned()
+        .ok_or_else(|| anyhow!("defconst needs a value"))?;
+    if list.len() != 3 {
+        bail!("defconst takes exactly a name and a value");
+    }
+    Ok((name, value))
 }
 
 fn parse_defun(list: &[Value]) -> Result<(String, Function)> {
