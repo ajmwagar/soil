@@ -9,3 +9,6 @@
 
 (defun fs/write (path text)
   (host-call "wasi:filesystem" "write" (list path (string->bytes text))))
+
+(defun fs/list (path)
+  (host-call "wasi:filesystem" "list" (list path)))

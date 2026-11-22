@@ -208,3 +208,10 @@ resource handles
 
 Still ahead: variants carrying strings/lists in all positions, flags, nested
 records, and the real `soil:records` / `soil:vfs` / `soil:inference` worlds.
+
+
+## Core import guard
+
+`tend check-core` walks `core/`, parses each `.soil` file, and rejects import
+forms or `wasi:`/`soil:` symbols. The check is Soil; the shell wrapper only
+invokes the Wasmtime runner.

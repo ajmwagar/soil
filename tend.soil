@@ -7,4 +7,8 @@
   (command "witgen"
     (summary "Generate Soil bindings from WIT JSON")
     (run "tools/witgen/main.soil" "main")
-    (usage "tend witgen <wit-json> <package>")))
+    (usage "tend witgen <wit-json> <package>"))
+  (command "check-core"
+    (summary "Fail if core imports host capabilities")
+    (run "tools/tend/check-core/main.soil" "main")
+    (usage "tend check-core")))

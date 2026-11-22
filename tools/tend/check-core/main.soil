@@ -1,0 +1,77 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Core import policy, checked from the s-expression tree.
+;
+; This is Soil, not shell. Comments and strings are already gone by the reader,
+; so only actual symbols and forms can fail the check.
+
+(defun core-check/ok () (list 'ok #t))
+(defun core-check/err (message) (list 'err message))
+
+(defun core-check/host-symbol? (value)
+  (and (symbol? value)
+       (or (string-contains? (str value) "wasi:")
+           (string-contains? (str value) "soil:"))))
+
+(defun core-check/values (values)
+  (cond
+    ((nil? values) (core-check/ok))
+    (else
+      (let ((result (core-check/value (first values))))
+        (if (ok? result)
+            (core-check/values (rest values))
+            result)))))
+
+(defun core-check/value (value)
+  (cond
+    ((core-check/host-symbol? value)
+      (core-check/err (str "host symbol " value)))
+    ((atom value) (core-check/ok))
+    (else
+      (let ((head (str (first value))))
+        (cond
+          ((= head "import")
+            (core-check/err (str "import form " value)))
+          ((= head "quote") (core-check/ok))
+          (else (core-check/values value)))))))
+
+(defun core-check/source (source)
+  (core-check/values (read source)))
+
+(defun core-check/scan (path)
+  (let ((source (fs/read path)))
+    (if (ok? source)
+        (let ((result (core-check/source (value source))))
+          (if (ok? result)
+              result
+              (core-check/err (str path ": " (value result)))))
+        (core-check/err (str path ": " source)))))
+
+(defun core-check/entry (entry)
+  (if (field entry :dir)
+      (core-check/walk (field entry :path))
+      (if (string-contains? (field entry :name) ".soil")
+          (core-check/scan (field entry :path))
+          (core-check/ok))))
+
+(defun core-check/entries (entries)
+  (cond
+    ((nil? entries) (core-check/ok))
+    (else
+      (let ((result (core-check/entry (first entries))))
+        (if (ok? result)
+            (core-check/entries (rest entries))
+            result)))))
+
+(defun core-check/walk (path)
+  (let ((entries (fs/list path)))
+    (if (ok? entries)
+        (core-check/entries (value entries))
+        (core-check/err (str path ": " entries)))))
+
+(defun main ()
+  (let ((result (core-check/walk "core")))
+    (if (ok? result)
+        (println "core: import-free")
+        (begin
+          (println (value result))
+          (exit 1)))))
