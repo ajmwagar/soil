@@ -1,0 +1,10 @@
+(tend
+  (version 1)
+  (members "core/*" "std/*" "tools/*" "tests/*")
+  (test "core"
+    (include "tests/*.soil")
+    (prelude "core/prelude.soil"))
+  (command "witgen"
+    (summary "Generate Soil bindings from WIT JSON")
+    (run "tools/witgen/main.soil" "main")
+    (usage "tend witgen <wit-json> <package>")))

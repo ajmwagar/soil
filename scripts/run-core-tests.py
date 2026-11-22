@@ -53,6 +53,7 @@ TESTS = [
         "ui", "url",
     ]],
     "tests/tend.soil",
+    "tests/witgen.soil",
     "tests/lsp.soil",
     "tests/repl.soil",
     "tests/image.soil",
@@ -74,6 +75,8 @@ def load_files(test_file: str) -> list[str]:
         )
     if test_file == "tests/selfhost.soil":
         files += ["compiler/core.soil"]
+    if test_file == "tests/witgen.soil":
+        files += ["tools/witgen/main.soil"]
     return files
 
 
