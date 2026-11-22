@@ -163,9 +163,13 @@ fn serve(stream: TcpStream, config: &Config) -> Result<()> {
         && items.first().and_then(Value::as_symbol) == Some("stream")
         && let Some(handle) = items.get(1).and_then(Value::as_f64)
     {
+        let page = items.get(2).and_then(Value::as_f64).unwrap_or(0.0) as i64;
         loop {
             thread::sleep(std::time::Duration::from_millis(500));
-            if let Err(error) = runtime.call("server/stream-tick", &[Value::Int(handle as i64)]) {
+            if let Err(error) = runtime.call(
+                "server/stream-tick",
+                &[Value::Int(handle as i64), Value::Int(page)],
+            ) {
                 eprintln!("stream-tick: {error:#}");
                 break;
             }
