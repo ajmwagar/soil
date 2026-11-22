@@ -14,6 +14,17 @@ if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
   exit 1
 fi
 
+run_soil() {
+  output=$(mktemp)
+  "$BIN" "$@" > "$output"
+  python3 - "$output" <<'PY'
+import sys
+text = open(sys.argv[1]).read()
+sys.stdout.write(text[:-4] if text.endswith("nil\n") else text)
+PY
+  rm -f "$output"
+}
+
 mkdir -p site/dist/examples
 python3 site/gen-examples.py
 cp site/loam.svg site/dist/loam.svg
@@ -25,7 +36,7 @@ cp core/prelude.soil site/dist/repl/prelude.soil
 cp site/repl.js site/dist/repl.js
 cp site/strata.svg site/dist/strata.svg
 
-"$BIN" \
+run_soil \
   core/prelude.soil \
   core/ui.soil \
   core/highlight.soil \
@@ -35,7 +46,7 @@ cp site/strata.svg site/dist/strata.svg
   site/build.soil \
   > site/dist/index.html
 
-"$BIN" \
+run_soil \
   core/prelude.soil \
   core/ui.soil \
   core/highlight.soil \
@@ -45,7 +56,7 @@ cp site/strata.svg site/dist/strata.svg
   > site/dist/getting-started.html
 
 for slug in counter todo calculator tictactoe tabs form; do
-  "$BIN" \
+  run_soil \
     core/prelude.soil \
     core/ui.soil \
     core/highlight.soil \
