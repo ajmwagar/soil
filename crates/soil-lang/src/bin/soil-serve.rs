@@ -154,6 +154,9 @@ fn serve(stream: TcpStream, config: &Config) -> Result<()> {
         config.harness.join("ui/markdown.soil"),
         config.harness.join("ui/components.soil"),
         config.harness.join("themes/theseus-dark.soil"),
+        config.harness.join("src/lib/records.soil"),
+        config.harness.join("src/lib/text.soil"),
+        config.harness.join("src/lib/walk.soil"),
         config.harness.join("src/ui.soil"),
         config.harness.join("server.soil"),
     ] {
