@@ -74,7 +74,14 @@ The compiler logic is Soil. The interpreter is the Rust-written `soil-lang`
 core compiled to Wasm. This is not the fixed point yet, but it proves the
 compiler can run in Wasm and emit a runnable module.
 
-### Stage 2 — the object model
+### Stage 2 — the object model — started
+
+`examples/compiler/runtime.soil` now implements the first Soil-native object
+runtime: linear memory, a mutable heap global, bump allocation, and cons cells.
+It is compiled by the Soil compiler and runs under Loam/Wasmtime. See
+[Object model](object-model.md).
+
+### Stage 2 — full object model
 
 A compiler that can compile itself needs:
 

@@ -1,146 +1,92 @@
 # Object model for compiled Soil
 
-Status: **design gate**, 2026-11-22.
+Status: **first Soil-native slice**, 2026-11-22.
 
-The numeric core is `i64`-only. The Soil compiler already runs in a Wasm
-interpreter, but to compile itself directly to Wasm it needs values beyond
-numbers:
+Soil owns the object model. Loam is the Rust/Wasm engine: it instantiates
+modules, provides memory limits and host capabilities, and runs the code. Loam
+does not own strings, cons cells, or the allocator.
 
-- integers and booleans
-- strings
-- symbols
-- lists
-- byte buffers
-- nil
-- an output path
+## Decision
 
-This is the object model decision. It is a bigger fork than adding another
-operator.
-
-## Recommendation: host-imported runtime first
-
-Use one Wasm value type for user objects:
+Use **linear memory plus tagged i64 values**, written in Soil and compiled by the
+Soil compiler.
 
 ```text
 value = i64
   integer       immediate
-  object        handle into the host runtime table
+  object handle  tagged/linear-memory reference
 ```
 
-The compiler emits imports for object operations. The host runtime implements
-them with the canonical `soil_lang::sexp::Value`.
+The first slice keeps the encoding simple: values are i64, object handles are
+memory addresses, and the runtime knows which positions expect an object. A tag
+bit comes before integers and objects are mixed freely.
 
-This keeps the first bootstrap tractable:
+## First slice — done
 
-- no garbage collector in generated Wasm
-- no linear-memory layout yet
-- no allocator
-- the Rust runtime remains the object authority
-- the compiler is still Soil
-
-The trade-off is explicit: a module built this way is not standalone. It needs
-the Soil runtime to execute. That is acceptable while the runtime stays Rust.
-
-## ABI sketch
-
-```wit
-package soil:runtime@0.1.0;
-
-interface value {
-  type value = s64;
-
-  string-const: func(id: u32) -> value;
-  symbol-const: func(id: u32) -> value;
-  string-concat: func(left: value, right: value) -> value;
-  string-bytes: func(value: value) -> value;
-  length: func(value: value) -> value;
-  first: func(value: value) -> value;
-  rest: func(value: value) -> value;
-  cons: func(head: value, tail: value) -> value;
-  equal: func(left: value, right: value) -> value;
-  read: func(source: value) -> value;
-  write: func(value: value) -> unit;
-}
-```
-
-The exact import names can be flatter (`soil.rt.string_concat`) for Wasm.
-
-The host keeps a table:
+`examples/compiler/runtime.soil` is compiled by `examples/compiler/core.soil`
+into a Wasm module with:
 
 ```text
-handle -> Value
+memory 1
+global 0 = mutable i64 heap pointer, initialised to 16
 ```
 
-Handles are opaque to compiled code. The compiler never invents one; it gets
-them from imports and passes them back.
+It provides:
 
-## Compiler changes
+```lisp
+(rt/cons car cdr)
+(rt/car cell)
+(rt/cdr cell)
+```
 
-The core AST needs a second value class:
+This is enough to prove:
+
+- the compiler emits a memory section
+- the compiler emits a mutable global section
+- the compiler emits `i64.load`, `i64.store`, `global.get`, and `global.set`
+- a Soil-written bump allocator works
+- a Soil-written object runtime runs under Loam/Wasmtime
+
+The runtime is compiled with the existing `soil-lang` binary and run with
+Wasmtime; no Rust rebuild is needed for the runtime itself.
+
+## Compiler additions
+
+The Soil compiler now emits:
+
+- memory section
+- global section
+- `i64.load` / `i64.store`
+- `global.get` / `global.set`
+- `i32.wrap_i64`
+- `i64.extend_i32_u`
+- `begin` blocks, which drop non-final expression values
+- void expressions such as stores and global sets
+
+The opcode helpers are written with Soil macros inside the compiler source. The
+runtime source deliberately avoids macros because the compiler does not expand
+macros on the forms it compiles yet.
+
+## Next object work
+
+1. Tag integers and object handles.
+2. Add string objects and byte buffers.
+3. Add symbol interning.
+4. Add list helpers (`length`, `append`, `reverse`, `nth`) in the runtime.
+5. Add `read` and `string->bytes` either in the runtime or as explicit Loam
+   capabilities.
+6. Compile the compiler against the runtime.
+7. Replace any remaining bootstrap host imports.
+8. Fixed-point check.
+
+## Guardrail
+
+Keep the boundary crisp:
 
 ```text
-Type = I64 | Value
+Loam   engine, memory limits, capabilities, WASI
+Soil   values, allocator, strings, lists, compiler
 ```
 
-Every expression gets a result type. Builtins are typed:
-
-```text
-str          (Value...) -> Value
-string->bytes Value -> Value
-length       Value -> I64
-first/rest   Value -> Value
-cons         Value, Value -> Value
-read         Value -> Value
-nil?/atom?   Value -> I64
-```
-
-The Wasm backend emits:
-
-- a function type whose params/results are `i64`
-- imports from `soil:runtime`
-- calls for object builtins
-- the existing numeric instructions for arithmetic/control flow
-
-## Later: standalone object model
-
-Once the compiler bootstraps against host imports, replace the imports with a
-Wasm-native object runtime:
-
-1. linear memory
-2. tagged values or a small object header
-3. bump allocator
-4. strings, cons cells, arrays, symbols
-5. mark/sweep or reference counting
-
-That is where standalone modules and the fixed point become possible.
-
-Wasm GC is a possible alternative, but it raises toolchain and encoder
-questions. Do not make it the first bootstrap dependency.
-
-## Bootstrap sequence
-
-The current Rust `soil-c` seed is saved outside the repository:
-
-```text
-~/.local/share/soil/bootstrap/soil-c-rust-3f58bee9e33a
-sha256 3f58bee9e33aecf79991a2e2bdfa1f81926d625aec9825d56427dacb857f53b5
-source 96333190cc5e6105cf382406e0b3b79f63879c37
-```
-
-Order:
-
-1. define the runtime ABI
-2. add `Type` and object builtins to the core
-3. compile the compiler with host imports
-4. run it under Wasmtime with the Soil runtime linked
-5. compare output with the saved Rust compiler
-6. replace imports with the standalone object runtime
-7. fixed point
-
-## Non-goals for the first slice
-
-- no GC
-- no linear-memory strings
-- no closures or higher-order calls
-- no standalone compiler module
-- no fixed point yet
+If an object operation is in Loam, it is a bootstrap exception, not the target
+design.
