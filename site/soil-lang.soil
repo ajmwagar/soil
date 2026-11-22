@@ -47,17 +47,45 @@
           (list
             (el "h3" nil (list (txt (field item :title))))
             (el "p" nil (list (txt (field item :body))))))
-        (el "iframe"
+        (el "div" (list (attr :class "work-switch") (attr :role "tablist"))
           (list
-            (attr :src (str "examples/" slug ".html"))
-            (attr :title (field item :title))
-            (attr :loading "lazy")
-            (attr :scrolling "no"))
-          nil)
-        (el "details" (list (attr :class "work-code"))
+            (el "button"
+              (list
+                (attr :type "button")
+                (attr :class "is-active")
+                (attr :data-work-tab "preview")
+                (attr :aria-selected "true")
+                (attr :aria-controls (str "work-preview-" slug)))
+              (list (txt "Preview")))
+            (el "button"
+              (list
+                (attr :type "button")
+                (attr :data-work-tab "source")
+                (attr :aria-selected "false")
+                (attr :aria-controls (str "work-source-" slug)))
+              (list (txt "Source")))))
+        (el "div"
           (list
-            (el "summary" nil (list (txt "Source")))
-            (el "pre" (list (attr :class "code")) (list (txt (example-code-for slug example-code))))))))))
+            (attr :class "work-panel is-active")
+            (attr :data-work-panel "preview")
+            (attr :id (str "work-preview-" slug)))
+          (list
+            (el "iframe"
+              (list
+                (attr :src (str "examples/" slug ".html"))
+                (attr :title (field item :title))
+                (attr :loading "lazy")
+                (attr :scrolling "no"))
+              nil)))
+        (el "div"
+          (list
+            (attr :class "work-panel")
+            (attr :data-work-panel "source")
+            (attr :id (str "work-source-" slug))
+            (attr :hidden "hidden"))
+          (list
+            (el "pre" (list (attr :class "code soil-source"))
+              (list (txt (example-code-for slug example-code))))))))))
 
 (defun view (state)
   (el "div" (list (attr :class "site") (attr :id "top"))
@@ -261,7 +289,7 @@
     ".btn.primary:hover { background: var(--color-moss); border-color: var(--color-moss); color: var(--color-accent-ink); }\n"
     ".hero-code { min-width: 0; }\n"
     ".hero-live { margin-top: 18px; }\n"
-    ".hero-live iframe { display: block; width: 100%; height: 220px; border: 1px solid var(--color-line); border-radius: 12px; background: var(--color-panel); }\n"
+    ".hero-live iframe { display: block; width: 100%; height: 240px; border: 1px solid var(--color-line); border-radius: 12px; background: var(--color-panel); }\n"
     ".code-name { margin: 0 0 10px; color: var(--color-dim); font-family: var(--font-mono); font-size: 12px; }\n"
     ".code-note { margin: 10px 0 0; color: var(--color-dim); font-size: 13px; }\n"
     ".code { margin: 0; padding: 18px; overflow-x: auto; border: 1px solid var(--color-line); border-radius: 14px; background: var(--color-panel); color: var(--tok-symbol); font-family: var(--font-mono); font-size: 12.5px; line-height: 1.65; white-space: pre; }\n"
@@ -297,10 +325,15 @@
     ".work-head { padding: 0 0 10px; border-bottom: 1px solid var(--color-line); }\n"
     ".work-head h3 { margin: 0; font-family: var(--font-display); font-size: 22px; letter-spacing: -.02em; }\n"
     ".work-head p { margin: 2px 0 0; color: var(--color-dim); font-size: 13px; }\n"
-    ".work iframe { display: block; width: 100%; height: 280px; margin-top: 12px; border: 1px solid var(--color-line); border-radius: 12px; background: var(--color-panel); }\n"
-    ".work-code { margin-top: 10px; border-top: 1px solid var(--color-line); }\n"
-    ".work-code summary { cursor: pointer; padding: 10px 0; color: var(--color-accent); font-family: var(--font-mono); font-size: 12px; }\n"
-    ".work-code .code { margin: 4px 0 0; max-height: 320px; font-size: 11.5px; }\n"
+    ".work-switch { display: flex; gap: 6px; margin-top: 12px; }\n"
+    ".work-switch button { appearance: none; border: 1px solid var(--color-line); border-radius: 999px; padding: 6px 12px; background: transparent; color: var(--color-muted); cursor: pointer; font-family: var(--font-mono); font-size: 11px; line-height: 1.2; white-space: nowrap; }\n"
+    ".work-switch button:hover { color: var(--color-ink); border-color: var(--color-muted); }\n"
+    ".work-switch button.is-active { color: var(--color-accent); border-color: var(--color-accent); }\n"
+    ".work-switch button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }\n"
+    ".work-panel { margin-top: 10px; }\n"
+    ".work-panel[hidden] { display: none; }\n"
+    ".work-panel iframe { display: block; width: 100%; height: 320px; border: 1px solid var(--color-line); border-radius: 12px; background: var(--color-panel); }\n"
+    ".work-panel .code { margin: 0; max-height: 420px; font-size: 11.5px; }\n"
     ".closing { margin: 20px 0 0; padding: clamp(32px, 6vw, 64px); border: 1px solid var(--color-line); border-radius: 18px; }\n"
     ".closing .lede { margin-bottom: 0; }\n"
     ".kicker { margin: 0 0 14px; color: var(--color-accent); font-family: var(--font-mono); font-size: 11px; font-weight: 700; letter-spacing: .14em; }\n"

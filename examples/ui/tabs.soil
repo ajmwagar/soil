@@ -33,21 +33,6 @@
   (let ((active (field state :active)))
     (el "div" (list (attr :class "app"))
       (list
-        (el "header" (list (attr :class "topbar"))
-          (list
-            (el "div" (list (attr :class "brand"))
-              (list
-                (txt "SOIL")
-                (el "span" (list (attr :class "brand-sub"))
-                  (list (txt "tabs")))))
-            (el "div" (list (attr :class "pill"))
-              (list (txt active)))))
-        (el "main" (list (attr :class "stage"))
-          (list
-            (el "section" (list (attr :class "card"))
-              (list
-                (el "p" (list (attr :class "eyebrow"))
-                  (list (txt "TABS")))
                 (el "div" (list (attr :class "tabs"))
                   (list
                     (tab-button active "overview" "Overview")
@@ -59,7 +44,7 @@
                   "The same view function renders a different subtree without a router.")
                 (panel active "settings" "Settings"
                   "Switch tabs in the source panel and press Apply to see the state reset.")
-              ))))))))
+              ))))
 
 (defun styles ()
   (str

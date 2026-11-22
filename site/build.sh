@@ -17,6 +17,8 @@ fi
 mkdir -p site/dist/examples
 python3 site/gen-examples.py
 cp site/loam.svg site/dist/loam.svg
+cp site/site.js site/dist/site.js
+cp site/example.js site/dist/examples/example.js
 cp site/strata.svg site/dist/strata.svg
 
 "$BIN" \
@@ -49,5 +51,7 @@ for slug in counter todo calculator tictactoe tabs form; do
     > "site/dist/examples/$slug.html"
 done
 
-site/docs.sh
+if [ "${SOIL_DOCS:-1}" = "1" ]; then
+  site/docs.sh
+fi
 echo "wrote site/dist/"

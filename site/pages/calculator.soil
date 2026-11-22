@@ -4,4 +4,4 @@
     (render-page
       "Calculator — Soil"
       (styles)
-      (view (initial-state)))))
+      (example-page "calculator" (initial-state) (view (initial-state))))))

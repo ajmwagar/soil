@@ -42,12 +42,8 @@
 (defun form-view (state)
   (el "section" (list (attr :class "card form-card"))
     (list
-      (el "p" (list (attr :class "eyebrow"))
-        (list (txt "FORM")))
       (el "h2" (list (attr :class "title"))
         (list (txt "Join the soil")))
-      (el "p" (list (attr :class "hint"))
-        (list (txt "The inputs are plain HTML. The values arrive in Lisp as an action payload.")))
       (if (nil? (field state :error))
           nil
           (el "p" (list (attr :class "error"))
@@ -62,11 +58,9 @@
 (defun success-view (state)
   (el "section" (list (attr :class "card form-card"))
     (list
-      (el "p" (list (attr :class "eyebrow"))
-        (list (txt "FORM")))
       (el "h2" (list (attr :class "title"))
         (list (txt (str "Thanks, " (field state :name)))))
-      (el "p" (list (attr :class "hint"))
+      (el "p" (list (attr :class "body"))
         (list (txt (str "We would write to " (field state :email) " if this form had a host."))))
       (el "button" (list (attr :class "btn ghost") (attr :data-op "again"))
         (list (txt "Submit another"))))))
@@ -74,15 +68,6 @@
 (defun view (state)
   (el "div" (list (attr :class "app"))
     (list
-      (el "header" (list (attr :class "topbar"))
-        (list
-          (el "div" (list (attr :class "brand"))
-            (list
-              (txt "SOIL")
-              (el "span" (list (attr :class "brand-sub"))
-                (list (txt "form")))))
-          (el "div" (list (attr :class "pill"))
-            (list (txt (if (field state :sent) "sent" "draft"))))))
       (el "main" (list (attr :class "stage"))
         (list
           (if (field state :sent)

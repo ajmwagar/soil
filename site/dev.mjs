@@ -9,6 +9,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,6 +29,19 @@ const watchDirs = ["site", "core", "std", "examples/ui"]
 const generated = new Set([
   path.join(root, "site", "examples-code.soil"),
 ]);
+const docsFiles = new Set([
+  path.join(root, "site", "docs-copy.soil"),
+  path.join(root, "site", "docs.soil"),
+  path.join(root, "site", "docs.sh"),
+]);
+const docsRoots = [path.join(root, "core"), path.join(root, "std")];
+let docsVersion = 0;
+let docsBuiltVersion = -1;
+
+function touchesDocs(file) {
+  if (docsFiles.has(file)) return true;
+  return docsRoots.some((dir) => file === dir || file.startsWith(`${dir}${path.sep}`));
+}
 
 function broadcast(event, data = "") {
   for (const client of clients) {
@@ -43,9 +57,15 @@ function build() {
   building = true;
   let stdout = "";
   let stderr = "";
+  const withDocs = docsVersion !== docsBuiltVersion;
+  const buildDocsVersion = docsVersion;
   const child = spawn("./site/build.sh", {
     cwd: root,
-    env: { ...process.env, SOIL_LANG: bin },
+    env: {
+      ...process.env,
+      SOIL_LANG: bin,
+      SOIL_DOCS: withDocs ? "1" : "0",
+    },
   });
 
   child.stdout.on("data", (chunk) => {
@@ -59,6 +79,7 @@ function build() {
   child.on("close", (code) => {
     building = false;
     if (code === 0) {
+      if (withDocs) docsBuiltVersion = buildDocsVersion;
       broadcast("reload");
     } else {
       const error = `${stdout}${stderr}`.trim() || "site build failed";
@@ -85,7 +106,10 @@ for (const dir of watchDirs) {
     const changed = path.resolve(dir, filename);
     if (changed === dist || changed.startsWith(`${dist}${path.sep}`)) return;
     if (generated.has(changed)) return;
-    if (filename.endsWith(".soil") || filename.endsWith(".md")) scheduleBuild();
+    if (filename.endsWith(".soil") || filename.endsWith(".md")) {
+      if (touchesDocs(changed)) docsVersion += 1;
+      scheduleBuild();
+    }
   });
 }
 
@@ -98,6 +122,12 @@ const types = new Map([
   [".json", "application/json; charset=utf-8"],
   [".xml", "application/xml; charset=utf-8"],
   [".txt", "text/plain; charset=utf-8"],
+  [".svg", "image/svg+xml"],
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".webp", "image/webp"],
+  [".ico", "image/x-icon"],
   [".wasm", "application/wasm"],
 ]);
 
@@ -123,8 +153,98 @@ const livereload = `<script>
 })();
 </script>`;
 
+
+const exampleNames = new Set(["counter", "todo", "calculator", "tictactoe", "tabs", "form"]);
+
+function readBody(request) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 65536) {
+        reject(new Error("request body too large"));
+        request.destroy();
+      }
+    });
+    request.on("end", () => resolve(body));
+    request.on("error", reject);
+  });
+}
+
+function sendJson(response, status, value) {
+  response.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  response.end(JSON.stringify(value));
+}
+
+async function runExample(request, response) {
+  let data;
+  try {
+    data = JSON.parse(await readBody(request));
+  } catch (error) {
+    sendJson(response, 400, { error: String(error.message || error) });
+    return;
+  }
+
+  const name = String(data.name || "");
+  if (!exampleNames.has(name)) {
+    sendJson(response, 404, { error: "unknown example" });
+    return;
+  }
+
+  const state = typeof data.state === "string" ? data.state : JSON.stringify(data.state);
+  const action = data.action && typeof data.action === "object" ? data.action : { op: "noop" };
+  const actionJson = JSON.stringify(action);
+  const stateLiteral = JSON.stringify(state);
+  const actionLiteral = JSON.stringify(actionJson);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "soil-example-"));
+  const wrapper = path.join(tmp, "main.soil");
+  fs.writeFileSync(wrapper, `(defun main ()
+  (let ((state (json-decode ${stateLiteral})))
+    (let ((next (update state ${actionLiteral})))
+      (println (json-encode (list (list :state next) (list :html (render-html (view next)))))))))
+`);
+
+  let stdout = "";
+  let stderr = "";
+  const child = spawn(
+    bin,
+    [
+      "--call", "main",
+      "--prelude", "core/prelude.soil",
+      "core/ui.soil",
+      "examples/ui/prelude.soil",
+      `examples/ui/${name}.soil`,
+      wrapper,
+    ],
+    { cwd: root, env: { ...process.env }, timeout: 3000 },
+  );
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  child.on("close", (code) => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    if (code !== 0 || stderr.trim()) {
+      sendJson(response, 500, { error: stderr.trim() || "example failed" });
+      return;
+    }
+    try {
+      sendJson(response, 200, JSON.parse(stdout.trim()));
+    } catch (error) {
+      sendJson(response, 500, { error: "example returned invalid JSON" });
+    }
+  });
+}
+
 const server = http.createServer((request, response) => {
   const url = new URL(request.url || "/", "http://127.0.0.1");
+
+  if (url.pathname === "/__example" && request.method === "POST") {
+    runExample(request, response);
+    return;
+  }
 
   if (url.pathname === "/__reload") {
     response.writeHead(200, {

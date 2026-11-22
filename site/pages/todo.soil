@@ -4,4 +4,4 @@
     (render-page
       "TODO — Soil"
       (styles)
-      (view (initial-state)))))
+      (example-page "todo" (initial-state) (view (initial-state))))))

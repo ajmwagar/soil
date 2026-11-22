@@ -93,21 +93,6 @@
 (defun view (state)
   (el "div" (list (attr :class "app"))
     (list
-      (el "header" (list (attr :class "topbar"))
-        (list
-          (el "div" (list (attr :class "brand"))
-            (list
-              (txt "SOIL")
-              (el "span" (list (attr :class "brand-sub"))
-                (list (txt "calculator")))))
-          (el "div" (list (attr :class "pill"))
-            (list (txt "state machine")))))
-      (el "main" (list (attr :class "stage"))
-        (list
-          (el "section" (list (attr :class "card calc-card"))
-            (list
-              (el "p" (list (attr :class "eyebrow"))
-                (list (txt "CALCULATOR")))
               (el "output" (list (attr :class "display"))
                 (list (txt (field state :display))))
               (el "div" (list (attr :class "keys"))
@@ -128,7 +113,7 @@
                   (digit-key "2")
                   (digit-key "3")
                   (key "=" "equals" "" "key equals")
-                  (key "0" "digit" "0" "key zero"))))))))))
+                  (key "0" "digit" "0" "key zero"))))))
 
 (defun styles ()
   (str

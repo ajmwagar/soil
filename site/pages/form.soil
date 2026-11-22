@@ -4,4 +4,4 @@
     (render-page
       "Form — Soil"
       (styles)
-      (view (initial-state)))))
+      (example-page "form" (initial-state) (view (initial-state))))))

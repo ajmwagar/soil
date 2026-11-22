@@ -199,13 +199,15 @@
           ((not (nil? comment))
             (doc-extract-lines (rest lines) (cons comment pending) entries))
           ((not (nil? kind))
-            (doc-extract-lines
-              (rest lines)
-              nil
-              (cons
-                (doc-entry (first lines) (list (first lines))
-                  (string-join (reverse pending) "\n"))
-                entries)))
+            (let ((end (doc-form-end lines 0 0)))
+              (let ((form-lines (take (+ end 1) lines)))
+                (doc-extract-lines
+                  (drop (+ end 1) lines)
+                  nil
+                  (cons
+                    (doc-entry (first lines) form-lines
+                      (string-join (reverse pending) "\n"))
+                    entries)))))
           (else
             (doc-extract-lines (rest lines) pending entries))))))
 
@@ -331,7 +333,18 @@
         (el "h2" nil (list (txt name)))
         (code-block (field entry :signature))
         (el "div" (list (attr :class "doc-prose"))
-          (doc-prose (field entry :doc)))))))
+          (doc-prose (field entry :doc)))
+        (el "details" (list (attr :class "doc-source"))
+          (list
+            (el "summary" nil (list (txt "Source")))
+            (el "pre" nil (list (txt (field entry :source))))))))))
+
+(defun doc-side-page (page slug)
+  (let ((page-slug (field page :slug)))
+    (el "a" (list
+        (attr :href (str page-slug ".html"))
+        (attr :class (if (= page-slug slug) "is-current" "")))
+      (list (txt (field page :title))))))
 
 (defun doc-page-html (project page pages)
   (let ((title (field page :title))
@@ -345,22 +358,31 @@
         (list
           (el "header" (list (attr :class "docs-head"))
             (list
-              (el "a" (list (attr :href "index.html") (attr :class "docs-brand"))
-                (list (txt (str project " API"))))
+              (el "div" (list (attr :class "docs-head-main"))
+                (list
+                  (el "a" (list (attr :href "../") (attr :class "docs-back"))
+                    (list (txt "← soil-lang.org")))
+                  (el "a" (list (attr :href "index.html") (attr :class "docs-brand"))
+                    (list (txt (str project " API"))))))
               (el "p" (list (attr :class "docs-summary"))
                 (list (txt summary)))))
-          (el "nav" (list (attr :class "docs-nav"))
+          (el "div" (list (attr :class "docs-layout"))
             (list
-              (el "a" (list (attr :href "index.html")) (list (txt "All pages")))))
-          (el "main" (list (attr :class "docs-main"))
-            (list
-              (el "h1" nil (list (txt title)))
-              (el "p" (list (attr :class "docs-lede")) (list (txt summary)))
-              (el "ol" (list (attr :class "docs-toc"))
-                (map 'doc-toc-item entries))
-              (map 'doc-entry-html entries)))
+              (el "nav" (list (attr :class "docs-side") (attr :aria-label "API pages"))
+                (list
+                  (el "a" (list (attr :href "index.html") (attr :class "docs-side-home"))
+                    (list (txt "All pages")))
+                  (map-with 'doc-side-page slug pages)))
+              (el "main" (list (attr :class "docs-main"))
+                (list
+                  (el "h1" nil (list (txt title)))
+                  (el "p" (list (attr :class "docs-lede")) (list (txt summary)))
+                  (el "ol" (list (attr :class "docs-toc"))
+                    (map 'doc-toc-item entries))
+                  (map 'doc-entry-html entries)))))
           (el "footer" (list (attr :class "docs-foot"))
             (list
+              (el "a" (list (attr :href "../")) (list (txt "soil-lang.org")))
               (el "span" nil (list (txt (str slug ".md"))))
               (el "a" (list (attr :href (str slug ".md")))
                 (list (txt "raw Markdown"))))))))))
@@ -379,15 +401,23 @@
       (list
         (el "header" (list (attr :class "docs-head"))
           (list
-            (el "a" (list (attr :href "index.html") (attr :class "docs-brand"))
-              (list (txt (str project " API"))))
+            (el "div" (list (attr :class "docs-head-main"))
+              (list
+                (el "a" (list (attr :href "../") (attr :class "docs-back"))
+                  (list (txt "← soil-lang.org")))
+                (el "a" (list (attr :href "index.html") (attr :class "docs-brand"))
+                  (list (txt (str project " API"))))))
             (el "p" (list (attr :class "docs-summary"))
               (list (txt "Generated from `;;;` doc comments in the standard library.")))))
         (el "main" (list (attr :class "docs-main"))
           (list
             (el "h1" nil (list (txt "Standard library")))
             (el "p" (list (attr :class "docs-lede"))
-              (list (txt "Each page is generated from the source it documents. Raw Markdown is available for agents.")))
+              (list
+                (txt "Start with the ")
+                (el "a" (list (attr :href "../getting-started.html"))
+                  (list (txt "getting started guide")))
+                (txt ", then browse the library below. Every entry has a Source drawer.")))
             (el "ul" (list (attr :class "docs-pages"))
               (map 'doc-index-page pages))))
         (el "footer" (list (attr :class "docs-foot"))
@@ -415,11 +445,21 @@
     "h1, h2, h3 { overflow-wrap:anywhere; min-width:0; }\n"
     "a { color:var(--accent); text-decoration:none; }\n"
     "a:hover { text-decoration:underline; }\n"
-    ".docs { max-width: 900px; margin: 0 auto; padding: 32px 24px 80px; }\n"
+    ".docs { max-width: 1180px; margin: 0 auto; padding: 32px 24px 80px; }\n"
     ".docs-head { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:baseline; gap:12px 20px; padding-bottom:20px; border-bottom:1px solid var(--line); }\n"
+    ".docs-head-main { display:flex; flex-wrap:wrap; align-items:baseline; gap:10px 18px; }\n"
+    ".docs-back { color:var(--muted); font-family:var(--font-mono); font-size:12px; }\n"
+    ".docs-back:hover { color:var(--ink); text-decoration:none; }\n"
     ".docs-brand { color:var(--ink); font-weight:700; letter-spacing:-.02em; }\n"
     ".docs-summary { color:var(--muted); font-size:13px; margin:0; }\n"
-    ".docs-main { padding:36px 0; }\n"
+    ".docs-layout { display:grid; grid-template-columns:210px minmax(0,1fr); gap:64px; padding-top:40px; }\n"
+    ".docs-side { position:sticky; top:24px; align-self:start; display:flex; flex-direction:column; gap:2px; font-size:13.5px; }\n"
+    ".docs-side a { color:var(--muted); padding:5px 0; }\n"
+    ".docs-side a:hover { color:var(--ink); text-decoration:none; }\n"
+    ".docs-side a.is-current { color:var(--ink); }\n"
+    ".docs-side a.is-current::before { content:\"→ \"; color:var(--accent); }\n"
+    ".docs-side-home { margin-bottom:10px; padding-bottom:10px !important; border-bottom:1px solid var(--line); color:var(--ink) !important; font-family:var(--font-mono); font-size:12px; }\n"
+    ".docs-main { padding:0; min-width:0; }\n"
     "h1 { font-family:var(--font-display); font-size:clamp(32px,6vw,54px); line-height:1.05; letter-spacing:-.04em; margin:0 0 12px; }\n"
     ".docs-lede { color:var(--muted); max-width:62ch; }\n"
     ".docs-toc { columns:2; gap:32px; padding-left:18px; color:var(--muted); }\n"
@@ -428,10 +468,17 @@
     ".doc-entry h2 { font-family:var(--font-mono); font-size:22px; margin:0 0 14px; }\n"
     ".doc-entry pre { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; overflow:auto; }\n"
     ".doc-entry code { font-family:var(--font-mono); font-size:.9em; }\n"
+    ".doc-source { margin:16px 0 0; }\n"
+    ".doc-source summary { cursor:pointer; color:var(--accent); font-family:var(--font-mono); font-size:12px; }\n"
+    ".doc-source pre { margin:8px 0 0; max-height:320px; font-size:12.5px; }\n"
     ".doc-prose p { margin:12px 0; }\n"
     ".doc-prose code { background:var(--panel); border:1px solid var(--line); border-radius:5px; padding:1px 5px; }\n"
     ".doc-gap { height:8px; }\n"
     ".doc-list { margin:8px 0; }\n"
     ".docs-foot { display:flex; flex-wrap:wrap; justify-content:space-between; gap:12px 16px; padding-top:24px; border-top:1px solid var(--line); color:var(--muted); font-family:var(--font-mono); font-size:12px; }\n"
-    ".docs-pages { line-height:2; }\n"
-    "@media (max-width: 600px) { .docs-toc { columns:1; } .docs { padding-left:18px; padding-right:18px; } }\n"))
+    ".docs-pages { list-style:none; padding:0; margin:28px 0 0; }\n"
+    ".docs-pages li { display:grid; grid-template-columns:170px minmax(0,1fr); gap:18px; padding:14px 0; border-top:1px solid var(--line); line-height:1.5; }\n"
+    ".docs-pages a { color:var(--ink); font-weight:600; }\n"
+    ".docs-pages span { color:var(--muted); }\n"
+    "@media (max-width: 800px) { .docs-layout { grid-template-columns:minmax(0,1fr); gap:28px; } .docs-side { position:static; flex-flow:row wrap; gap:4px 16px; padding-bottom:16px; border-bottom:1px solid var(--line); } .docs-side a { padding:0; } .docs-side-home { margin:0; padding:0 !important; border:0; } }\n"
+    "@media (max-width: 600px) { .docs-toc { columns:1; } .docs { padding-left:18px; padding-right:18px; } .docs-pages li { grid-template-columns:minmax(0,1fr); gap:2px; } }\n"))
