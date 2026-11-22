@@ -1,20 +1,20 @@
 ; SPDX-License-Identifier: MIT OR Apache-2.0
 ; In-memory image server over JSON lines.
 ;
-; One process is one live Runtime. This is the interpreter-backed image: no
-; VFS flush yet, but definitions, eval, attach, and status are live in Wasm.
+; One process is one live Runtime. Loaded sources are tracked so flush can
+; write the live image back through the WASI filesystem. This is still an
+; interpreter image: flush writes tracked sources, not reconstructed bytecode.
 ;
 ; Request:  {"op":"ping"}
 ;           {"op":"attach","session":"s1"}
+;           {"op":"load","session":"s1","path":"lib.soil"}
+;           {"op":"eval","session":"s1","path":"lib.soil","source":"..."}
 ;           {"op":"eval","session":"s1","source":"(+ 1 2)"}
 ;           {"op":"status","session":"s1"}
+;           {"op":"flush","session":"s1"}
+;           {"op":"save","session":"s1","path":"x.soil","source":"..."}
 ;           {"op":"list"}
 ;           {"op":"detach","session":"s1"}
-; Response: {"ok":true,"result":...} or {"ok":false,"error":"..."}
-
-(defun image/read (fallback)
-  (let ((line (stdin-read-line)))
-    (if (nil? line) nil line)))
 
 (defun image/write (value)
   (stdout-write (str (image/encode value) "\n")))
@@ -34,7 +34,19 @@
         (list :session session)
         (list :result (image/result-text (load source)))))))
 
-(defun image/handle (request session attached)
+(defun image/loaded-paths (loaded)
+  (if (nil? loaded) nil (map (lambda (entry) (first entry)) loaded)))
+
+(defun image/flush-loaded (loaded)
+  (if (nil? loaded)
+      (list 'ok #t)
+      (let ((entry (first loaded)))
+        (let ((result (fs/write (first entry) (nth 1 entry))))
+          (if (ok? result)
+              (image/flush-loaded (rest loaded))
+              result)))))
+
+(defun image/handle (request session attached loaded)
   (let ((op (image/request-or request :op "")))
     (cond
       ((= op "ping")
@@ -62,7 +74,7 @@
             (list :attached attached)
             (list :dirty nil)
             (list :unattached nil)
-            (list :loaded nil))))
+            (list :loaded (image/loaded-paths loaded)))))
       ((= op "load")
         (let ((path (image/request-or request :path "")))
           (let ((result (fs/read path)))
@@ -75,15 +87,21 @@
                       (list :result (image/result-text value)))))
                 (image/response-err (str result))))))
       ((= op "flush")
-        (let ((path (image/request-or request :path "")))
-          (let ((source (image/request-or request :source nil)))
-            (if (nil? source)
-                (image/response-err "flush needs explicit source in the in-memory image")
-                (let ((result (fs/write path source)))
-                  (if (ok? result)
-                      (image/response-ok
-                        (list (list :session session) (list :path path) (list :flushed #t)))
-                      (image/response-err (str result))))))))
+        (let ((path (image/request-or request :path nil))
+              (source (image/request-or request :source nil)))
+          (if (and (not (nil? path)) (not (nil? source)))
+              (let ((result (fs/write path source)))
+                (if (ok? result)
+                    (image/response-ok
+                      (list (list :session session) (list :path path) (list :flushed #t)))
+                    (image/response-err (str result))))
+              (let ((result (image/flush-loaded loaded)))
+                (if (ok? result)
+                    (image/response-ok
+                      (list (list :session session)
+                            (list :files (image/loaded-paths loaded))
+                            (list :flushed #t)))
+                    (image/response-err (str result)))))))
       ((= op "save")
         (let ((path (image/request-or request :path "")))
           (let ((source (image/request-or request :source nil)))
@@ -95,7 +113,7 @@
                         (list (list :session session) (list :path path) (list :saved #t)))
                       (image/response-err (str result))))))))
       ((= op "reload")
-        (image/response-err "reload needs a VFS host"))
+        (image/response-err "reload is not implemented in the in-memory image"))
       ((= op "compile")
         (image/response-err "compile is not in the in-memory image"))
       ((= op "call-compiled")
@@ -103,22 +121,40 @@
       (else
         (image/response-err (str "unknown op " op))))))
 
-(defun image/run (session attached)
-  (let ((line (image/read nil)))
+(defun image/next-loaded (request op loaded)
+  (let ((path (image/request-or request :path nil)))
+    (cond
+      ((nil? path) loaded)
+      ((= op "load")
+        (let ((source (fs/read path)))
+          (if (ok? source)
+              (assoc path (value source) loaded)
+              loaded)))
+      ((= op "eval")
+        (assoc path (image/request-or request :source "") loaded))
+      ((= op "save")
+        (assoc path (image/request-or request :source "") loaded))
+      ((= op "flush")
+        (assoc path (image/request-or request :source "") loaded))
+      (else loaded))))
+
+(defun image/run (session attached loaded)
+  (let ((line (stdin-read-line)))
     (if (nil? line)
         nil
         (if (= line "")
-            (image/run session attached)
+            (image/run session attached loaded)
             (let ((request (json-decode line)))
               (let ((request-session (image/session-of request session)))
                 (let ((op (image/request-or request :op "")))
-                  (let ((response (image/handle request request-session attached)))
+                  (let ((response (image/handle request request-session attached loaded)))
                     (image/write response)
                     (image/run request-session
                       (cond
                         ((= op "attach") #t)
                         ((= op "detach") #f)
-                        (else attached)))))))))))
+                        (else attached))
+                      (image/next-loaded request op loaded))))))))))
 
 (defun main ()
-  (image/run "default" #f))
+  (image/run "default" #f nil))
