@@ -1,0 +1,31 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Execute a resolved tend command.
+;
+; Dispatch is pure Soil. This file is the execution seam: it loads the target
+; Soil file, resolves the named function, and applies the command args.
+
+(defun tend/load-target (run)
+  (let ((path (first run))
+        (entry (nth 1 run)))
+    (let ((source (fs/read path)))
+      (if (ok? source)
+          (begin
+            (load (value source))
+            (list 'ok (first (read entry))))
+          (list 'err (str source))))))
+
+(defun tend/run-project (command)
+  (let ((target (tend/load-target (field command :run))))
+    (if (ok? target)
+        (eval (cons (value target) (field command :args)))
+        target)))
+
+(defun tend/run-command (manifest-source name args)
+  (let ((dispatch (tend/dispatch manifest-source name args)))
+    (if (not (ok? dispatch))
+        dispatch
+        (let ((command (value dispatch)))
+          (if (= (field command :kind) "project")
+              (tend/run-project command)
+              (list 'err (str "builtin command execution is not wired yet: "
+                              (field command :name))))))))

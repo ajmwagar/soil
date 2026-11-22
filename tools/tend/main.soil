@@ -1,0 +1,24 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; CLI entry point for `tend` under the Wasmtime runner.
+;
+;   soil-wasm ... --call main tools/tend/main.soil --arg fmt
+
+(defun tend/usage ()
+  "usage: tend <command> [args...]")
+
+(defun tend/manifest-path ()
+  (let ((path (getenv "TEND_MANIFEST")))
+    (if (nil? path) "tend.soil" path)))
+
+(defun main ()
+  (let ((args (argv)))
+    (if (nil? args)
+        (println (tend/usage))
+        (let ((manifest (fs/read (tend/manifest-path))))
+          (if (ok? manifest)
+              (let ((result (tend/run-command
+                              (value manifest)
+                              (first args)
+                              (rest args))))
+                (if (nil? result) nil (println (str result))))
+              (println (str manifest)))))))
