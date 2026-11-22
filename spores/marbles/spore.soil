@@ -1,0 +1,30 @@
+(spore
+  (schema 1)
+  (kind "spore")
+
+  (id "acme:marbles")
+  (version "0.1.0")
+  (license "MIT OR Apache-2.0")
+  (summary "A records-backed issue tracker for fleets of coding agents")
+  (homepage "https://github.com/ajmwagar/soil")
+
+  (world "root:component")
+  (wit "wit/marbles.wit")
+  (module "module.wasm")
+
+  (distribution "binary")
+
+  (requires
+    ("soil:records/records@0.1.0" "issue, project, dependency, and event storage")
+    ("soil:unibus/bus@0.1.0" "Marbles event publication")
+    ("wasi:cli" "command-line surface")
+    ("wasi:clocks" "leases and timestamps")
+    ("wasi:io" "stdio and streams")
+    ("wasi:random" "runtime identifiers"))
+
+  (surfaces
+    (surface "cli" (world "wasi:cli/command@0.2.0")))
+
+  (docs
+    (usage "marbles <command> [options]")
+    (man "README.md")))
