@@ -8,11 +8,11 @@
 //! The generated WIT bindings define `defun` stubs over `host-call`; the host
 //! owns grants and dispatch.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::time::Instant;
 
-use crate::sexp::{Value, parse_all};
+use crate::sexp::{Value, parse_all, parse_document};
 use anyhow::{Context, Result, anyhow, bail};
 
 #[derive(Clone)]
@@ -35,6 +35,26 @@ struct CallFrame {
     env: HashMap<String, Value>,
 }
 
+#[derive(Clone)]
+struct Origin {
+    path: String,
+    start: usize,
+    end: usize,
+    source_hash: String,
+    form: Value,
+}
+
+pub struct FlushFile {
+    pub path: String,
+    pub source: String,
+    pub definitions: Vec<String>,
+}
+
+pub struct FlushReport {
+    pub files: Vec<FlushFile>,
+    pub conflicts: Vec<String>,
+}
+
 enum Tail {
     Value(Value),
     Call(Value, Vec<Value>),
@@ -43,6 +63,8 @@ enum Tail {
 pub struct Runtime {
     functions: HashMap<String, Function>,
     macros: HashMap<String, Function>,
+    origins: HashMap<String, Origin>,
+    forms: HashMap<String, Value>,
     closures: HashMap<u64, Closure>,
     next_closure: u64,
     gensym: u64,
@@ -62,6 +84,14 @@ pub trait Host {
         function: &str,
         args: &[Value],
     ) -> std::result::Result<Value, String>;
+
+    fn read_source(&mut self, _path: &str) -> std::result::Result<String, String> {
+        Err("source reads are not supported by this host".into())
+    }
+
+    fn write_source(&mut self, _path: &str, _source: &str) -> std::result::Result<(), String> {
+        Err("source writes are not supported by this host".into())
+    }
 }
 
 /// Dispatch a `host-call` to the first host that grants it.
@@ -76,6 +106,28 @@ impl HostChain {
 }
 
 impl Host for HostChain {
+    fn read_source(&mut self, path: &str) -> std::result::Result<String, String> {
+        for host in &mut self.hosts {
+            match host.read_source(path) {
+                Ok(source) => return Ok(source),
+                Err(error) if error == "source reads are not supported by this host" => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err("no host can read image source".into())
+    }
+
+    fn write_source(&mut self, path: &str, source: &str) -> std::result::Result<(), String> {
+        for host in &mut self.hosts {
+            match host.write_source(path, source) {
+                Ok(()) => return Ok(()),
+                Err(error) if error == "source writes are not supported by this host" => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err("no host can write image source".into())
+    }
+
     fn granted(&self, interface: &str, function: &str) -> bool {
         self.hosts
             .iter()
@@ -102,6 +154,8 @@ impl Runtime {
         Self {
             functions: HashMap::new(),
             macros: HashMap::new(),
+            origins: HashMap::new(),
+            forms: HashMap::new(),
             closures: HashMap::new(),
             next_closure: 1,
             gensym: 0,
@@ -128,25 +182,51 @@ impl Runtime {
         let path = path.as_ref();
         let source =
             std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-        self.load(&source)
+        self.load_source(&source, None)
             .with_context(|| format!("evaluate {}", path.display()))
     }
 
     pub fn load(&mut self, source: &str) -> Result<Value> {
-        let forms = parse_all(source)?;
+        self.load_source(source, None)
+    }
+
+    /// Load a VFS-relative source path through the host source seam.
+    pub fn load_vfs(&mut self, path: &str) -> Result<Value> {
+        let source = self
+            .host
+            .read_source(path)
+            .map_err(|error| anyhow!("read {path}: {error}"))?;
+        self.load_source(&source, Some(path))
+    }
+
+    pub fn load_source(&mut self, source: &str, origin: Option<&str>) -> Result<Value> {
+        let document = parse_document(source)?;
+        let source_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
         let mut last = Value::Nil;
 
-        for form in forms {
-            if let Some(list) = form.as_list() {
+        for form in document.forms {
+            if let Some(list) = form.value.as_list() {
                 let head = list.first().and_then(Value::as_symbol);
-                if head == Some("defun") {
+                if head == Some("defun") || head == Some("defmacro") {
                     let (name, function) = parse_defun(list)?;
-                    self.functions.insert(name, function);
-                    continue;
-                }
-                if head == Some("defmacro") {
-                    let (name, function) = parse_defun(list)?;
-                    self.macros.insert(name, function);
+                    if head == Some("defun") {
+                        self.functions.insert(name.clone(), function);
+                    } else {
+                        self.macros.insert(name.clone(), function);
+                    }
+                    self.forms.insert(name.clone(), form.value.clone());
+                    if let Some(path) = origin {
+                        self.origins.insert(
+                            name,
+                            Origin {
+                                path: path.to_string(),
+                                start: form.span.start,
+                                end: form.span.end,
+                                source_hash: source_hash.clone(),
+                                form: form.value.clone(),
+                            },
+                        );
+                    }
                     continue;
                 }
                 if head.is_some_and(|name| name.starts_with("define-")) {
@@ -155,10 +235,143 @@ impl Runtime {
             }
 
             let mut env = HashMap::new();
-            last = self.eval(&form, &mut env)?;
+            last = self.eval(&form.value, &mut env)?;
         }
 
         Ok(last)
+    }
+
+    /// Forget source provenance without forgetting the definitions.
+    ///
+    /// Use this after loading the prelude/baseline: those functions are part of
+    /// the image, not dirty source edits waiting to be flushed.
+    pub fn clear_provenance(&mut self) {
+        self.origins.clear();
+        self.forms.clear();
+    }
+
+    /// Names whose live definition differs from the form loaded from VFS.
+    pub fn dirty_definitions(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .origins
+            .iter()
+            .filter(|(name, origin)| {
+                self.forms
+                    .get(*name)
+                    .is_some_and(|form| form != &origin.form)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Definitions created in the image with no VFS origin.
+    pub fn unattached_definitions(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .forms
+            .keys()
+            .filter(|name| !self.origins.contains_key(*name))
+            .cloned()
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Build candidate source edits without writing. Conflicts are paths whose
+    /// current VFS content no longer matches the content the image loaded.
+    pub fn flush_preview(&mut self) -> Result<FlushReport> {
+        let mut by_path: BTreeMap<String, Vec<(String, Origin, Value)>> = BTreeMap::new();
+        for (name, origin) in &self.origins {
+            let Some(current) = self.forms.get(name) else {
+                continue;
+            };
+            if current == &origin.form {
+                continue;
+            }
+            by_path.entry(origin.path.clone()).or_default().push((
+                name.clone(),
+                origin.clone(),
+                current.clone(),
+            ));
+        }
+
+        let mut files = Vec::new();
+        let mut conflicts = Vec::new();
+        for (path, mut edits) in by_path {
+            let current = match self.host.read_source(&path) {
+                Ok(source) => source,
+                Err(error) => {
+                    conflicts.push(format!("{path}: {error}"));
+                    continue;
+                }
+            };
+            let current_hash = blake3::hash(current.as_bytes()).to_hex().to_string();
+            if edits
+                .iter()
+                .any(|(_, origin, _)| origin.source_hash != current_hash)
+            {
+                conflicts.push(format!("{path}: source changed since image load"));
+                continue;
+            }
+            edits.sort_by_key(|(_, origin, _)| origin.start);
+            let mut source = current;
+            for (_, origin, form) in edits.iter().rev() {
+                if origin.end > source.len() {
+                    conflicts.push(format!("{path}: origin span is outside the source"));
+                    break;
+                }
+                source.replace_range(origin.start..origin.end, &form.to_string());
+            }
+            files.push(FlushFile {
+                path,
+                source,
+                definitions: edits.into_iter().map(|(name, _, _)| name).collect(),
+            });
+        }
+        Ok(FlushReport { files, conflicts })
+    }
+
+    /// Write dirty definitions back through the host source seam.
+    pub fn flush_apply(&mut self) -> Result<FlushReport> {
+        let report = self.flush_preview()?;
+        if !report.conflicts.is_empty() {
+            return Ok(report);
+        }
+        for file in &report.files {
+            self.host
+                .write_source(&file.path, &file.source)
+                .map_err(|error| anyhow!("write {}: {error}", file.path))?;
+        }
+        for file in &report.files {
+            self.load_vfs(&file.path)?;
+        }
+        Ok(report)
+    }
+
+    /// Append unattached REPL definitions to a VFS source path.
+    pub fn flush_unattached(&mut self, path: &str, names: &[String]) -> Result<FlushFile> {
+        let mut source = self.host.read_source(path).unwrap_or_default();
+        let mut definitions = Vec::new();
+        for name in names {
+            if let Some(form) = self.forms.get(name) {
+                if !source.ends_with('\n') && !source.is_empty() {
+                    source.push('\n');
+                }
+                source.push_str(&form.to_string());
+                source.push('\n');
+                definitions.push(name.clone());
+            }
+        }
+        self.host
+            .write_source(path, &source)
+            .map_err(|error| anyhow!("write {path}: {error}"))?;
+        self.load_vfs(path)?;
+        Ok(FlushFile {
+            path: path.to_string(),
+            source,
+            definitions,
+        })
     }
 
     pub fn call(&mut self, name: &str, args: &[Value]) -> Result<Value> {
