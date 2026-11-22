@@ -39,15 +39,29 @@
     ".brand { font-weight:800; letter-spacing:.18em; font-size:13px; }\n"
     ".brand-sub { margin-left:10px; color:var(--muted); font-weight:500; letter-spacing:.04em; text-transform:lowercase; }\n"
     ".pill { border:1px solid var(--line); border-radius:999px; padding:6px 12px; color:var(--muted); font-size:12px; background:rgba(255,255,255,.03); }\n"
+    ".header-actions { display:flex; align-items:center; gap:8px; }\n"
+    ".btn { appearance:none; border:1px solid var(--line); border-radius:999px; padding:7px 13px; background:rgba(255,255,255,.045); color:var(--ink); font:600 12px/1 ui-sans-serif,system-ui,sans-serif; cursor:pointer; }\n"
+    ".btn:hover { background:rgba(255,255,255,.09); border-color:rgba(255,255,255,.18); }\n"
     ".stage { margin-top:clamp(32px,6vh,72px); max-width:1180px; }\n"
     ".eyebrow { margin:0 0 8px; color:var(--muted); font-size:11px; letter-spacing:.22em; }\n"
     ".mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }\n"))
 
-(defun vitals-ui/initial-state ()
-  (list (list :now vitals-ui/now) (list :wearer "owner")))
-
 (defun vitals-ui/update (state action)
-  state)
+  (cond
+    ((= action "view-guest") (assoc :wearer "guest" state))
+    ((= action "view-owner") (assoc :wearer "owner" state))
+    ((= action "toggle-wearer")
+      (assoc :wearer
+        (if (= (field state :wearer) "owner") "guest" "owner")
+        state))
+    (else state)))
+
+(defun vitals-ui/apply-actions (state actions)
+  (if (nil? actions)
+      state
+      (vitals-ui/apply-actions
+        (vitals-ui/update state (first actions))
+        (rest actions))))
 
 (defun vitals-ui/ring-color (id)
   (cond
@@ -201,12 +215,22 @@
     (list
       (vitals-ui/div ""
         (list
-          (vitals-ui/div "brand"
-            (list (txt "VITALS") (vitals-ui/span "brand-sub" (list (txt "soil")))))
+          (vitals-ui/div "brand" (list (txt "Vitals")))
           (el "p" (list (attr :class "lede"))
             (list (txt "Wearer-scoped health fusion. Ring primary, watch fallback, no invented totals.")))))
-      (vitals-ui/div "pill"
-        (list (txt (str "wearer " (field view :wearer) " · " (field view :freshness))))))))
+      (vitals-ui/div "header-actions"
+        (list
+          (vitals-ui/div "pill"
+            (list (txt (str "wearer " (field view :wearer) " · " (field view :freshness)))))
+          (el "button"
+            (list
+              (attr :class "btn")
+              (attr :data-action
+                (if (= (field view :wearer) "owner") "view-guest" "view-owner")))
+            (list
+              (txt (if (= (field view :wearer) "owner")
+                       "View guest"
+                       "View owner")))))))))
 
 (defun vitals-ui/footer (view)
   (vitals-ui/div "footer"
@@ -220,7 +244,10 @@
   (list (list :now vitals-ui/now) (list :wearer "owner")))
 
 (defun vitals-ui/view (state)
-  (let ((signals (vitals/seed-signals (field state :now) (field state :wearer))))
+  ;; Seed the household owner once; the selected wearer only filters the
+  ;; fused view. Seeding with the selected wearer would relabel owner devices
+  ;; as that wearer and hide the isolation the toggle exists to show.
+  (let ((signals (vitals/seed-signals (field state :now) "owner")))
     (let ((vitals (vitals/fuse signals (field state :wearer) (field state :now) (vitals/policy))))
       (let ((vm (vitals/to-view vitals)))
         (vitals-ui/div "app"
