@@ -131,3 +131,29 @@ wasmtime run --invoke 'run()' /tmp/component-probe.wasm
 
 This is the component-model path. Strings, lists, and resources still require
 canonical-ABI lowering (`cabi_realloc`, memory export, post-return functions).
+
+### First canonical-ABI import
+
+`tests/component-cli.soil` emits a component that imports:
+
+```wit
+wasi:cli/environment.get-arguments() -> list<string>
+```
+
+and reads the length of the first returned string.
+
+```sh
+scripts/componentize-soil.sh
+# 19 (the runner's first argv entry)
+```
+
+This required:
+
+- `cm32p2_memory`
+- `cabi_realloc`
+- `i32` memory/address operations
+- canonical return-area loading
+- `i32.const`, `i32.load`, `i32.add`, `i64.extend_i32_u` in the WAT target
+
+The binary emitter still targets the numeric core; the component target is the
+WAT path for now.
