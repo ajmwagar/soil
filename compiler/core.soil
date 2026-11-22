@@ -517,7 +517,7 @@
 
 (defun wasm/index-of (name names index)
   (cond
-    ((nil? names) nil)
+    ((nil? names) (begin (println (str "missing index " name)) nil))
     ((= name (str (first names))) index)
     (else (wasm/index-of name (rest names) (+ index 1)))))
 
@@ -567,12 +567,20 @@
       'rt/nil
       (list 'rt/cons (first items) (wasm/list-form (rest items)))))
 
-(defun wasm/record-form (pairs)
+(defun wasm/record-form (items)
+  (let ((pairs (wasm/record-pairs items)))
+    (if (nil? pairs)
+        'rt/nil
+        (list 'rt/cons
+          (list 'rt/cons (first (first pairs)) (nth 1 (first pairs)))
+          (wasm/record-form-from (rest pairs))))))
+
+(defun wasm/record-form-from (pairs)
   (if (nil? pairs)
       'rt/nil
       (list 'rt/cons
         (list 'rt/cons (first (first pairs)) (nth 1 (first pairs)))
-        (wasm/record-form (rest pairs)))))
+        (wasm/record-form-from (rest pairs)))))
 
 (defun wasm/void? (expr)
   (and (not (atom expr))
@@ -643,8 +651,37 @@
           (suffix (wasm/local-get slot)))
       (list (append prefix (append sets suffix)) (+ slot 1)))))
 
+(defun wasm/keyword? (expr)
+  (keyword? expr))
+
+(defun wasm/key-text (key)
+  (cond
+    ((wasm/keyword? key) (str key))
+    ((wasm/string-literal? key) key)
+    (else (str key))))
+
+(defun wasm/record-pairs (items)
+  (if (nil? items)
+      nil
+      (if (not (atom (first items)))
+          (cons
+            (list (wasm/key-text (first (first items))) (nth 1 (first items)))
+            (wasm/record-pairs (rest items)))
+          (cons
+            (list (wasm/key-text (first items)) (nth 1 items))
+            (wasm/record-pairs (drop 2 items))))))
+
+(defun wasm/quote-form (form)
+  (cond
+    ((nil? form) 'rt/nil)
+    ((symbol? form) (wasm/key-text form))
+    ((atom form) form)
+    (else (wasm/list-form (map 'wasm/quote-form form)))))
+
 (defun wasm/emit (expr env consts names locals)
   (cond
+    ((wasm/keyword? expr)
+      (wasm/emit-string (wasm/key-text expr) names locals))
     ((symbol? expr)
       (let ((local (wasm/lookup (str expr) env)))
         (if (nil? local)
@@ -681,12 +718,15 @@
               (list (append (first value) (list 80 173)) (nth 1 value))))
           ((= head "begin")
             (wasm/emit-body (rest expr) env consts names locals nil))
+          ((= head "quote")
+            (wasm/emit (wasm/quote-form (nth 1 expr)) env consts names locals))
           ((= head "list")
             (wasm/emit (wasm/list-form (rest expr)) env consts names locals))
           ((= head "record")
             (wasm/emit (wasm/record-form (rest expr)) env consts names locals))
           ((= head "field")
-            (wasm/emit (list 'rt/field (nth 1 expr) (nth 2 expr))
+            (wasm/emit
+              (list 'rt/field (nth 1 expr) (wasm/key-text (nth 2 expr)))
               env consts names locals))
           ((= head "i64.load")
             (let ((address (wasm/emit (nth 1 expr) env consts names locals)))
