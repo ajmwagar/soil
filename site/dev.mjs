@@ -106,7 +106,13 @@ for (const dir of watchDirs) {
     const changed = path.resolve(dir, filename);
     if (changed === dist || changed.startsWith(`${dist}${path.sep}`)) return;
     if (generated.has(changed)) return;
-    if (filename.endsWith(".soil") || filename.endsWith(".md")) {
+    if (
+      filename.endsWith(".soil") ||
+      filename.endsWith(".md") ||
+      filename.endsWith(".js") ||
+      filename.endsWith(".wasm") ||
+      filename.endsWith(".svg")
+    ) {
       if (touchesDocs(changed)) docsVersion += 1;
       scheduleBuild();
     }
