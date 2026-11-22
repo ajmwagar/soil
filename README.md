@@ -69,6 +69,38 @@ You can learn more about Soil at [https://soil-lang.org](https://soil-lang.org)
 - [`examples/ui/counter.soil`](examples/ui/counter.soil) — the smallest complete UI
 - [`examples/ui/`](examples/ui) — counter, todo, calculator, tic-tac-toe, tabs, form
 
+## Running the output
+
+Soil emits WebAssembly. You can run it with
+[Wasmtime](https://wasmtime.dev/):
+
+```sh
+# Linux and macOS
+curl https://wasmtime.dev/install.sh -sSf | bash
+
+# confirm it is on PATH
+wasmtime -V
+```
+
+Windows: download the MSI from the
+[Wasmtime releases](https://github.com/bytecodealliance/wasmtime/releases/latest)
+and install it.
+
+Then run a module:
+
+```sh
+wasmtime run hello.wasm
+```
+
+Or call an exported function:
+
+```sh
+wasmtime run --invoke main hello.wasm
+```
+
+See the [compiler notes](compiler/README.md#run-it-in-wasmtime) for the current
+bootstrap output and validation steps.
+
 ## Bootstrap
 
 The Rust bootstrap compiler lives in
