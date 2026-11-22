@@ -36,7 +36,25 @@ if (root) {
     return payload;
   }
 
+  // The counter is the one example small enough to run without the evaluator.
+  // Keep it clickable on a static host and update immediately.
+  function optimistic(action) {
+    if (name !== "counter") return false;
+    const current = Number(JSON.parse(state)) || 0;
+    let next = current;
+    if (action.op === "inc") next = current + 1;
+    else if (action.op === "dec") next = current - 1;
+    else if (action.op === "reset") next = 0;
+    else return false;
+    state = JSON.stringify(next);
+    const output = root.querySelector("output");
+    if (output) output.textContent = String(next);
+    postHeight();
+    return true;
+  }
+
   async function run(action) {
+    if (optimistic(action)) return;
     try {
       const response = await fetch("/__example", {
         method: "POST",
