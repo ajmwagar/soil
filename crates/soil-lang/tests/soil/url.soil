@@ -19,7 +19,7 @@
   (let ((query (url/query (list (list "q" "a b") (list "x" "1&2")))))
     (and
       (= query "q=a+b&x=1%262")
-      (= (url/decode-query query) "q=a+b&x=1&2"))))
+      (= (url/decode-query query) "q=a b&x=1&2"))))
 
 (defun test/url-parse-query ()
   (let ((pairs (url/parse-query "q=a+b&x=1%262&empty=")))
