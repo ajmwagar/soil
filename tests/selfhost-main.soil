@@ -8,4 +8,5 @@
     (test/selfhost-call)
     (test/selfhost-macro)
     (test/selfhost-wit-export)
-    (test/selfhost-wit-types)))
+    (test/selfhost-wit-types)
+    (test/selfhost-multi-body)))

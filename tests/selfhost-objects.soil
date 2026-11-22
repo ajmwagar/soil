@@ -1,0 +1,75 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Runtime + object smoke for soil-c --selfhost.
+
+(memory 1)
+(global 16)
+
+(defconst rt/nil 0)
+
+(defun rt/alloc (bytes)
+  (let ((ptr (global.get 0)))
+    (begin
+      (global.set 0 (+ ptr bytes))
+      ptr)))
+
+(defun rt/cons (car cdr)
+  (let ((ptr (global.get 0)))
+    (begin
+      (i64.store (i32.wrap_i64 ptr) car)
+      (i64.store (i32.wrap_i64 (+ ptr 8)) cdr)
+      (global.set 0 (+ ptr 16))
+      ptr)))
+
+(defun rt/car (cell) (i64.load (i32.wrap_i64 cell)))
+(defun rt/cdr (cell) (i64.load (i32.wrap_i64 (+ cell 8))))
+
+(defun rt/string-new (length)
+  (let ((ptr (rt/alloc (+ 8 (* length 8)))))
+    (begin
+      (i64.store (i32.wrap_i64 ptr) length)
+      ptr)))
+
+(defun rt/string-length (string) (i64.load (i32.wrap_i64 string)))
+(defun rt/string-get (string index)
+  (i64.load (i32.wrap_i64 (+ (+ string 8) (* index 8)))))
+
+(defun rt/string-set (string index value)
+  (begin
+    (i64.store (i32.wrap_i64 (+ (+ string 8) (* index 8))) value)
+    string))
+
+(defun rt/string-equal-loop (a b i n)
+  (if (>= i n)
+      1
+      (if (= (rt/string-get a i) (rt/string-get b i))
+          (rt/string-equal-loop a b (+ i 1) n)
+          0)))
+
+(defun rt/string-equal? (a b)
+  (if (= (rt/string-length a) (rt/string-length b))
+      (rt/string-equal-loop a b 0 (rt/string-length a))
+      0))
+
+(defun rt/field (record key)
+  (if (= record 0)
+      0
+      (let ((pair (rt/car record)))
+        (if (rt/string-equal? (rt/car pair) key)
+            (rt/cdr pair)
+            (rt/field (rt/cdr record) key)))))
+
+(defun rt/test-multi ()
+  (+ 1 1)
+  41)
+
+(defun rt/test-list ()
+  (rt/car (list 10 20 30)))
+
+(defun rt/test-record ()
+  (field (record ("a" 7) ("b" 9)) "b"))
+
+(defun rt/test-string ()
+  (rt/string-get "ABC" 1))
+
+(defun rt/test-string-eq ()
+  (rt/string-equal? "same" "same"))

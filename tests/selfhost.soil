@@ -54,3 +54,10 @@
                -> (list string))")))
     (and
       (string-contains? wit "export search: func(query: string, limit: u32) -> list<string>;"))))
+
+(defun test/selfhost-multi-body ()
+  (let ((wat (compiler/compile-source "(defun f () 1 2)")))
+    (and
+      (string-contains? wat "i64.const 1")
+      (string-contains? wat "drop")
+      (string-contains? wat "i64.const 2"))))

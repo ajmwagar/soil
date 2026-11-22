@@ -47,7 +47,7 @@
     ((atom expr)
       (str "    i64.const " expr "\n"))
     ((= (str (first expr)) "begin")
-      (compiler/body (rest expr)))
+      (compiler/body-drop (rest expr)))
     ((= (str (first expr)) "if")
       (str (compiler/expr (nth 1 expr))
            "    i32.wrap_i64\n"
@@ -84,6 +84,23 @@
                    (compiler/expr (nth 2 expr))
                    "    " op "\n")))))))
 
+(defun compiler/void? (expr)
+  (and (not (atom expr))
+       (let ((head (str (first expr))))
+         (or (= head "i64.store")
+             (= head "i32.store")
+             (= head "i32.store8")
+             (= head "global.set")))))
+
+(defun compiler/body-drop (forms)
+  (if (nil? forms)
+      ""
+      (if (nil? (rest forms))
+          (compiler/expr (first forms))
+          (str (compiler/expr (first forms))
+               (if (compiler/void? (first forms)) "" "    drop\n")
+               (compiler/body-drop (rest forms))))))
+
 (defun compiler/body (forms)
   (if (nil? forms)
       ""
@@ -95,7 +112,7 @@
     (str "  (func $" name " (export \"" name "\")"
          (compiler/params (nth 2 form))
          " (result i64)\n"
-         (compiler/expr (nth 3 form))
+         (compiler/body-drop (drop 3 form))
          "  )\n")))
 
 (defun compiler/params-i32 (params)
@@ -109,7 +126,7 @@
     (str "  (func $" name " (export \"" name "\")"
          (compiler/params-i32 (nth 2 form))
          " (result i32)\n"
-         (compiler/expr (nth 3 form))
+         (compiler/body-drop (drop 3 form))
          "  )\n")))
 
 (defun compiler/defun-i32-void (form)
@@ -545,6 +562,18 @@
             (list "if" (nth 0 clause) (nth 1 clause)
                   (wasm/cond->if (rest clauses)))))))
 
+(defun wasm/list-form (items)
+  (if (nil? items)
+      'rt/nil
+      (list 'rt/cons (first items) (wasm/list-form (rest items)))))
+
+(defun wasm/record-form (pairs)
+  (if (nil? pairs)
+      'rt/nil
+      (list 'rt/cons
+        (list 'rt/cons (first (first pairs)) (nth 1 (first pairs)))
+        (wasm/record-form (rest pairs)))))
+
 (defun wasm/void? (expr)
   (and (not (atom expr))
        (let ((head (wasm/head expr)))
@@ -652,6 +681,13 @@
               (list (append (first value) (list 80 173)) (nth 1 value))))
           ((= head "begin")
             (wasm/emit-body (rest expr) env consts names locals nil))
+          ((= head "list")
+            (wasm/emit (wasm/list-form (rest expr)) env consts names locals))
+          ((= head "record")
+            (wasm/emit (wasm/record-form (rest expr)) env consts names locals))
+          ((= head "field")
+            (wasm/emit (list 'rt/field (nth 1 expr) (nth 2 expr))
+              env consts names locals))
           ((= head "i64.load")
             (let ((address (wasm/emit (nth 1 expr) env consts names locals)))
               (list (wasm/cat (list (first address) (wasm/i64-load) (list 3 0)))
@@ -745,8 +781,8 @@
 (defun wasm/body (form names consts)
   (let ((params (nth 2 form)))
     (let ((env (wasm/env params 0)))
-      (let ((count (wasm/count-lets (nth 3 form))))
-        (let ((emitted (wasm/emit (nth 3 form) env consts names (wasm/count params))))
+      (let ((count (wasm/count-lets-list (drop 3 form))))
+        (let ((emitted (wasm/emit-body (drop 3 form) env consts names (wasm/count params) nil)))
           (let ((locals (if (= count 0)
                             (list 0)
                             (wasm/cat (list (list 1) (wasm/uleb count) (list 126))))))

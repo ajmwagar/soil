@@ -292,3 +292,28 @@ wasm-tools validate /tmp/runtime.wasm
 wasmtime run --invoke rt/test-cons /tmp/runtime.wasm
 # 1
 ```
+
+## Object smoke
+
+The selfhost compiler supports multi-form bodies, list construction, records,
+and string objects through the runtime helpers:
+
+```sh
+SOIL_C=/path/to/soil-c scripts/test-selfhost-objects.sh
+```
+
+It covers:
+
+```text
+multi-form function body
+list literal
+record literal + field lookup
+string literal
+string equality
+```
+
+Run with:
+
+```sh
+SOIL_C=/tmp/soil-rust-target/debug/soil-c scripts/test-selfhost-objects.sh
+```

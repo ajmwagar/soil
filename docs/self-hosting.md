@@ -114,3 +114,16 @@ milestone.
 
 The Wasmtime **runtime** stays in Rust. Self-hosting applies to the compiler:
 Soil source → Wasm artifact. It does not mean writing a Wasm VM in Soil.
+
+## Object smoke
+
+The selfhost binary compiler now covers multiple body forms, list literals,
+record literals, field lookup, and string objects:
+
+```sh
+SOIL_C=/tmp/soil-rust-target/debug/soil-c scripts/test-selfhost-objects.sh
+```
+
+This is still the numeric-core object model: i64 values, cons cells, and
+length-plus-elements strings. It is enough to compile a small runtime, not yet
+the full compiler.
