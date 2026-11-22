@@ -17,6 +17,7 @@
               (a "getting-started.html" "" (list (txt (copy :nav :start))))
               (a "#language" "" (list (txt (copy :nav :language))))
               (a "#library" "" (list (txt (copy :nav :core))))
+              (a "#loam" "" (list (txt (copy :nav :loam))))
               (a "#examples" "" (list (txt (copy :nav :examples))))
               (a "docs/" "" (list (txt (copy :nav :api))))
           (a "https://github.com/ajmwagar/soil" "nav-source"
@@ -76,7 +77,12 @@
               (el "div" (list (attr :class "prose"))
                 (list
                   (el "p" nil (list (txt (copy :language :body))))
-                  (el "p" nil (list (txt (copy :language :body-2))))))
+                  (el "p" nil (list (txt (copy :language :body-2))))
+                  (el "p" nil (list (txt (copy :language :body-3))))
+                  (el "p" nil
+                    (list
+                      (a "https://paulgraham.com/avg.html" "text-link"
+                        (list (txt (copy :language :essay-label))))))))
               (el "ul" (list (attr :class "facts"))
                 (map 'fact-item (copy :language :facts)))))
 
@@ -96,6 +102,18 @@
                       (el "h3" nil (list (txt (copy :library :std-label))))
                       (el "ul" (list (attr :class "modules"))
                         (map 'module-item (copy :library :std-items)))))))))
+
+          (el "section" (list (attr :class "section") (attr :id "loam"))
+            (list
+              (el "h2" nil (list (txt (copy :loam :title))))
+              (el "div" (list (attr :class "prose"))
+                (list
+                  (el "p" nil (list (txt (copy :loam :body))))
+                  (el "p" nil (list (txt (copy :loam :body-2))))))
+              (el "div" (list (attr :class "actions"))
+                (list
+                  (a "https://github.com/mycelium-linux/loam" "btn"
+                    (list (txt (copy :loam :label))))))))
 
           (el "section" (list (attr :class "section") (attr :id "examples"))
             (list
@@ -127,6 +145,7 @@
               (a "#language" "" (list (txt (copy :nav :language))))
               (a "#examples" "" (list (txt (copy :nav :examples))))
               (a "docs/" "" (list (txt (copy :nav :api))))))
+          (a "https://fpl.dev/" "sponsor" (list (txt (copy :footer :sponsor))))
           (el "div" nil (list (txt (copy :footer :license)))))))))
 
 (defun styles ()
@@ -212,6 +231,8 @@
     ".prose { max-width: 62ch; }\n"
     ".prose p { margin: 0 0 14px; color: var(--color-muted); }\n"
     ".prose p:last-child { margin-bottom: 0; }\n"
+    ".text-link { color: var(--color-accent); text-decoration: none; border-bottom: 1px solid var(--color-accent); }\n"
+    ".text-link:hover { color: var(--color-moss); border-bottom-color: var(--color-moss); }\n"
     ".facts { display: flex; flex-wrap: wrap; gap: 10px 24px; margin: 26px 0 0; padding: 0; list-style: none; color: var(--color-dim); font-family: var(--font-mono); font-size: 12px; }\n"
     ".facts li::before { content: \"· \"; color: var(--color-accent); }\n"
     ".library { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 42px; margin-top: 34px; }\n"
@@ -234,6 +255,8 @@
     ".footer-links { display: flex; flex-wrap: wrap; gap: 16px; }\n"
     ".footer a { color: var(--color-muted); text-decoration: none; }\n"
     ".footer a:hover { color: var(--color-ink); }\n"
+    ".sponsor { color: var(--color-muted); text-decoration: none; border-bottom: 1px solid var(--color-line); }\n"
+    ".sponsor:hover { color: var(--color-accent); border-bottom-color: var(--color-accent); }\n"
     "@media (max-width: 860px) {\n"
     "  .hero, .library, .works { grid-template-columns: minmax(0, 1fr); }\n"
     "  .hero { gap: 32px; }\n"
