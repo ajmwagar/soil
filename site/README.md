@@ -52,3 +52,18 @@ SOIL_PRELUDE=core/prelude.soil SOIL_DOCS=1 SOIL_LANG=soil-run ./site/build.sh
 `site/build.sh` writes `CNAME` (`soil-lang.org`) and `.nojekyll` into
 `site/dist/`. Pages serves the uploaded artifact; `html_url` is
 `https://soil-lang.org/` once DNS points at GitHub Pages.
+
+Link checks are part of the Pages workflow:
+
+```sh
+node site/check-links.mjs site/dist
+node site/check-links.mjs --base http://soil-lang.org
+```
+
+## Example runtime
+
+Examples prefer the local `/__example` endpoint, which runs the real Soil
+`update` and `view`. GitHub Pages is static, so `site/example.js` keeps one
+small browser fallback per example. These are resilience code, not a second
+implementation to extend: when the wasm evaluator can drive `update`/`view`,
+remove the fallbacks rather than adding behavior to both paths.

@@ -7,6 +7,10 @@
 //
 // When the endpoint is unavailable (a static export, GitHub Pages, a stale
 // tab), each example has a small browser fallback so the demo still works.
+//
+// Policy: the server path is the real Soil `update`/`view`. The JS fallbacks
+// are deliberately kept only for static hosting; when examples can run through
+// the wasm evaluator, delete the fallback functions instead of growing them.
 
 const root = document.getElementById("root");
 if (root) {

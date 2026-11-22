@@ -7,7 +7,9 @@ the host-free prelude. `site/repl.js` boots it with `core/prelude.soil`.
 
 It is an artifact, not a Rust checkout: this repository stays Soil source. The
 wrapper is the `Session::new(prelude)` / `Session::eval(source)` pair around
-`Runtime` and `FakeHost`.
+`Runtime` and `FakeHost`. The browser build stubs `Instant` because
+`wasm32-unknown-unknown` has no monotonic clock; REPL stats report zero elapsed
+milliseconds.
 
 `site/build.sh` copies the wasm, the generated JS, and the current
 `core/prelude.soil` into `site/dist/repl/`.

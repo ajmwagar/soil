@@ -327,10 +327,21 @@
   (map 'doc-prose-line (doc-lines text)))
 
 (defun doc-entry-html (entry)
-  (let ((name (field entry :name)))
+  (let ((name (field entry :name))
+        (try-code (doc-try-code name)))
     (el "section" (list (attr :class "doc-entry") (attr :id name))
       (list
-        (el "h2" nil (list (txt name)))
+        (el "div" (list (attr :class "doc-entry-head"))
+          (list
+            (el "h2" nil (list (txt name)))
+            (if (nil? try-code)
+                nil
+                (el "button"
+                  (list
+                    (attr :type "button")
+                    (attr :class "doc-try")
+                    (attr :data-try try-code))
+                  (list (txt "Try"))))))
         (code-block (field entry :signature))
         (el "div" (list (attr :class "doc-prose"))
           (doc-prose (field entry :doc)))
@@ -370,6 +381,8 @@
         (list
           (el "button" (list (attr :class "repl-run") (attr :type "button"))
             (list (txt "Run")))
+          (el "button" (list (attr :class "repl-share") (attr :type "button"))
+            (list (txt "Share")))
           (el "label" (list (attr :class "repl-live"))
             (list
               (el "input" (list (attr :type "checkbox") (attr :class "repl-live-toggle") (attr :checked "checked")) nil)
@@ -408,7 +421,16 @@
                 (list
                   (el "a" (list (attr :href "index.html") (attr :class "docs-side-home"))
                     (list (txt "All pages")))
-                  (map-with 'doc-side-page slug pages)))
+                  (el "input"
+                    (list
+                      (attr :class "docs-filter")
+                      (attr :type "search")
+                      (attr :placeholder "Filter docs…")
+                      (attr :aria-label "Filter API docs"))
+                    nil)
+                  (map-with 'doc-side-page slug pages)
+                  (el "span" (list (attr :class "docs-no-matches") (attr :hidden "hidden"))
+                    (list (txt "No matches")))))
               (el "main" (list (attr :class "docs-main"))
                 (list
                   (el "h1" nil (list (txt title)))
@@ -417,6 +439,7 @@
                     (map 'doc-toc-item entries))
                   (map 'doc-entry-html entries)))
               (doc-repl-html)))
+          (el "script" (list (attr :type "module") (attr :src "../docs.js")) nil)
           (el "footer" (list (attr :class "docs-foot"))
             (list
               (el "a" (list (attr :href "../")) (list (txt "soil-lang.org")))
@@ -455,9 +478,19 @@
                 (el "a" (list (attr :href "../getting-started.html"))
                   (list (txt "getting started guide")))
                 (txt ", then browse the library below. Every entry has a Source drawer.")))
+            (el "input"
+              (list
+                (attr :class "docs-filter")
+                (attr :type "search")
+                (attr :placeholder "Filter docs…")
+                (attr :aria-label "Filter API docs"))
+              nil)
             (el "ul" (list (attr :class "docs-pages"))
-              (map 'doc-index-page pages))))
+              (map 'doc-index-page pages))
+            (el "span" (list (attr :class "docs-no-matches") (attr :hidden "hidden"))
+              (list (txt "No matches")))))
         (doc-repl-html)
+        (el "script" (list (attr :type "module") (attr :src "../docs.js")) nil)
         (el "footer" (list (attr :class "docs-foot"))
           (list
             (el "a" (list (attr :href "../llms.txt")) (list (txt "llms.txt")))
@@ -514,6 +547,8 @@
     ".repl-actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-top:10px; }\n"
     ".repl button { appearance:none; border:1px solid var(--accent); border-radius:999px; padding:7px 14px; background:var(--accent); color:var(--bg); cursor:pointer; font-family:var(--font-mono); font-size:12px; line-height:1.2; }\n"
     ".repl button:hover { filter:brightness(1.08); }\n"
+    ".repl-share { border-color:var(--line) !important; background:transparent !important; color:var(--muted) !important; }\n"
+    ".repl-share:hover { border-color:var(--accent) !important; color:var(--accent) !important; }\n"
     ".repl button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }\n"
     ".repl-live { display:inline-flex; align-items:center; gap:5px; color:var(--muted); font-family:var(--font-mono); font-size:11px; cursor:pointer; }\n"
     ".repl-live input { accent-color:var(--accent); }\n"
@@ -534,7 +569,14 @@
     ".docs-toc { columns:2; gap:32px; padding-left:18px; color:var(--muted); }\n"
     ".docs-toc a { color:var(--ink); }\n"
     ".doc-entry { padding:34px 0; border-top:1px solid var(--line); }\n"
+    ".doc-entry-head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }\n"
     ".doc-entry h2 { font-family:var(--font-mono); font-size:22px; margin:0 0 14px; }\n"
+    ".doc-try { appearance:none; border:1px solid var(--accent); border-radius:999px; padding:4px 10px; background:transparent; color:var(--accent); cursor:pointer; font-family:var(--font-mono); font-size:11px; line-height:1.2; white-space:nowrap; }\n"
+    ".doc-try:hover { background:var(--accent); color:var(--bg); }\n"
+    ".doc-try:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }\n"
+    ".docs-filter { width:100%; margin:8px 0 12px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font-family:var(--font-mono); font-size:12px; }\n"
+    ".docs-filter:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }\n"
+    ".docs-no-matches { color:var(--muted); font-family:var(--font-mono); font-size:12px; padding:6px 0; }\n"
     ".doc-entry pre { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; overflow:auto; }\n"
     ".doc-entry code { font-family:var(--font-mono); font-size:.9em; }\n"
     ".doc-source { margin:16px 0 0; }\n"
@@ -551,5 +593,5 @@
     ".docs-pages span { color:var(--muted); }\n"
     "@media (min-width: 1120px) { .docs-layout { grid-template-columns:190px minmax(0,1fr) 360px; gap:40px; } .repl { position:sticky; top:24px; align-self:start; margin-top:0; } }\n"
     "@media (max-width: 1119px) { .repl { grid-column:1 / -1; } }\n"
-    "@media (max-width: 800px) { .docs-layout { grid-template-columns:minmax(0,1fr); gap:28px; } .docs-side { position:static; flex-flow:row wrap; gap:4px 16px; padding-bottom:16px; border-bottom:1px solid var(--line); } .docs-side a { padding:0; } .docs-side-home { margin:0; padding:0 !important; border:0; } }\n"
+    "@media (max-width: 800px) { .docs-layout { grid-template-columns:minmax(0,1fr); gap:28px; } .docs-side { position:static; flex-flow:row wrap; gap:4px 16px; padding-bottom:16px; border-bottom:1px solid var(--line); } .docs-side a { padding:0; } .docs-side-home { margin:0; padding:0 !important; border:0; } .docs-side { order:0; } .repl { order:1; } .docs-main { order:2; } }\n"
     "@media (max-width: 600px) { .docs-toc { columns:1; } .docs { padding-left:18px; padding-right:18px; } .docs-pages li { grid-template-columns:minmax(0,1fr); gap:2px; } }\n"))

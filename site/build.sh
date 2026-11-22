@@ -32,9 +32,12 @@ cp site/site.js site/dist/site.js
 cp site/example.js site/dist/examples/example.js
 mkdir -p site/dist/repl
 cp site/repl/soil_repl_wasm.js site/repl/soil_repl_wasm_bg.wasm site/dist/repl/
-cp core/prelude.soil site/dist/repl/prelude.soil
+cat core/prelude.soil core/url.soil core/json.soil core/date.soil core/ui.soil core/highlight.soil > site/dist/repl/prelude.soil
 cp site/repl.js site/dist/repl.js
+cp site/docs.js site/dist/docs.js
 cp site/strata.svg site/dist/strata.svg
+cp site/favicon.svg site/dist/favicon.svg
+cp site/og.png site/dist/og.png
 
 run_soil \
   core/prelude.soil \
@@ -69,6 +72,7 @@ done
 if [ "${SOIL_DOCS:-1}" = "1" ]; then
   site/docs.sh
 fi
+python3 site/enhance.py
 printf "soil-lang.org\n" > site/dist/CNAME
 touch site/dist/.nojekyll
 echo "wrote site/dist/"

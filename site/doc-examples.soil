@@ -1,0 +1,38 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Small, runnable examples attached to selected API entries. These are site
+; copy, not API documentation: the page catalog still lives in docs-copy.soil.
+
+(defconst doc-try-examples
+  (list
+    (list (list :name "map")
+      (list :code "(defun double (x)\n  (* x 2))\n\n(map 'double (list 1 2 3))"))
+    (list (list :name "filter")
+      (list :code "(defun positive? (x)\n  (> x 0))\n\n(filter 'positive? (list -1 0 2 3))"))
+    (list (list :name "reduce")
+      (list :code "(defun add (a b) (+ a b))\n\n(reduce 'add 0 (list 1 2 3 4))"))
+    (list (list :name "range")
+      (list :code "(range 0 6)"))
+    (list (list :name "assoc")
+      (list :code "(assoc :b 2 (list (list :a 1)))"))
+    (list (list :name "url/query")
+      (list :code "(url/query (list (list \"q\" \"soil lisp\") (list \"page\" \"2\")))"))
+    (list (list :name "url/parse-query")
+      (list :code "(url/parse-query \"q=soil+lisp&page=2\")"))
+    (list (list :name "json/pretty")
+      (list :code "(json/pretty (list (list :a 1) (list :b (list #t #f))))"))
+    (list (list :name "date/iso")
+      (list :code "(date/iso 0)"))
+    (list (list :name "date/relative")
+      (list :code "(date/relative 0 3600000)"))
+    (list (list :name "render-html")
+      (list :code "(render-html (el \"p\" nil (list (txt \"hello\"))))"))))
+
+(defun doc-try-code-in (name items)
+  (if (nil? items)
+      nil
+      (if (= (field (first items) :name) name)
+          (field (first items) :code)
+          (doc-try-code-in name (rest items)))))
+
+(defun doc-try-code (name)
+  (doc-try-code-in name doc-try-examples))
