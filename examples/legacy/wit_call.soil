@@ -3,7 +3,7 @@
 ; Run with:
 ;   soil-lang --prelude core/prelude.soil \
 ;     --records-root /tmp/r --book soil \
-;     core/time.soil std/bindings/wasi-clocks.generated.soil std/bindings/soil-records.soil \
+;     std/wasi/time.soil std/bindings/wasi-clocks.generated.soil std/bindings/soil-records.soil \
 ;     examples/legacy/wit_call.soil
 
 (defun main ()

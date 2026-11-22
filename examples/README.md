@@ -21,7 +21,7 @@ $SOIL_LANG \
 # Event vocabulary without a bus
 $SOIL_LANG \
   core/prelude.soil \
-  std/events.soil \
+  std/soil/events.soil \
   examples/std/events.soil
 ```
 

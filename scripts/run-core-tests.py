@@ -30,10 +30,10 @@ CORE = [
     "core/image.soil",
 ]
 STD = [
-    "core/time.soil",
-    "std/records.soil",
-    "std/perf.soil",
-    "std/events.soil",
+    "std/wasi/time.soil",
+    "std/soil/records.soil",
+    "std/wasi/perf.soil",
+    "std/soil/events.soil",
 ]
 FIXTURES = [
     "boot/boot.soil",
