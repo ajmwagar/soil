@@ -57,7 +57,7 @@
     "html, body { overflow-x: clip; }\n"
     "* { box-sizing: border-box; }\n"
     ".app {\n"
-    "  min-height: 100vh;\n"
+    "  min-height: 0;\n"
     "  padding: 28px clamp(20px, 5vw, 64px) 64px;\n"
     "  color: var(--ink);\n"
     "  background: var(--bg);\n"
