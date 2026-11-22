@@ -1,10 +1,13 @@
 # Self-hosting the numeric-core compiler
 
-Status: **bootstrap stage 0**, 2026-11-22.
+Status: **bootstrap stages 0 and 1**, 2026-11-22.
 
-The Rust compiler remains the reference. The first Soil compiler lives in
-`examples/compiler/core.soil` and emits WebAssembly text (WAT) for the numeric
-core.
+The Rust compiler remains the reference. The Soil compiler lives in
+`examples/compiler/core.soil` and has two backends:
+
+- `compiler/compile-wat` emits WebAssembly text
+- `compiler/compile-wasm` emits the binary module, byte-for-byte matching the
+  Rust numeric-core compiler on the current corpus
 
 ```lisp
 (compiler/compile-source "(defun add (a b) (+ a b))")
@@ -42,20 +45,21 @@ It is still a compiler written in Soil, and its output runs under Wasmtime.
 
 Current limits:
 
-- no `let`
-- no `defconst` in the emitted module
 - no function dependency closure
-- no binary output
+- no host imports or object model
+- no self-compilation yet
 
-### Stage 1 — binary emitter in Soil
+### Stage 1 — binary emitter in Soil — done
 
-Replace text with bytes:
+`compiler/compile-wasm` now emits:
 
-- LEB128
+- LEB128 signed/unsigned integers
 - type/function/export/code sections
-- content-addressed VFS artifacts
+- the same instruction stream as the Rust reference compiler
 
-This proves the compiler can produce the same artifact format as `soil-c`.
+The differential test `crates/soil-lang/tests/selfhost.rs` compares the Soil
+compiler's bytes with `soil_lang::compile` for addition, `if`, `let`, `cond`,
+calls, `defconst`, `and`, `or`, and `not`.
 
 ### Stage 2 — the object model
 
