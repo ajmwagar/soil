@@ -15,7 +15,9 @@
       (and (not (nil? characters)) (= (first characters) "{")))))
 
 (defun json/array? (value)
-  (and (not (nil? value)) (not (json/object? value))))
+  (let ((text (json-encode value)))
+    (let ((characters (string-chars text)))
+      (and (not (nil? characters)) (= (first characters) "[")))))
 
 (defun json/first (pair)
   (first pair))
