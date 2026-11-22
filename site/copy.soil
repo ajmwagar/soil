@@ -2,137 +2,89 @@
 ; Editable copy for soil-lang.org.
 ;
 ; Structure, tags, and CSS classes live in soil-lang.soil. This file owns the
-; words: nav labels, headings, prose, cards, and code samples. Change text here
-; and rebuild; the landing page picks it up.
+; words: nav labels, headings, prose, cards, and code samples.
 
 (defconst site-copy
   (list
     (list :site
       (list
-        (list :title "Soil — a Lisp-like language for applications and automation")))
+        (list :title "Soil — a Lisp for WebAssembly")))
 
     (list :nav
       (list
         (list :start "Get started")
-        (list :why "Why Soil")
-        (list :substrate "Substrate")
-        (list :learn "Learn")
-        (list :api "API")
+        (list :language "Language")
+        (list :core "Core")
         (list :examples "Examples")
-        (list :spores "Spores")
-        (list :community "Community")
-        (list :github "GitHub")))
+        (list :api "API")
+        (list :github "Source")))
 
     (list :hero
       (list
-        (list :kicker "SOIL-LANG.ORG")
-        (list :title-prefix "A Lisp-like language for ")
-        (list :title-accent "applications and automation.")
-        (list :lede "Soil is a small Lisp that compiles to WebAssembly. The runtime is Loam. Code is data, macros are ordinary forms, and programs can run in the browser or on the native host.")
+        (list :title "Soil")
+        (list :statement "A Lisp for WebAssembly.")
+        (list :lede "Soil is a small Lisp that compiles to Wasm. The runtime is Loam. The compiler, core library, and this site are written in Soil.")
         (list :primary-label "Get started")
-        (list :github-label "View on GitHub")
-        (list :meta-prefix "In the Lisp family. ")
-        (list :meta-link-label "lisp-lang.org")
-        (list :meta-suffix " · MIT OR Apache-2.0 · Soil compiler · Wasm output")
+        (list :github-label "Read the source")
         (list :code-name "counter.soil")
-        (list :code "(defun view (state)\n  (el \"div\" (list (attr :class \"app\"))\n    (list\n      (el \"output\" (list (attr :class \"value\"))\n        (list (txt state)))\n      (el \"button\" (list (attr :data-op \"inc\"))\n        (list (txt \"+\"))))))")
-        (list :code-foot "→ real HTML and CSS. No virtual DOM required.")))
+        (list :code "(defun view (state)\n  (el \"main\" nil\n    (list\n      (el \"h1\" nil (list (txt \"Hello from Soil\")))\n      (el \"button\" (list (attr :data-op \"inc\"))\n        (list (txt \"+\"))))))")
+        (list :code-note "The form is the program. The host renders it.")))
 
-    (list :why
+    (list :language
       (list
-        (list :kicker "WHY SOIL")
-        (list :title "Small core. Visible seams.")
-        (list :body "The runtime is small enough to read. There is no framework between the form and the machine; host capabilities are the only edges that need a contract.")
-        (list :items
+        (list :title "One form, all the way down.")
+        (list :body "Soil keeps the Lisp bargain: code is data, macros are ordinary forms, and the compiler is a Soil program. There is no second language for the build.")
+        (list :body-2 "It emits WebAssembly. Run the module in Loam, in the browser, or in any compatible host.")
+        (list :facts
           (list
-            (list
-              (list :number "01")
-              (list :title "Homoiconic")
-              (list :body "The source, the AST, the docs, and the UI are the same tree. A tool can read and rewrite itself without a second representation."))
-            (list
-              (list :number "02")
-              (list :title "Editable")
-              (list :body "Every form carries a source span. An editor can replace one form and keep the comments, layout, and everything it did not touch."))
-            (list
-              (list :number "03")
-              (list :title "Portable")
-              (list :body "One WIT contract, two hosts. The same Lisp runs natively and in the browser; the GPU stays an optional capability, not a requirement."))))))
+            "compiler written in Soil"
+            "core has no soil:* imports"
+            "std is the capability layer"))))
 
-    (list :substrate
+    (list :library
       (list
-        (list :kicker "THE SUBSTRATE")
-        (list :title "Lisp, with a typed host boundary.")
-        (list :body "Lisp gave us code as data, macros, and a live system. Soil keeps that and makes the edges explicit: capabilities are typed, GPU views are optional, and a spore's hash is its name.")
-        (list :items
+        (list :title "Core and std.")
+        (list :body "Core is host-free. Std is the layer that calls soil:*.")
+        (list :core-label "core")
+        (list :std-label "std")
+        (list :core-items
           (list
-            (list
-              (list :number "01")
-              (list :title "Lisp, kept intact")
-              (list :body "Homoiconic forms, macros, a small core, and a REPL-shaped workflow. The source, the docs, and the UI do not fork into separate representations."))
-            (list
-              (list :number "02")
-              (list :title "GPU when it matters")
-              (list :body "Canvas and GPU-resident scenes are a host capability. Trees, forms, and docs stay ordinary HTML/CSS; waveforms and schematics stay on the GPU."))
-            (list
-              (list :number "03")
-              (list :title "Boundaries and distance")
-              (list :body "WIT makes capabilities typed and portable. Spores are content-addressed, so the same artifact can run on this machine or another host."))))))
-
-    (list :learn
-      (list
-        (list :kicker "LEARN")
-        (list :title "From a form to a running tool.")
-        (list :body "Start with the language, then the host, then a spore. You do not need a framework to put a real interface on screen.")
-        (list :steps
+            (list (list :name "prelude") (list :body "lists, JSON, records"))
+            (list (list :name "date") (list :body "UTC dates and labels"))
+            (list (list :name "url") (list :body "encoding and queries"))
+            (list (list :name "json") (list :body "objects and arrays"))
+            (list (list :name "ui") (list :body "forms and components"))
+            (list (list :name "cli") (list :body "specs, argv, help"))
+            (list (list :name "highlight") (list :body "source colouring"))
+            (list (list :name "doc") (list :body "extract and render"))))
+        (list :std-items
           (list
-            (list
-              (list :number "01")
-              (list :title "Read the roadmap")
-              (list :body "Phases from the core language to self-hosting, with done criteria."))
-            (list
-              (list :number "02")
-              (list :title "Run an example")
-              (list :body "Counter, TODO, calculator, tic-tac-toe. All of them are plain .soil."))
-            (list
-              (list :number "03")
-              (list :title "Write a spore")
-              (list :body "One manifest and one entry form. A library and an app are the same artifact."))))
-        (list :code ";; tend build\n;; tend run\n\n(defun view (state)\n  (el \"main\" (list (attr :class \"app\"))\n    (list\n      (el \"h1\" nil (list (txt \"Hello from Soil\")))\n      (el \"p\" nil (list (txt \"This is a form, not a template.\"))))))")))
+            (list (list :name "events") (list :body "Unibus observe and publish"))
+            (list (list :name "records") (list :body "typed records and writes"))
+            (list (list :name "time") (list :body "host wall clock"))
+            (list (list :name "perf") (list :body "counters and timing"))))))
 
     (list :examples
       (list
-        (list :kicker "EXAMPLES")
-        (list :title "Six tools, inline.")
-        (list :body "These are the actual Soil widgets, built from the same forms as the rest of the page.")
+        (list :title "Real programs.")
+        (list :body "These are Soil views, mounted inline. No app shell around them.")
         (list :items
           (list
-            (list (list :slug "todo") (list :title "TODO"))
-            (list (list :slug "counter") (list :title "Counter"))
-            (list (list :slug "calculator") (list :title "Calculator"))
-            (list (list :slug "tictactoe") (list :title "Tic-tac-toe"))
-            (list (list :slug "tabs") (list :title "Tabs"))
-            (list (list :slug "form") (list :title "Form"))))))
+            (list (list :slug "todo") (list :title "TODO") (list :body "A list with state and actions."))
+            (list (list :slug "counter") (list :title "Counter") (list :body "The smallest complete UI."))
+            (list (list :slug "calculator") (list :title "Calculator") (list :body "Forms and dispatch."))
+            (list (list :slug "tictactoe") (list :title "Tic-tac-toe") (list :body "A board and a winner."))
+            (list (list :slug "tabs") (list :title "Tabs") (list :body "Local state, no router."))
+            (list (list :slug "form") (list :title "Form") (list :body "Inputs and validation."))))))
 
-    (list :spores
+    (list :closing
       (list
-        (list :kicker "SPORES")
-        (list :title "A library and an app are the same file.")
-        (list :cards
-          (list
-            (list
-              (list :title "Load it for its functions")
-              (list :body "A spore that exports forms is a library. Require it, call its functions, compose its views."))
-            (list
-              (list :title "Launch it for its entry point")
-              (list :body "The same spore with a start form is an app. tend resolves it, builds it, and runs it here or on another host."))))))
-
-    (list :community
-      (list
-        (list :kicker "COMMUNITY")
-        (list :title "Bring a hard question.")
-        (list :body "Soil is free software. The core is small on purpose. Bring a spore, a capability, or a question that the current tools cannot answer.")
-        (list :primary-label "GitHub")
-        (list :secondary-label "Issues")))
+        (list :title "The site is Soil too.")
+        (list :body "This page, the getting-started guide, and the inline examples are Soil views. The build writes HTML. No client framework is required.")
+        (list :compiler-label "Compiler")
+        (list :core-link-label "Core")
+        (list :examples-link-label "Examples")
+        (list :loam-label "Loam")))
 
     (list :guide
       (list
