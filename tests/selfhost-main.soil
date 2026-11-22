@@ -6,4 +6,6 @@
     (test/selfhost-add)
     (test/selfhost-if)
     (test/selfhost-call)
-    (test/selfhost-macro)))
+    (test/selfhost-macro)
+    (test/selfhost-wit-export)
+    (test/selfhost-wit-types)))

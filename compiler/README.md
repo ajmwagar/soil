@@ -215,3 +215,49 @@ records, and the real `soil:records` / `soil:vfs` / `soil:inference` worlds.
 `tend check-core` walks `core/`, parses each `.soil` file, and rejects import
 forms or `wasi:`/`soil:` symbols. The check is Soil; the shell wrapper only
 invokes the Wasmtime runner.
+
+## Export declarations and WIT
+
+A `defun` remains the implementation. An `export` form only declares the
+WIT/component surface:
+
+```lisp
+(package "acme:counter@0.1.0")
+(world "counter")
+
+(defun add (a b)
+  (+ a b))
+
+(export add
+  (a s32)
+  (b s32)
+  -> s32)
+```
+
+Emit the WIT description:
+
+```sh
+SOURCE="$(cat tests/wit-export.soil)"
+"$SOIL_RUN" --prelude core/prelude.soil --call main \
+  compiler/core.soil compiler/wit-main.soil --arg "$SOURCE"
+```
+
+```wit
+package acme:counter@0.1.0;
+
+world counter {
+  export add: func(a: s32, b: s32) -> s32;
+}
+```
+
+The export can appear before or after the `defun`. Rename with a string:
+
+```lisp
+(export "add" add-impl
+  (a s32)
+  (b s32)
+  -> s32)
+```
+
+Current type syntax: scalar names, `(list T)`, `(option T)`, `(result T E)`,
+and `(tuple T ...)`. Records, variants, resources, and imports are still ahead.

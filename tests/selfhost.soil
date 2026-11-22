@@ -30,3 +30,27 @@
     (and
       (string-contains? wat "if (result i64)")
       (not (string-contains? wat "unless")))))
+
+(defun test/selfhost-wit-export ()
+  (let ((wit
+          (compiler/wit
+            "(package \"acme:counter@0.1.0\")
+             (world \"counter\")
+             (defun add (a b) (+ a b))
+             (export add (a s32) (b s32) -> s32)")))
+    (and
+      (string-contains? wit "package acme:counter@0.1.0;")
+      (string-contains? wit "world counter {")
+      (string-contains? wit "export add: func(a: s32, b: s32) -> s32;"))))
+
+(defun test/selfhost-wit-types ()
+  (let ((wit
+          (compiler/wit
+            "(package \"acme:list@0.1.0\")
+             (world \"list\")
+             (export search
+               (query string)
+               (limit u32)
+               -> (list string))")))
+    (and
+      (string-contains? wit "export search: func(query: string, limit: u32) -> list<string>;"))))

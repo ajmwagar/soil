@@ -1,0 +1,20 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; WIT export fixture, also loaded by scripts/test-wit-export.sh.
+
+(package "acme:counter@0.1.0")
+(world "counter")
+
+(defun add (a b)
+  (+ a b))
+
+(defun greet (name)
+  (str "hello, " name))
+
+(export add
+  (a s32)
+  (b s32)
+  -> s32)
+
+(export greet
+  (name string)
+  -> string)

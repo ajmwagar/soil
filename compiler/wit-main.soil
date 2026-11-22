@@ -1,0 +1,5 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Emit the WIT contract from export declarations in argv[0].
+
+(defun main ()
+  (println (compiler/wit (first (argv)))))
