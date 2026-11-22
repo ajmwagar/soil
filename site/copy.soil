@@ -14,7 +14,7 @@
       (list
         (list :start "Get started")
         (list :language "Why")
-        (list :core "Core")
+        (list :core "Library")
         (list :loam "Runtime")
         (list :examples "Examples")
         (list :api "API")
@@ -53,26 +53,18 @@
 
     (list :library
       (list
-        (list :title "Core and std.")
-        (list :body "Core is host-free. Std is the layer that calls soil:*.")
-        (list :core-label "core")
-        (list :std-label "std")
-        (list :core-items
-          (list
-            (list (list :name "prelude") (list :body "lists, JSON, records"))
-            (list (list :name "date") (list :body "UTC dates and labels"))
-            (list (list :name "url") (list :body "encoding and queries"))
-            (list (list :name "json") (list :body "objects and arrays"))
-            (list (list :name "ui") (list :body "forms and components"))
-            (list (list :name "cli") (list :body "specs, argv, help"))
-            (list (list :name "highlight") (list :body "source colouring"))
-            (list (list :name "doc") (list :body "extract and render"))))
-        (list :std-items
-          (list
-            (list (list :name "events") (list :body "Unibus observe and publish"))
-            (list (list :name "records") (list :body "typed records and writes"))
-            (list (list :name "time") (list :body "host wall clock"))
-            (list (list :name "perf") (list :body "counters and timing"))))))
+        (list :title "Read the docs.")
+        (list :body "Every core and std entry is generated from the `;;;` comment above it. Start with the prelude, or jump to the module you need.")
+        (list :docs-label "Open the API docs")
+        (list :prelude-label "Prelude")
+        (list :ui-label "UI forms")
+        (list :events-label "Events")))
+
+    (list :try
+      (list
+        (list :title "Try it.")
+        (list :body "A small REPL that runs in Wasm. Edit the source, or turn on Live and watch it evaluate as you type.")
+        (list :code "(defun square (x)\n  (* x x))\n\n(square 12)\n")))
 
     (list :examples
       (list
