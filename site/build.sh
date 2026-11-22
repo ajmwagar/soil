@@ -19,6 +19,10 @@ python3 site/gen-examples.py
 cp site/loam.svg site/dist/loam.svg
 cp site/site.js site/dist/site.js
 cp site/example.js site/dist/examples/example.js
+mkdir -p site/dist/repl
+cp site/repl/soil_repl_wasm.js site/repl/soil_repl_wasm_bg.wasm site/dist/repl/
+cp core/prelude.soil site/dist/repl/prelude.soil
+cp site/repl.js site/dist/repl.js
 cp site/strata.svg site/dist/strata.svg
 
 "$BIN" \
