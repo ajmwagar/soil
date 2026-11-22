@@ -1,6 +1,6 @@
 # Self-hosting the numeric-core compiler
 
-Status: **bootstrap stages 0 and 1**, 2026-11-22.
+Status: **bootstrap stages 0, 1, and the Wasm-hosted compiler**, 2026-11-22.
 
 The Rust compiler remains the reference. The Soil compiler lives in
 `examples/compiler/core.soil` and has two backends:
@@ -60,6 +60,19 @@ Current limits:
 The differential test `crates/soil-lang/tests/selfhost.rs` compares the Soil
 compiler's bytes with `soil_lang::compile` for addition, `if`, `let`, `cond`,
 calls, `defconst`, `and`, `or`, and `not`.
+
+### Wasm-hosted compiler — done
+
+`crates/soil-compiler-wasm` embeds the Soil compiler and runs it on the
+`wasm32-wasip2` interpreter:
+
+```sh
+wasmtime run --dir . soil-compiler-wasm.wasm input.soil > output.wasm
+```
+
+The compiler logic is Soil. The interpreter is the Rust-written `soil-lang`
+core compiled to Wasm. This is not the fixed point yet, but it proves the
+compiler can run in Wasm and emit a runnable module.
 
 ### Stage 2 — the object model
 
