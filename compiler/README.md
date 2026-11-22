@@ -261,3 +261,34 @@ The export can appear before or after the `defun`. Rename with a string:
 
 Current type syntax: scalar names, `(list T)`, `(option T)`, `(result T E)`,
 and `(tuple T ...)`. Records, variants, resources, and imports are still ahead.
+
+## Selfhost compile
+
+`soil-c` can now run the Soil-written compiler instead of the Rust lowering
+path:
+
+```sh
+soil-c --selfhost \
+  --soil-root /path/to/soil \
+  input.soil output.wasm
+```
+
+The prelude defaults to `<soil-root>/core/prelude.soil`. The compiler sources
+are:
+
+```text
+<soil-root>/compiler/core.soil
+<soil-root>/compiler/main.soil
+```
+
+Use this for compiler work. The default non-selfhost mode remains the small Rust
+bootstrap only.
+
+Example:
+
+```sh
+soil-c --selfhost --soil-root . tests/runtime-smoke.soil /tmp/runtime.wasm
+wasm-tools validate /tmp/runtime.wasm
+wasmtime run --invoke rt/test-cons /tmp/runtime.wasm
+# 1
+```

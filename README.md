@@ -107,6 +107,12 @@ wasmtime run --invoke main hello.wasm
 See the [compiler notes](compiler/README.md#run-it-in-wasmtime) for the current
 bootstrap output and validation steps.
 
+Compiler work now uses the Soil-written selfhost path:
+
+```sh
+soil-c --selfhost --soil-root . input.soil output.wasm
+```
+
 ## Bootstrap
 
 The Rust bootstrap compiler lives in
