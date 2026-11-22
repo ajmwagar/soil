@@ -1,0 +1,163 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; A Soil Lisp language server.
+;
+; The editor launches `soil command run soil-lsp`; the runtime provides stdio
+; and this program provides LSP. No editor or language types live in Rust.
+
+(defun lsp/initialize-result ()
+  (list
+    (list :capabilities
+      (list
+        (list :textDocumentSync 1)
+        (list :documentSymbolProvider #t)
+        (list :definitionProvider #t)
+        (list :hoverProvider #t)
+        (list :completionProvider (json-object))))
+    (list :serverInfo
+      (list
+        (list :name "soil-lsp")
+        (list :version "0.1.0")))))
+
+(defun lsp/doc-with-analysis (doc)
+  (let ((result (lsp/parse-doc (field doc :text))))
+    (if (ok? result)
+        (assoc :parsed (value result) doc)
+        (assoc :parsed nil doc))))
+
+(defun lsp/publish-diagnostics (doc)
+  (lsp/send
+    (lsp/notification "textDocument/publishDiagnostics"
+      (list
+        (list :uri (field doc :uri))
+        (list :diagnostics (lsp/diagnostics (field doc :text)))))))
+
+(defun lsp/did-open (message docs)
+  (let ((params (field message :params)))
+    (let ((item (field params :textDocument)))
+      (let ((doc (lsp/doc-with-analysis
+                   (list
+                     (list :uri (field item :uri))
+                     (list :text (field item :text))
+                     (list :version (field item :version))))))
+        (lsp/publish-diagnostics doc)
+        (cons doc (lsp/doc-remove (field item :uri) docs))))))
+
+(defun lsp/did-change (message docs)
+  (let ((params (field message :params)))
+    (let ((item (field params :textDocument))
+          (changes (field params :contentChanges)))
+      (let ((change (first changes)))
+        (let ((doc (lsp/doc-with-analysis
+                     (list
+                       (list :uri (field item :uri))
+                       (list :text (field change :text))
+                       (list :version (field item :version))))))
+          (lsp/publish-diagnostics doc)
+          (cons doc (lsp/doc-remove (field item :uri) docs)))))))
+
+(defun lsp/did-close (message docs)
+  (let ((params (field message :params)))
+    (let ((item (field params :textDocument)))
+      (lsp/doc-remove (field item :uri) docs))))
+
+(defun lsp/document-symbols (message docs)
+  (let ((params (field message :params)))
+    (let ((item (field params :textDocument)))
+      (let ((doc (lsp/doc-get (field item :uri) docs)))
+        (if (nil? doc)
+            (lsp/send (lsp/response (field message :id) (list)))
+            (let ((parsed (field doc :parsed)))
+              (if (nil? parsed)
+                  (lsp/send (lsp/response (field message :id) (list)))
+                  (lsp/send (lsp/response (field message :id)
+                    (or-empty
+                      (map-with 'lsp/form-symbol (field doc :text)
+                        (filter 'lsp/definition-form? (field parsed :forms))))))))))))
+  docs)
+
+(defun lsp/definition (message docs)
+  (let ((params (field message :params)))
+    (let ((item (field params :textDocument))
+          (position (field params :position)))
+      (let ((doc (lsp/doc-get (field item :uri) docs)))
+        (if (nil? doc)
+            (lsp/send (lsp/response (field message :id) nil))
+            (let ((parsed (field doc :parsed)))
+              (if (nil? parsed)
+                  (lsp/send (lsp/response (field message :id) nil))
+                  (let ((tokens (field parsed :tokens)))
+                    (let ((offset (lsp/offset (field doc :text)
+                                    (field position :line)
+                                    (field position :character))))
+                      (let ((token (lsp/token-at-offset tokens offset)))
+                        (if (nil? token)
+                            (lsp/send (lsp/response (field message :id) nil))
+                            (let ((found (lsp/definition-in-docs (field token :text) docs)))
+                              (if (nil? found)
+                                  (lsp/send (lsp/response (field message :id) nil))
+                                  (lsp/send (lsp/response (field message :id)
+                                    (lsp/form-location
+                                      (first found)
+                                      (nth 1 found)
+                                      (nth 2 found))))))))))))))))
+  docs)
+
+(defun lsp/hover-request (message docs)
+  (let ((params (field message :params)))
+    (let ((item (field params :textDocument))
+          (position (field params :position)))
+      (let ((doc (lsp/doc-get (field item :uri) docs)))
+        (if (nil? doc)
+            (lsp/send (lsp/response (field message :id) nil))
+            (let ((parsed (field doc :parsed)))
+              (if (nil? parsed)
+                  (lsp/send (lsp/response (field message :id) nil))
+                  (let ((offset (lsp/offset (field doc :text)
+                                  (field position :line)
+                                  (field position :character))))
+                    (let ((token (lsp/token-at-offset (field parsed :tokens) offset)))
+                      (if (nil? token)
+                          (lsp/send (lsp/response (field message :id) nil))
+                          (let ((hover (lsp/hover (field doc :text) token docs)))
+                            (lsp/send (lsp/response (field message :id) hover))))))))))))
+  docs)
+
+(defun lsp/completion (message docs)
+  (lsp/send
+    (lsp/response (field message :id)
+      (list
+        (list :isIncomplete #f)
+        (list :items (or-empty (lsp/completion-items docs))))))
+  docs)
+
+(defun lsp/handle (message docs)
+  (let ((method (field message :method)))
+    (cond
+      ((= method "initialize")
+        (lsp/send (lsp/response (field message :id) (lsp/initialize-result)))
+        docs)
+      ((= method "initialized") docs)
+      ((= method "shutdown")
+        (lsp/send (lsp/response (field message :id) nil))
+        docs)
+      ((= method "exit") docs)
+      ((= method "textDocument/didOpen") (lsp/did-open message docs))
+      ((= method "textDocument/didChange") (lsp/did-change message docs))
+      ((= method "textDocument/didSave") docs)
+      ((= method "textDocument/didClose") (lsp/did-close message docs))
+      ((= method "textDocument/documentSymbol") (lsp/document-symbols message docs))
+      ((= method "textDocument/definition") (lsp/definition message docs))
+      ((= method "textDocument/hover") (lsp/hover-request message docs))
+      ((= method "textDocument/completion") (lsp/completion message docs))
+      (else docs))))
+
+(defun lsp/run (docs)
+  (let ((message (lsp/read-message)))
+    (if (nil? message)
+        nil
+        (if (= (field message :method) "exit")
+            nil
+            (lsp/run (lsp/handle message docs))))))
+
+(defun lsp/main ()
+  (lsp/run (list)))

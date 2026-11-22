@@ -1,0 +1,23 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Core image protocol tests.
+
+(defun test/image-ping ()
+  (let ((response (image/handle-json "{\"op\":\"ping\"}" nil)))
+    (and
+      (= (field response :ok) #t)
+      (= (field (field response :result) :pong) #t))))
+
+(defun test/image-eval-host-action ()
+  (let ((response
+          (image/handle-json
+            "{\"op\":\"eval\",\"session\":\"s1\",\"source\":\"(+ 20 22)\"}"
+            nil)))
+    (and
+      (= (field response :action) :host)
+      (= (field response :op) "eval"))))
+
+(defun test/image-host-action ()
+  (let ((response (image/handle-json "{\"op\":\"flush\",\"session\":\"s1\"}" nil)))
+    (and
+      (= (field response :action) :host)
+      (= (field response :op) "flush"))))

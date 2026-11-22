@@ -1,0 +1,109 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Host-free REPL protocol.
+;
+; This module owns the REPL state machine: command parsing, multi-line input
+; assembly, and the action the host should take. It never reads stdin or writes
+; stdout, so it has no `soil:*` imports and runs in core.
+;
+; Host contract:
+;   step  := (repl/step line buffer)
+;   action is one of:
+;     (:action :load :source <source>)
+;     (:action :time :source <form>)
+;     (:action :bench :runs <text> :source <form>)
+;     (:action :print :text <text>)
+;     (:action :quit)
+;     (:action :error :message <text>)
+;
+; The host keeps `buffer` between calls. `:load` means host `load`, not
+; `(eval (read source))`: that is what installs `defun` and keeps provenance.
+; When a load fails with an unterminated list/string, keep the source as the
+; next buffer. Otherwise clear the buffer and print the result or error.
+
+(defun repl/prefix-chars? (chars prefix)
+  (cond
+    ((nil? prefix) #t)
+    ((nil? chars) #f)
+    ((= (first chars) (first prefix))
+      (repl/prefix-chars? (rest chars) (rest prefix)))
+    (else #f)))
+
+(defun repl/prefix? (text prefix)
+  (repl/prefix-chars? (string-chars text) (string-chars prefix)))
+
+(defun repl/command-line? (line)
+  (repl/prefix? line ":"))
+
+(defun repl/split-first-space-chars (chars acc)
+  (cond
+    ((nil? chars)
+      (list (string-join (reverse acc) "") nil))
+    ((= (first chars) " ")
+      (list (string-join (reverse acc) "")
+            (string-join (rest chars) "")))
+    (else
+      (repl/split-first-space-chars (rest chars) (cons (first chars) acc)))))
+
+(defun repl/split-first-space (text)
+  (repl/split-first-space-chars (string-chars text) nil))
+
+(defun repl/command (line)
+  (let ((parts (repl/split-first-space
+                 (string-join (drop 1 (string-chars line)) ""))))
+    (let ((name (first parts))
+          (rest (nth 1 parts)))
+      (cond
+        ((or (= name "quit") (= name "q"))
+          (list (list :action :quit)))
+        ((or (= name "help") (= name "h"))
+          (list (list :action :print)
+                (list :text
+                  ":stats          eval/host counters for this image\n\
+                   :time FORM      evaluate and print elapsed ms\n\
+                   :bench N FORM   evaluate FORM N times\n\
+                   :reset          reset counters\n\
+                   :quit           leave")))
+        ((= name "stats")
+          (list (list :action :eval)
+                (list :source "(runtime-stats)")))
+        ((= name "reset")
+          (list (list :action :eval)
+                (list :source "(runtime-reset)")))
+        ((= name "time")
+          (list (list :action :time)
+                (list :source rest)))
+        ((= name "bench")
+          (let ((bits (repl/split-first-space rest)))
+            (list (list :action :bench)
+                  (list :runs (if (nil? (first bits)) "10" (first bits)))
+                  (list :source (nth 1 bits)))))
+        (else
+          (list (list :action :error)
+                (list :message (str "unknown REPL command :" name))))))))
+
+;;; Return the host action for one input line. `buffer` is the pending source
+;;; from previous incomplete lines, or `nil`.
+(defun repl/step (line buffer)
+  (if (and (nil? buffer) (repl/command-line? line))
+      (repl/command line)
+      (list
+        (list :action :load)
+        (list :source
+          (str (if (nil? buffer) "" buffer) line "\n")))))
+
+;;; Render a value the way the native REPL does.
+(defun repl/text (value)
+  (if (nil? value) "nil" (str value)))
+
+;;; Evaluate expression forms in `source` and return the last value.
+;;; This is not a `load`: use the host `:load` action for `defun`/`defconst`.
+(defun repl/eval-source (source)
+  (repl/eval-forms (read source)))
+
+(defun repl/eval-forms (forms)
+  (if (nil? forms)
+      nil
+      (let ((value (eval (first forms))))
+        (if (nil? (rest forms))
+            value
+            (repl/eval-forms (rest forms))))))

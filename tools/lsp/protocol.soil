@@ -1,0 +1,116 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; JSON-RPC framing and source positions for soil-lsp.
+;
+; The server speaks LSP over stdio. Framing is bytes; everything above it is
+; Soil data. Positions are converted at this boundary because LSP counts
+; UTF-16 code units while the Soil reader reports byte offsets.
+
+(defun lsp/send (message)
+  (let ((body (json-encode message)))
+    (stdout-write
+      (str "Content-Length: " (length (string->bytes body)) "\r\n\r\n" body))))
+
+(defun lsp/read-headers ()
+  (let ((line (stdin-read-line)))
+    (if (nil? line)
+        nil
+        (if (= line "")
+            (list)
+            (cons line (lsp/read-headers))))))
+
+(defun lsp/digit-value (character)
+  (let ((bytes (string->bytes character)))
+    (if (nil? bytes)
+        nil
+        (let ((byte (first bytes)))
+          (if (and (>= byte 48) (<= byte 57))
+              (- byte 48)
+              nil)))))
+
+(defun lsp/space? (character)
+  (or (= character " ") (= character "\t") (= character "\r")))
+
+(defun lsp/parse-digits (characters value digits)
+  (if (nil? characters)
+      (if (= digits 0) nil value)
+      (let ((digit (lsp/digit-value (first characters))))
+        (if (nil? digit)
+            (if (= digits 0) nil value)
+            (lsp/parse-digits (rest characters)
+              (+ (* value 10) digit)
+              (+ digits 1))))))
+
+(defun lsp/content-length (headers)
+  (cond
+    ((nil? headers) nil)
+    ((string-starts-with? (first headers) "Content-Length:")
+      (lsp/parse-digits
+        (drop-while 'lsp/space?
+          (drop 15 (string-chars (first headers))))
+        0 0))
+    (else (lsp/content-length (rest headers)))))
+
+(defun lsp/read-message ()
+  (let ((headers (lsp/read-headers)))
+    (if (nil? headers)
+        nil
+        (let ((length (lsp/content-length headers)))
+          (if (nil? length)
+              nil
+              (json-decode (stdin-read length)))))))
+
+(defun lsp/response (id result)
+  (list
+    (list :jsonrpc "2.0")
+    (list :id id)
+    (list :result result)))
+
+(defun lsp/notification (method params)
+  (list
+    (list :jsonrpc "2.0")
+    (list :method method)
+    (list :params params)))
+
+(defun lsp/position (text offset)
+  (lsp/position-loop (string-chars text) offset 0 0 0))
+
+(defun lsp/position-loop (characters offset line character consumed)
+  (cond
+    ((nil? characters)
+      (list (list :line line) (list :character character)))
+    ((>= consumed offset)
+      (list (list :line line) (list :character character)))
+    (else
+      (let ((current (first characters)))
+        (if (= current "\n")
+            (lsp/position-loop (rest characters) offset (+ line 1) 0
+              (+ consumed (length (string->bytes current))))
+            (lsp/position-loop (rest characters) offset line (+ character 1)
+              (+ consumed (length (string->bytes current)))))))))
+
+(defun lsp/range (text start end)
+  (list
+    (list :start (lsp/position text start))
+    (list :end (lsp/position text end))))
+
+(defun lsp/offset (text line character)
+  (lsp/offset-loop (string-chars text) line character 0 0 0))
+
+(defun lsp/offset-loop (characters line character current-line current-character consumed)
+  (cond
+    ((nil? characters) consumed)
+    ((and (= current-line line) (>= current-character character)) consumed)
+    (else
+      (let ((current (first characters)))
+        (if (= current "\n")
+            (lsp/offset-loop (rest characters) line character
+              (+ current-line 1) 0
+              (+ consumed (length (string->bytes current))))
+            (lsp/offset-loop (rest characters) line character
+              current-line (+ current-character 1)
+              (+ consumed (length (string->bytes current)))))))))
+
+(defun lsp/position-value (value)
+  (list
+    (list :line (field value :line))
+    (list :character (field value :character))))

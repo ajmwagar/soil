@@ -1,0 +1,19 @@
+schema = 1
+
+[command]
+name = "soil-lsp"
+version = "0.1.0"
+summary = "Soil Lisp language server"
+module = "module.wasm"
+# The shared Soil interpreter image imports the two capabilities `mb` uses.
+# An LSP command does not call either; the signed grant is still the whole set
+# the component imports, and the host links everything.
+requires = ["soil:records", "soil:time"]
+
+[limits]
+# A language server is long-lived; the runner's epoch is a runaway guard, not
+# a request timeout.
+timeout_ms = 86400000
+max_stdout_bytes = 16777216
+max_stderr_bytes = 1048576
+max_memory_bytes = 268435456

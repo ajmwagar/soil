@@ -1,0 +1,189 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Document analysis for soil-lsp: symbols, definitions, hover and diagnostics.
+
+(defun lsp/doc-uri? (doc uri)
+  (= (field doc :uri) uri))
+
+(defun lsp/doc-not-uri? (doc uri)
+  (not (lsp/doc-uri? doc uri)))
+
+(defun lsp/doc-get (uri docs)
+  (find-with 'lsp/doc-uri? uri docs))
+
+(defun lsp/doc-remove (uri docs)
+  (filter-with 'lsp/doc-not-uri? uri docs))
+
+(defun lsp/doc-put (uri text version docs)
+  (cons
+    (list
+      (list :uri uri)
+      (list :text text)
+      (list :version version))
+    (lsp/doc-remove uri docs)))
+
+(defun lsp/definition-head? (head)
+  (or (= head 'defun)
+      (= head 'defmacro)
+      (= head 'defconst)
+      (= head 'def)
+      (= head 'defspore)))
+
+(defun lsp/definition-form? (form)
+  (let ((items (field form :value)))
+    (if (nil? items)
+        #f
+        (lsp/definition-head? (first items)))))
+
+(defun lsp/form-name (form)
+  (nth 1 (field form :value)))
+
+(defun lsp/form-kind (form)
+  (let ((head (first (field form :value))))
+    (cond
+      ((= head 'defconst) 14)
+      ((= head 'def) 13)
+      ((= head 'defspore) 5)
+      (else 12))))
+
+(defun lsp/comment-body (comment)
+  (let ((text (field comment :text)))
+    (if (string-starts-with? text ";;;")
+        (let ((body (string-join (drop 3 (string-chars text)) "")))
+          (if (string-starts-with? body " ")
+              (string-join (drop 1 (string-chars body)) "")
+              body))
+        "")))
+
+(defun lsp/comments-markdown (comments)
+  (string-join
+    (filter-with 'lsp/comment-nonempty? "" comments)
+    "\n"))
+
+(defun lsp/comment-nonempty? (comment _)
+  (not (= (lsp/comment-body comment) "")))
+
+(defun lsp/form-docs (form)
+  (lsp/comments-markdown (field form :comments)))
+
+(defun lsp/item-token? (token)
+  (and (= (field token :kind) "atom")
+       (not (nil? (field token :text)))))
+
+(defun lsp/token-at-offset (tokens offset)
+  (find-with 'lsp/token-covers? offset tokens))
+
+(defun lsp/token-covers? (token offset)
+  (and (lsp/item-token? token)
+       (<= (field token :start) offset)
+       (< offset (field token :end))))
+
+(defun lsp/form-selection (form)
+  (let ((name (str (lsp/form-name form))))
+    (list
+      (list :start (+ (field form :start) 1))
+      (list :end (+ (field form :start) 1 (length (string->bytes name)))))))
+
+(defun lsp/form-symbol (form text)
+  (let ((name (lsp/form-name form)))
+    (list
+      (list :name (str name))
+      (list :kind (lsp/form-kind form))
+      (list :range (lsp/range text (field form :start) (field form :end)))
+      (list :selectionRange
+        (lsp/range text
+          (field (first (lsp/form-selection form)) :start)
+          (field (nth 1 (lsp/form-selection form)) :end))))))
+
+(defun lsp/form-location (uri text form)
+  (list
+    (list :uri uri)
+    (list :range (lsp/range text (field form :start) (field form :end)))))
+
+(defun lsp/definition-in-doc (name doc)
+  (let ((parsed (field doc :parsed)))
+    (if (nil? parsed)
+        nil
+        (find-with 'lsp/form-named? name (field parsed :forms)))))
+
+(defun lsp/form-named? (form name)
+  (and (lsp/definition-form? form)
+       (= (str (lsp/form-name form)) (str name))))
+
+(defun lsp/definition-in-docs (name docs)
+  (cond
+    ((nil? docs) nil)
+    ((lsp/definition-in-doc name (first docs))
+      (list
+        (field (first docs) :uri)
+        (field (first docs) :text)
+        (lsp/definition-in-doc name (first docs))))
+    (else (lsp/definition-in-docs name (rest docs)))))
+
+(defun lsp/diagnostic (text message offset)
+  (list
+    (list :range (lsp/range text offset (min (+ offset 1) (length (string->bytes text)))))
+    (list :severity 1)
+    (list :source "soil")
+    (list :message message)))
+
+(defun lsp/parse-doc (text)
+  (let ((result (try-read-document text)))
+    (if (ok? result)
+        (list (list :ok (value result)))
+        (list (list :err (value result))))))
+
+(defun lsp/diagnostics (text)
+  (let ((result (lsp/parse-doc text)))
+    (if (ok? result)
+        (list)
+        (let ((error (value result)))
+          (list
+            (lsp/diagnostic text
+              (field error :message)
+              (field error :offset)))))))
+
+(defun lsp/hover (text token docs)
+  (let ((definition (lsp/definition-in-docs (field token :text) docs)))
+    (if (nil? definition)
+        nil
+        (let ((doc-text (nth 1 definition))
+              (form (nth 2 definition))
+              (docs-text (lsp/form-docs form)))
+          (list
+            (list :contents
+              (list
+                (list :kind "markdown")
+                (list :value
+                  (str "```soil\n" (str (field form :value)) "\n```\n\n" docs-text))))
+            (list :range (lsp/range doc-text (field form :start) (field form :end))))))))
+
+(defun lsp/completion-items (docs)
+  (append
+    (lsp/builtin-items)
+    (lsp/symbol-items docs)))
+
+(defun lsp/builtin-items ()
+  (map 'lsp/completion-item
+    (list "defun" "defmacro" "defconst" "let" "if" "cond" "begin" "do"
+          "lambda" "quote" "quasiquote" "unquote" "host-call" "read"
+          "read-document" "try-read-document" "json-decode" "json-encode"
+          "println" "eprintln" "string-join" "string-chars" "string->bytes"
+          "stdin-read" "stdin-read-line" "stdout-write")))
+
+(defun lsp/completion-item (label)
+  (list (list :label label) (list :kind 14)))
+
+(defun lsp/symbol-items (docs)
+  (cond
+    ((nil? docs) (list))
+    (else
+      (append
+        (lsp/doc-symbol-items (first docs))
+        (lsp/symbol-items (rest docs))))))
+
+(defun lsp/doc-symbol-items (doc)
+  (let ((parsed (field doc :parsed)))
+    (if (nil? parsed)
+        (list)
+        (map 'lsp/completion-item
+          (map 'lsp/form-name (filter 'lsp/definition-form? (field parsed :forms)))))))

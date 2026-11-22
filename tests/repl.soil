@@ -1,0 +1,32 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Core REPL protocol tests.
+
+(defun test/repl-command-time ()
+  (let ((step (repl/step ":time (+ 1 2)" nil)))
+    (and
+      (= (field step :action) :time)
+      (= (field step :source) "(+ 1 2)"))))
+
+(defun test/repl-command-bench ()
+  (let ((step (repl/step ":bench 5 (+ 1 2)" nil)))
+    (and
+      (= (field step :action) :bench)
+      (= (field step :runs) "5")
+      (= (field step :source) "(+ 1 2)"))))
+
+(defun test/repl-eval-line ()
+  (let ((step (repl/step "(defun f (x) x)" nil)))
+    (and
+      (= (field step :action) :load)
+      (= (field step :source) "(defun f (x) x)\n"))))
+
+(defun test/repl-continuation ()
+  (let ((step (repl/step "  x)" "(defun f (x)")))
+    (and
+      (= (field step :action) :load)
+      (= (field step :source) "(defun f (x)  x)\n"))))
+
+(defun test/repl-eval ()
+  (and
+    (= (repl/eval-source "(+ 20 22)") 42)
+    (= (repl/text nil) "nil")))

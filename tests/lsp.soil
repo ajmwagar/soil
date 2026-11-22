@@ -1,0 +1,50 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+
+(defun test/lsp-position-roundtrip ()
+  (let ((text "(defun a () 1)\n(defun b () 2)\n"))
+    (and (= (lsp/offset text 0 0) 0)
+         (= (lsp/offset text 1 0) 16)
+         (= (field (lsp/position text 16) :line) 1)
+         (= (field (lsp/position text 16) :character) 0))))
+
+(defun test/lsp-parse-ok ()
+  (let ((result (lsp/parse-doc "(defun a () 1)\n")))
+    (and (ok? result)
+         (= (length (field (value result) :forms)) 1))))
+
+(defun test/lsp-parse-error ()
+  (let ((result (lsp/parse-doc "(defun a () 1")))
+    (and (not (ok? result))
+         (not (nil? (field (value result) :offset))))))
+
+(defun test/lsp-diagnostics-empty ()
+  (nil? (lsp/diagnostics "(defun a () 1)\n")))
+
+(defun test/lsp-diagnostics-error ()
+  (let ((diagnostics (lsp/diagnostics "(defun a () 1")))
+    (and (= (length diagnostics) 1)
+         (= (field (first diagnostics) :severity) 1))))
+
+(defun test/lsp-symbols ()
+  (let ((parsed (value (lsp/parse-doc "(defun a (x) x)\n(defconst b 2)\n"))))
+    (let ((symbols (map-with 'lsp/form-symbol "(defun a (x) x)\n(defconst b 2)\n"
+                    (filter 'lsp/definition-form? (field parsed :forms)))))
+      (and (= (length symbols) 2)
+           (= (field (first symbols) :name) "a")
+           (= (field (nth 1 symbols) :kind) 14)))))
+
+(defun test/lsp-definition ()
+  (let ((text "(defun a (x) x)\n(defun b () (a 1))\n"))
+    (let ((parsed (value (lsp/parse-doc text))))
+      (let ((doc (list (list :uri "file:///a.soil")
+                       (list :text text)
+                       (list :parsed parsed))))
+        (let ((found (lsp/definition-in-docs "a" (list doc))))
+          (and (not (nil? found))
+               (= (first found) "file:///a.soil")
+               (= (field (nth 2 found) :start) 0)))))))
+
+(defun test/lsp-comment-docs ()
+  (let ((text ";;; Adds one.\n(defun inc (x) (+ x 1))\n"))
+    (let ((parsed (value (lsp/parse-doc text))))
+      (= (lsp/form-docs (first (field parsed :forms))) "Adds one."))))

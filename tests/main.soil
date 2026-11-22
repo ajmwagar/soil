@@ -1,0 +1,13 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; CI entry point for the core REPL and image protocol tests.
+
+(defun main ()
+  (and
+    (test/repl-command-time)
+    (test/repl-command-bench)
+    (test/repl-eval-line)
+    (test/repl-continuation)
+    (test/repl-eval)
+    (test/image-ping)
+    (test/image-eval-host-action)
+    (test/image-host-action)))

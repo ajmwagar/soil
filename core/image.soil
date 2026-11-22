@@ -1,0 +1,95 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Host-free image protocol.
+;
+; The image server is one live Runtime. This module owns the JSON-line request
+; dispatch and response shaping that does not need host state. Operations that
+; need VFS/session lifecycle or `load` semantics are returned as
+; `(:action :host ...)` for the Loam launcher to execute.
+;
+; It has no `soil:*` imports. The `std/` layer supplies VFS and session state.
+
+(defun image/request-field (request name)
+  (field request name))
+
+(defun image/request-or (request name fallback)
+  (let ((value (image/request-field request name)))
+    (if (nil? value) fallback value)))
+
+(defun image/session (request)
+  (let ((session (image/request-field request :session)))
+    (if (nil? session)
+        (image/request-field request :name)
+        session)))
+
+(defun image/response-ok (result)
+  (list (list :ok #t) (list :result result)))
+
+(defun image/response-err (message)
+  (list (list :ok #f) (list :error message)))
+
+(defun image/host-action (op request)
+  (list (list :action :host)
+        (list :op op)
+        (list :request request)))
+
+(defun image/result-text (value)
+  (if (nil? value) "nil" (str value)))
+
+(defun image/eval-forms (forms)
+  (if (nil? forms)
+      nil
+      (let ((value (eval (first forms))))
+        (if (nil? (rest forms))
+            value
+            (image/eval-forms (rest forms))))))
+
+(defun image/eval-source (source)
+  (image/eval-forms (read source)))
+
+(defun image/handle-eval (request)
+  (let ((session (image/session request))
+        (source (image/request-or request :source "")))
+    (image/response-ok
+      (list
+        (list :session session)
+        (list :result
+          (image/result-text (image/eval-source source)))))))
+
+;;; Dispatch one decoded request. `sessions` is the host's current session list.
+;;;
+;;; `load`, `eval`, `attach`, `detach`, `status`, `flush`, and `flush_new` are
+;;; host actions because they need `load` semantics, VFS, runtime provenance,
+;;; or session ownership. `eval` cannot be `(eval (read source))` because that
+;;; does not install `defun` forms.
+(defun image/handle-request (request sessions)
+  (let ((op (image/request-or request :op "")))
+    (cond
+      ((= op "ping")
+        (image/response-ok (list (list :pong #t))))
+      ((= op "list")
+        (image/response-ok
+          (list (list :sessions sessions)
+                (list :images sessions))))
+      ((or (= op "eval")
+           (= op "load")
+           (= op "attach")
+           (= op "detach")
+           (= op "status")
+           (= op "flush")
+           (= op "flush_new")
+           (= op "compile")
+           (= op "call-compiled")
+           (= op "reload"))
+        (image/host-action op request))
+      (else
+        (image/response-err (str "unknown op " op))))))
+
+;;; Decode one JSON line and return a JSON response, unless the operation is a
+;;; host action.
+(defun image/handle-json (line sessions)
+  (image/handle-request (json-decode line) sessions))
+
+;;; Encode a normal response. Host actions are handled by the launcher before
+;;; this is called.
+(defun image/encode (response)
+  (json-encode response))
