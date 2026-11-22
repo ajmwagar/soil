@@ -6,6 +6,10 @@
 ; lists. These helpers keep that representation explicit rather than hiding it
 ; behind a second object type.
 
+; Known limitation: an empty JSON array decodes as `nil` in this value model, so
+; `json/array?` cannot distinguish it from JSON null. Empty objects keep the
+; `json-object` marker and do round-trip.
+
 (defun json/empty-object? (value)
   (and (not (nil? value)) (= (first value) '__json_object__)))
 
