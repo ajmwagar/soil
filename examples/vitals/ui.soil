@@ -1,0 +1,310 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Vitals, rendered as a Soil HTML/CSS view.
+;
+; Static page:
+;   soil-lang --prelude core/prelude.soil core/ui.soil \
+;     examples/vitals/vitals.soil examples/vitals/ui.soil \
+;     examples/vitals/page.soil > /tmp/vitals.html
+;
+; The view reads the same `vitals.view.v1` shape a GPUI renderer would read.
+; It owns no health policy and no pixels; the host owns the DOM.
+
+(defconst vitals-ui/now 1763800000000)
+
+(defun vitals-ui/div (class children)
+  (el "div" (list (attr :class class)) children))
+
+(defun vitals-ui/span (class children)
+  (el "span" (list (attr :class class)) children))
+
+(defun vitals-ui/article (class children)
+  (el "article" (list (attr :class class)) children))
+
+(defun vitals-ui/or (value fallback)
+  (if (nil? value) fallback value))
+
+(defun vitals-ui/percent (value max)
+  (if (or (nil? value) (nil? max) (= max 0))
+      0
+      (min 100 (int (* 100 (/ value max))))))
+
+(defun vitals-ui/base-styles ()
+  (str
+    ":root { color-scheme: dark; --ink:#e9ecf2; --muted:#8b93a7; --line:rgba(255,255,255,.08); --panel:#141821; --panel-2:#191f2b; --accent:#c8f169; --accent-ink:#18200a; }\n"
+    "* { box-sizing: border-box; }\n"
+    "html, body { min-height: 100%; }\n"
+    "body { margin:0; background:#0b0d12; }\n"
+    ".app { min-height:100vh; padding:28px clamp(20px,5vw,64px) 64px; color:var(--ink); background: radial-gradient(900px 480px at 15% -10%, rgba(200,241,105,.10), transparent 60%), radial-gradient(700px 420px at 95% 5%, rgba(110,140,255,.10), transparent 55%), #0b0d12; font:15px/1.55 ui-sans-serif,system-ui,-apple-system,\"Segoe UI\",sans-serif; }\n"
+    ".topbar { display:flex; align-items:center; justify-content:space-between; gap:16px; }\n"
+    ".brand { font-weight:800; letter-spacing:.18em; font-size:13px; }\n"
+    ".brand-sub { margin-left:10px; color:var(--muted); font-weight:500; letter-spacing:.04em; text-transform:lowercase; }\n"
+    ".pill { border:1px solid var(--line); border-radius:999px; padding:6px 12px; color:var(--muted); font-size:12px; background:rgba(255,255,255,.03); }\n"
+    ".header-actions { display:flex; align-items:center; gap:8px; }\n"
+    ".btn { appearance:none; border:1px solid var(--line); border-radius:999px; padding:7px 13px; background:rgba(255,255,255,.045); color:var(--ink); font:600 12px/1 ui-sans-serif,system-ui,sans-serif; cursor:pointer; }\n"
+    ".btn:hover { background:rgba(255,255,255,.09); border-color:rgba(255,255,255,.18); }\n"
+    ".stage { margin-top:clamp(32px,6vh,72px); max-width:1180px; }\n"
+    ".eyebrow { margin:0 0 8px; color:var(--muted); font-size:11px; letter-spacing:.22em; }\n"
+    ".mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }\n"))
+
+(defun vitals-ui/update (state action)
+  (cond
+    ((= action "view-guest") (assoc :wearer "guest" state))
+    ((= action "view-owner") (assoc :wearer "owner" state))
+    ((= action "toggle-wearer")
+      (assoc :wearer
+        (if (= (field state :wearer) "owner") "guest" "owner")
+        state))
+    (else state)))
+
+(defun vitals-ui/apply-actions (state actions)
+  (if (nil? actions)
+      state
+      (vitals-ui/apply-actions
+        (vitals-ui/update state (first actions))
+        (rest actions))))
+
+(defun vitals-ui/ring-color (id)
+  (cond
+    ((= id "heart") "#ff6b8b")
+    ((= id "oxygen") "#58a6ff")
+    (else "#c8f169")))
+
+(defun vitals-ui/ring-svg (ring)
+  (let ((value (field ring :value))
+        (max (field ring :max))
+        (id (field ring :id)))
+    (let ((pct (vitals-ui/percent value max)))
+      (let ((circ 345.575)
+            (dash (* 345.575 (/ pct 100.0))))
+        (el "svg"
+          (list
+            (attr :class "ring-svg")
+            (attr :viewBox "0 0 132 132")
+            (attr :width "132")
+            (attr :height "132"))
+          (list
+            (el "circle"
+              (list
+                (attr :cx "66") (attr :cy "66") (attr :r "55")
+                (attr :fill "none")
+                (attr :stroke "rgba(255,255,255,.07)")
+                (attr :stroke-width "11"))
+              nil)
+            (el "circle"
+              (list
+                (attr :cx "66") (attr :cy "66") (attr :r "55")
+                (attr :fill "none")
+                (attr :stroke (vitals-ui/ring-color id))
+                (attr :stroke-width "11")
+                (attr :stroke-linecap "round")
+                (attr :stroke-dasharray (str dash " " circ))
+                (attr :transform "rotate(-90 66 66)"))
+              nil)
+            (el "text"
+              (list
+                (attr :x "66") (attr :y "70")
+                (attr :text-anchor "middle")
+                (attr :fill "#e9ecf2")
+                (attr :font-size "30")
+                (attr :font-weight "700"))
+              (list (txt (vitals-ui/or value "—"))))
+            (el "text"
+              (list
+                (attr :x "66") (attr :y "92")
+                (attr :text-anchor "middle")
+                (attr :fill "#8b93a7")
+                (attr :font-size "10")
+                (attr :letter-spacing "1.5"))
+              (list (txt (field ring :unit))))))))))
+
+(defun vitals-ui/ring (ring)
+  (vitals-ui/article "ring-card"
+    (list
+      (vitals-ui/div "ring-head"
+        (list
+          (vitals-ui/span "ring-label" (list (txt (field ring :label))))
+          (vitals-ui/span (str "fresh " (field ring :freshness))
+            (list (txt (field ring :freshness))))))
+      (vitals-ui/div "ring-wrap" (list (vitals-ui/ring-svg ring)))
+      (vitals-ui/div "ring-meta"
+        (list
+          (vitals-ui/span "" (list (txt (vitals-ui/or (field ring :source_device) "no source"))))
+          (vitals-ui/span ""
+            (list (txt (str (vitals-ui/or (field ring :value) "—") " / "
+                            (vitals-ui/or (field ring :max) "—"))))))))))
+
+(defun vitals-ui/rings (rings)
+  (vitals-ui/div "rings" (map 'vitals-ui/ring rings)))
+
+(defun vitals-ui/card-value (card)
+  (let ((value (field card :value)))
+    (cond
+      ((nil? value) "—")
+      ((= (field card :unit) "mg") (str (round value)))
+      (else value))))
+
+(defun vitals-ui/card (card)
+  (vitals-ui/article "metric"
+    (list
+      (vitals-ui/div "metric-head"
+        (list
+          (vitals-ui/span "metric-label" (list (txt (field card :label))))
+          (vitals-ui/span (str "fresh " (field card :freshness))
+            (list (txt (field card :freshness))))))
+      (vitals-ui/div "metric-value"
+        (list
+          (txt (vitals-ui/card-value card))
+          (vitals-ui/span "metric-unit" (list (txt (field card :unit))))))
+      (vitals-ui/div "metric-source"
+        (list (txt (vitals-ui/or (field card :source_device) "no source")))))))
+
+(defun vitals-ui/cards (cards)
+  (vitals-ui/div "metrics" (map 'vitals-ui/card cards)))
+
+(defun vitals-ui/stage-seg (stage total)
+  (let ((ms (- (field stage :end) (field stage :start))))
+    (el "div"
+      (list
+        (attr :class (str "hypno-seg stage-" (field stage :stage)))
+        (attr :title (str (field stage :stage) " · " (int (/ ms 60000)) "m"))
+        (attr :style (str "width:" (max 1 (int (* 100 (/ ms total)))) "%")))
+      nil)))
+
+(defun vitals-ui/sleep-title (session)
+  (let ((minutes (int (/ (field session :sleep_ms) 60000))))
+    (str (int (/ minutes 60)) "h " (- minutes (* 60 (int (/ minutes 60)))) "m sleep")))
+
+(defun vitals-ui/hypnogram (session)
+  (if (nil? session)
+      (vitals-ui/div "empty" (list (txt "No completed sleep session in this window.")))
+      (let ((total (field session :time_in_bed_ms)))
+        (vitals-ui/div "sleep"
+          (list
+            (vitals-ui/div "sleep-head"
+              (list
+                (vitals-ui/div "" 
+                  (list
+                    (vitals-ui/div "eyebrow" (list (txt "LAST NIGHT")))
+                    (vitals-ui/div "sleep-title" (list (txt (vitals-ui/sleep-title session))))))
+                (vitals-ui/div "sleep-source" (list (txt (field session :source_device))))))
+            (vitals-ui/div "hypno"
+              (map-with 'vitals-ui/stage-seg total (field session :stages)))
+            (vitals-ui/div "legend"
+              (list
+                (vitals-ui/span "key stage-awake" (list (txt "awake")))
+                (vitals-ui/span "key stage-light" (list (txt "light")))
+                (vitals-ui/span "key stage-deep" (list (txt "deep")))
+                (vitals-ui/span "key stage-rem" (list (txt "rem"))))))))))
+
+(defun vitals-ui/step-row (row)
+  (vitals-ui/div "step-row"
+    (list
+      (vitals-ui/span "mono" (list (txt (field row :device))))
+      (el "strong" nil (list (txt (field row :count)))))))
+
+(defun vitals-ui/steps (steps)
+  (vitals-ui/div "steps"
+    (list
+      (vitals-ui/div "eyebrow" (list (txt "STEPS BY DEVICE")))
+      (map 'vitals-ui/step-row (field steps :rows))
+      (vitals-ui/div "step-note"
+        (list (txt "Never summed. The Move ring uses the fused per-bucket estimate."))))))
+
+(defun vitals-ui/header (view)
+  (el "header" (list (attr :class "topbar"))
+    (list
+      (vitals-ui/div ""
+        (list
+          (vitals-ui/div "brand" (list (txt "Vitals")))
+          (el "p" (list (attr :class "lede"))
+            (list (txt "Wearer-scoped health fusion. Ring primary, watch fallback, no invented totals.")))))
+      (vitals-ui/div "header-actions"
+        (list
+          (vitals-ui/div "pill"
+            (list (txt (str "wearer " (field view :wearer) " · " (field view :freshness)))))
+          (el "button"
+            (list
+              (attr :class "btn")
+              (attr :data-action
+                (if (= (field view :wearer) "owner") "view-guest" "view-owner")))
+            (list
+              (txt (if (= (field view :wearer) "owner")
+                       "View guest"
+                       "View owner")))))))))
+
+(defun vitals-ui/footer (view)
+  (vitals-ui/div "footer"
+    (list
+      (txt "policy ")
+      (vitals-ui/span "mono" (list (txt (field view :policy_version))))
+      (txt " · source ")
+      (vitals-ui/span "mono" (list (txt (field view :source)))))))
+
+(defun vitals-ui/initial-state ()
+  (list (list :now vitals-ui/now) (list :wearer "owner")))
+
+(defun vitals-ui/view (state)
+  ;; Seed the household owner once; the selected wearer only filters the
+  ;; fused view. Seeding with the selected wearer would relabel owner devices
+  ;; as that wearer and hide the isolation the toggle exists to show.
+  (let ((signals (vitals/seed-signals (field state :now) "owner")))
+    (let ((vitals (vitals/fuse signals (field state :wearer) (field state :now) (vitals/policy))))
+      (let ((vm (vitals/to-view vitals)))
+        (vitals-ui/div "app"
+          (list
+            (vitals-ui/header vm)
+            (vitals-ui/div "stage"
+              (list
+                (vitals-ui/rings (field vm :rings))
+                (vitals-ui/cards (field vm :cards))
+                (vitals-ui/div "split"
+                  (list
+                    (vitals-ui/hypnogram (field vm :sleep_session))
+                    (vitals-ui/steps (field vm :steps))))
+                (vitals-ui/footer vm)))))))))
+
+(defun vitals-ui/styles ()
+  (str
+    (vitals-ui/base-styles)
+    "\n.stage { max-width: 1180px; }\n"
+    ".lede { color: var(--muted); margin: 10px 0 0; max-width: 62ch; }\n"
+    ".rings { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin:0 0 18px; }\n"
+    ".ring-card { border:1px solid var(--line); border-radius:20px; padding:18px; background:linear-gradient(180deg,rgba(255,255,255,.035),transparent 65%),var(--panel); box-shadow:0 20px 50px rgba(0,0,0,.28); }\n"
+    ".ring-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px; }\n"
+    ".ring-label { font-size:12px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); font-weight:700; }\n"
+    ".ring-wrap { display:grid; place-items:center; padding:4px 0 8px; }\n"
+    ".ring-svg { display:block; width:132px; height:132px; }\n"
+    ".ring-meta { display:flex; justify-content:space-between; gap:8px; color:var(--muted); font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }\n"
+    ".fresh { font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }\n"
+    ".fresh.fresh { color:#7ee2a8; }\n"
+    ".fresh.stale, .fresh.expired { color:#f5c542; }\n"
+    ".metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:18px; }\n"
+    ".metric { border:1px solid var(--line); border-radius:16px; padding:15px 16px; background:var(--panel-2); }\n"
+    ".metric-head { display:flex; justify-content:space-between; gap:8px; align-items:center; margin-bottom:8px; }\n"
+    ".metric-label { color:var(--muted); font-size:11px; letter-spacing:.14em; text-transform:uppercase; font-weight:700; }\n"
+    ".metric-value { font:700 26px/1.1 ui-sans-serif,system-ui,sans-serif; letter-spacing:-.03em; font-variant-numeric:tabular-nums; }\n"
+    ".metric-unit { color:var(--muted); font:600 12px/1 ui-sans-serif,system-ui,sans-serif; margin-left:5px; letter-spacing:.04em; }\n"
+    ".metric-source { color:var(--muted); font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; margin-top:7px; }\n"
+    ".split { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(280px,.65fr); gap:14px; }\n"
+    ".sleep, .steps { border:1px solid var(--line); border-radius:20px; padding:20px; background:linear-gradient(180deg,rgba(255,255,255,.025),transparent 70%),var(--panel); }\n"
+    ".sleep-head { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:16px; }\n"
+    ".sleep-title { font:650 24px/1.15 ui-sans-serif,system-ui,sans-serif; letter-spacing:-.02em; }\n"
+    ".sleep-source { color:var(--muted); font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }\n"
+    ".hypno { display:flex; min-height:44px; border-radius:10px; overflow:hidden; background:#0b0f15; border:1px solid var(--line); }\n"
+    ".hypno-seg { min-width:2px; height:44px; }\n"
+    ".stage-awake { background:#4a5366; }\n"
+    ".stage-light { background:#58a6ff; }\n"
+    ".stage-deep { background:#7c6cff; }\n"
+    ".stage-rem { background:#c8f169; }\n"
+    ".legend { display:flex; gap:14px; flex-wrap:wrap; margin-top:12px; color:var(--muted); font-size:11px; }\n"
+    ".key::before { content:''; display:inline-block; width:9px; height:9px; border-radius:3px; margin-right:6px; vertical-align:1px; }\n"
+    ".key.stage-awake::before { background:#4a5366; }\n"
+    ".key.stage-light::before { background:#58a6ff; }\n"
+    ".key.stage-deep::before { background:#7c6cff; }\n"
+    ".key.stage-rem::before { background:#c8f169; }\n"
+    ".step-row { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid var(--line); font-size:14px; }\n"
+    ".step-row strong { font-variant-numeric:tabular-nums; }\n"
+    ".step-note { color:var(--muted); font-size:12px; line-height:1.5; margin-top:14px; max-width:34ch; }\n"
+    ".empty { color:var(--muted); }\n"
+    ".footer { color:var(--muted); font-size:11px; margin-top:18px; letter-spacing:.04em; }\n"
+    "@media (max-width:900px) { .rings,.metrics { grid-template-columns:1fr; } .split { grid-template-columns:1fr; } }\n"))

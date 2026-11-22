@@ -1,0 +1,10 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Render the Vitals view as one HTML page.
+;
+;   soil-lang --prelude core/prelude.soil \
+;     core/ui.soil examples/vitals/vitals.soil examples/vitals/ui.soil \
+;     examples/vitals/page.soil > /tmp/vitals.html
+
+(defun main ()
+  (println
+    (render-page "Vitals" (vitals-ui/styles) (vitals-ui/view (vitals-ui/initial-state)))))

@@ -46,6 +46,7 @@ FIXTURES=(
   examples/hue/hue_cli.soil
   examples/playback/playback.soil
   examples/playback/playback_cli.soil
+  examples/vitals/vitals.soil
 )
 TESTS=(
   tests/loam/boot.soil tests/loam/cli.soil tests/loam/date.soil
@@ -66,6 +67,7 @@ TESTS=(
   tests/edit.soil
   tests/safe-eval.soil
   tests/edit-lsp.soil
+  tests/vitals.soil
 )
 
 base_files() {

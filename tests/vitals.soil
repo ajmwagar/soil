@@ -1,0 +1,173 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Vitals fusion policy tests, ported from spores/vitals/core.
+
+(defun vitals-test/seeded (now)
+  (vitals/seed-signals now "owner"))
+
+(defun vitals-test/card-empty? (card)
+  (nil? (field card :value)))
+
+(defun vitals-test/ring-empty? (ring)
+  (nil? (field ring :value)))
+
+(defun vitals-test/card-has-id? (card id)
+  (= (field card :id) id))
+
+(defun vitals-test/ring-has-id? (ring id)
+  (= (field ring :id) id))
+
+(defun vitals-test/sample-signal (id kind device spore wearer at value)
+  (list
+    (list :signal-id id)
+    (list :kind kind)
+    (list :source-device device)
+    (list :source-spore spore)
+    (list :wearer wearer)
+    (list :observed-at at)
+    (list :quality 1.0)
+    (list :value value)))
+
+(defun test/vitals-ring-primary-hr ()
+  (let ((now 10000))
+    (let ((vitals (vitals/fuse (vitals-test/seeded now) "owner" now (vitals/policy))))
+      (and
+        (= (field (field vitals :heart-rate) :value) 58)
+        (= (field (field vitals :hrv) :value) 48)
+        (= (field (field vitals :spo2) :value) 97)))))
+
+(defun test/vitals-watch-is-motion-primary ()
+  (let ((now 10000))
+    (let ((vitals (vitals/fuse (vitals-test/seeded now) "owner" now (vitals/policy))))
+      (and
+        (= (field vitals :primary-motion-device) "sim-pinetime")
+        (> (field (field vitals :motion) :value) 1000)))))
+
+(defun test/vitals-sleep-selects-ring-not-average ()
+  (let ((now (+ (* 8 60 60 1000) 10000)))
+    (let ((vitals (vitals/fuse (vitals-test/seeded now) "owner" now (vitals/policy))))
+      (let ((sleep (field vitals :sleep-session)))
+        (and
+          (nil? (field vitals :sleep))
+          (= (field sleep :source-device) "sim-ring")
+          (= (field sleep :time-in-bed-ms) (* 480 60000))
+          (= (field sleep :sleep-ms) (* 440 60000))
+          (= (vitals/map-get "awake" (field sleep :stage-ms)) (* 40 60000))
+          (= (vitals/map-get "light" (field sleep :stage-ms)) (* 210 60000))
+          (= (vitals/map-get "deep" (field sleep :stage-ms)) (* 130 60000))
+          (= (vitals/map-get "rem" (field sleep :stage-ms)) (* 100 60000))
+          (= (field sleep :freshness) "fresh"))))))
+
+(defun test/vitals-sleep-ages-out ()
+  (let ((now (+ (* 8 60 60 1000) 10000)))
+    (let ((signals (vitals-test/seeded now)))
+      (let ((max-age (field (vitals/policy) :sleep-max-age-ms)))
+        (let ((stale (vitals/fuse signals "owner" (+ now max-age 1) (vitals/policy))))
+          (let ((expired (vitals/fuse signals "owner" (+ now (* max-age 2) 1) (vitals/policy))))
+            (and
+              (= (field (field stale :sleep-session) :freshness) "stale")
+              (nil? (field expired :sleep-session)))))))))
+
+(defun test/vitals-steps-per-device-never-summed ()
+  (let ((now 10000))
+    (let ((vitals (vitals/fuse (vitals-test/seeded now) "owner" now (vitals/policy))))
+      (let ((steps (field vitals :steps)))
+        (and
+          (= (vitals/map-get "sim-pinetime" steps) 4231)
+          (= (vitals/map-get "sim-ring" steps) 9000)
+          (= (length steps) 2)
+          (nil? (vitals/map-get "sim-pinetime+sim-ring" steps))
+          (not (= (field (field vitals :step-estimate) :value) 13231)))))))
+
+(defun test/vitals-guest-signals-do-not-leak ()
+  (let ((now 10000))
+    (let ((vitals (vitals/fuse (vitals-test/seeded now) "owner" now (vitals/policy))))
+      (and
+        (not (vitals/member? "sim-ring-guest" (field vitals :devices)))
+        (= (field (field vitals :heart-rate) :value) 58)))))
+
+(defun test/vitals-stale-is-unknown-not-zero ()
+  (let ((now (+ 1000 (field (vitals/policy) :fresh-ms) 1)))
+    (let ((signals
+            (list
+              (vitals-test/sample-signal "stale-hr" "body.hr.v1" "sim-ring"
+                "dev.fungos.colmi-ring" "owner" 1000 (list (list :bpm 72))))))
+      (let ((vitals (vitals/fuse signals "owner" now (vitals/policy))))
+        (and
+          (nil? (field vitals :heart-rate))
+          (= (field vitals :freshness) "stale"))))))
+
+(defun test/vitals-summary-schema-and-policy ()
+  (let ((now 10000))
+    (let ((summary (vitals/to-json (vitals/fuse (vitals-test/seeded now) "owner" now (vitals/policy)))))
+      (and
+        (= (field summary :schema) "vitals.summary.v1")
+        (= (field summary :policy_version) "vitals-fusion-v1")
+        (= (field summary :wearer) "owner")
+        (= (field (field (field summary :steps) :by_device) (keyword "sim-ring")) 9000)
+        (= (field (field (field summary :steps) :estimate) :value) 9000)
+        (= (field (field (field summary :steps) :estimate) :source_device) "fused")
+        (= (field (field (field summary :steps) :estimate) :policy) "per-bucket-max")))))
+
+(defun test/vitals-seed-is-deterministic ()
+  (= (vitals/seed 42 "owner") (vitals/seed 42 "owner")))
+
+(defun test/vitals-per-bucket-max-uses-history-not-total ()
+  (let ((now 3600000))
+    (let ((signals
+            (list
+              (vitals-test/sample-signal "w1" "body.steps.v1" "sim-pinetime" "test" "owner" 1500000 (list (list :count 200)))
+              (vitals-test/sample-signal "r1" "body.steps.v1" "sim-ring" "test" "owner" 1500000 (list (list :count 120)))
+              (vitals-test/sample-signal "w2" "body.steps.v1" "sim-pinetime" "test" "owner" 1800000 (list (list :count 400)))
+              (vitals-test/sample-signal "r2" "body.steps.v1" "sim-ring" "test" "owner" 1800000 (list (list :count 300)))
+              (vitals-test/sample-signal "w3" "body.steps.v1" "sim-pinetime" "test" "owner" 2100000 (list (list :count 600)))
+              (vitals-test/sample-signal "r3" "body.steps.v1" "sim-ring" "test" "owner" 2100000 (list (list :count 500)))
+              (vitals-test/sample-signal "w4" "body.steps.v1" "sim-pinetime" "test" "owner" 2400000 (list (list :count 800)))
+              (vitals-test/sample-signal "r4" "body.steps.v1" "sim-ring" "test" "owner" 2400000 (list (list :count 700))))))
+      (let ((vitals (vitals/fuse signals "owner" now (vitals/policy))))
+        (let ((estimate (field vitals :step-estimate)))
+          (and
+            (nil? (field vitals :steps))
+            (= (field estimate :value) 800)
+            (= (field estimate :policy) "per-bucket-max")
+            (= (field estimate :source-device) "fused")
+            (= (field estimate :buckets-covered) 4)
+            (= (vitals/map-get "sim-pinetime" (field estimate :contributors)) 800)
+            (not (= (field estimate :value) 1500))))))))
+
+(defun test/vitals-view-cards-and-no-total ()
+  (let ((now 10000))
+    (let ((view (vitals/to-view (vitals/fuse (vitals-test/seeded now) "owner" now (vitals/policy)))))
+      (let ((cards (field view :cards)))
+        (let ((heart (find-with 'vitals-test/card-has-id? "heart_rate" cards)))
+          (and
+            (= (field view :schema) "vitals.view.v1")
+            (= (field heart :value) 58)
+            (= (field heart :source_device) "sim-ring")
+            (= (length (field (field view :steps) :rows)) 2)
+            (nil? (field (field view :steps) :total))
+            (= (length (field view :rings)) 3)))))))
+
+(defun test/vitals-view-rings-use-highest-fresh-steps ()
+  (let ((now 10000))
+    (let ((view (vitals/to-view (vitals/fuse (vitals-test/seeded now) "owner" now (vitals/policy)))))
+      (let ((rings (field view :rings)))
+        (let ((move (find-with 'vitals-test/ring-has-id? "move" rings))
+              (heart (find-with 'vitals-test/ring-has-id? "heart" rings))
+              (oxygen (find-with 'vitals-test/ring-has-id? "oxygen" rings)))
+          (and
+            (= (field move :value) 9000)
+            (= (field move :source_device) "fused")
+            (nil? (field move :total))
+            (= (field (field (field view :steps) :estimate) :value) 9000)
+            (= (field heart :value) 58)
+            (= (field heart :max) 180)
+            (= (field oxygen :value) 97)
+            (= (field oxygen :max) 100)))))))
+
+(defun test/vitals-view-missing-is-null ()
+  (let ((view (vitals/to-view (vitals/fuse nil "owner" 10000 (vitals/policy)))))
+    (and
+      (all? 'vitals-test/card-empty? (field view :cards))
+      (all? 'vitals-test/ring-empty? (field view :rings))
+      (nil? (field (field (field view :steps) :estimate) :value))
+      (= (field view :empty) #t))))
