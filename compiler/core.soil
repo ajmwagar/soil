@@ -92,8 +92,50 @@
                "")
            (compiler/forms (rest forms)))))
 
+
+; ---------------------------------------------------------------------------
+; Macro expansion for target source.
+;
+; The compiler runs under the interpreter, so defmacro forms in the source are
+; installed into the interpreter's macro table, then every form is recursively
+; expanded before lowering. Quoted forms and defmacro forms are left alone.
+
+(defun wasm/macro-form? (form)
+  (and (not (atom form)) (= (wasm/head form) "defmacro")))
+
+(defun wasm/quote-form? (form)
+  (and (not (atom form)) (= (wasm/head form) "quote")))
+
+(defun wasm/expand-list (forms)
+  (if (nil? forms)
+      nil
+      (cons (wasm/expand-tree (first forms))
+            (wasm/expand-list (rest forms)))))
+
+(defun wasm/expand-tree (form)
+  (cond
+    ((atom form) form)
+    ((wasm/quote-form? form) form)
+    ((wasm/macro-form? form) form)
+    (else
+      (let ((expanded (macroexpand form)))
+        (if (= expanded form)
+            (cons (first form) (wasm/expand-list (rest form)))
+            (wasm/expand-tree expanded))))))
+
+(defun wasm/expand-forms (forms)
+  (if (nil? forms)
+      nil
+      (let ((form (first forms)))
+        (if (wasm/macro-form? form)
+            (begin
+              (eval form)
+              (wasm/expand-forms (rest forms)))
+            (cons (wasm/expand-tree form)
+                  (wasm/expand-forms (rest forms)))))))
+
 (defun compiler/compile-source (source)
-  (str "(module\n" (compiler/forms (read source)) ")\n"))
+  (str "(module\n" (compiler/forms (wasm/expand-forms (read source))) ")\n"))
 
 (defun compiler/compile-wat (source)
   (compiler/compile-source source))
@@ -512,7 +554,7 @@
         (wasm/section 6 (wasm/cat (list (list 1 126 1 66) (wasm/sleb value) (list 11)))))))
 
 (defun wasm/compile-source (source)
-  (let ((forms (read source)))
+  (let ((forms (wasm/expand-forms (read source))))
     (let ((imports (wasm/imports forms)))
       (let ((defuns (wasm/defuns forms)))
         (let ((names (append (map (lambda (form) (wasm/import-name form)) imports)

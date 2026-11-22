@@ -91,3 +91,19 @@ This emits a real Wasm import section:
 
 Current limit: parameters and result are i64-only. Strings, lists, resources,
 and canonical ABI lowering are the next slice.
+
+## Macros
+
+The Soil compiler expands target macros before lowering:
+
+```lisp
+(defmacro unless (c a b)
+  `(if (not ,c) ,a ,b))
+
+(defun choose (x)
+  (unless (= x 0) 10 20))
+```
+
+`defmacro` forms are installed into the interpreter's macro table, then forms
+are recursively expanded. Quoted forms are left alone. This is compile-time
+expansion; macros are not part of the emitted runtime.

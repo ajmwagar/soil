@@ -5,4 +5,5 @@
   (and
     (test/selfhost-add)
     (test/selfhost-if)
-    (test/selfhost-call)))
+    (test/selfhost-call)
+    (test/selfhost-macro)))

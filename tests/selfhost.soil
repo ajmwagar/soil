@@ -21,3 +21,12 @@
     (and
       (string-contains? wat "(func $twice")
       (string-contains? wat "call $twice"))))
+
+(defun test/selfhost-macro ()
+  (let ((wat
+          (compiler/compile-source
+            "(defmacro unless (c a b) `(if (not ,c) ,a ,b))
+             (defun choose (x) (unless (= x 0) 10 20))")))
+    (and
+      (string-contains? wat "if (result i64)")
+      (not (string-contains? wat "unless")))))
