@@ -107,3 +107,27 @@ The Soil compiler expands target macros before lowering:
 `defmacro` forms are installed into the interpreter's macro table, then forms
 are recursively expanded. Quoted forms are left alone. This is compile-time
 expansion; macros are not part of the emitted runtime.
+
+## Component target
+
+`scripts/componentize.sh` wraps a core module with WIT metadata:
+
+```sh
+scripts/componentize.sh tests/wit/component-probe.wit \
+  core.wasm component.wasm
+```
+
+The probe compiles a Soil function to a core export and lifts it into a real
+component:
+
+```lisp
+(defun run () 42)
+```
+
+```sh
+wasmtime run --invoke 'run()' /tmp/component-probe.wasm
+# 42
+```
+
+This is the component-model path. Strings, lists, and resources still require
+canonical-ABI lowering (`cabi_realloc`, memory export, post-return functions).

@@ -1,0 +1,4 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; A minimal component target: core export -> component export.
+
+(defun run () 42)
