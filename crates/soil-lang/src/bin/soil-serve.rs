@@ -13,6 +13,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use anyhow::{Context, Result, bail};
+use soil_lang::sexp::Value;
 use soil_lang::{HttpSession, NativeHost, Runtime};
 
 struct Config {
@@ -157,6 +158,18 @@ fn serve(stream: TcpStream, config: &Config) -> Result<()> {
             .load_file(&file)
             .with_context(|| format!("load {}", file.display()))?;
     }
-    runtime.call("server/main", &[])?;
+    let result = runtime.call("server/main", &[])?;
+    if let Value::List(items) = &result
+        && items.first().and_then(Value::as_symbol) == Some("stream")
+        && let Some(handle) = items.get(1).and_then(Value::as_f64)
+    {
+        loop {
+            thread::sleep(std::time::Duration::from_millis(500));
+            if let Err(error) = runtime.call("server/stream-tick", &[Value::Int(handle as i64)]) {
+                eprintln!("stream-tick: {error:#}");
+                break;
+            }
+        }
+    }
     Ok(())
 }
