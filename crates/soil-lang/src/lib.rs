@@ -7,6 +7,7 @@ pub mod eval;
 pub mod lisp;
 pub mod native_host;
 pub mod sexp;
+pub mod unibus_host;
 pub mod wasm;
 pub mod witgen;
 
@@ -18,5 +19,6 @@ pub use lisp::{Compiled as CompiledLisp, compile_source as compile_lisp};
 pub use native_host::NativeHost;
 pub use sexp::{Comment, Document, Form, Span, parse_document, print_document};
 pub use soil::time::SystemTimeHost;
+pub use unibus_host::UnibusHost;
 pub use wasm::compile;
 pub use witgen::{Generated, generate};
