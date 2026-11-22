@@ -1,0 +1,62 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Interactive REPL for the WASI p2 runner.
+;
+; The protocol is core/repl.soil. This file only supplies the loop, prompts,
+; and stdio. It uses generated wasi:cli / wasi:io bindings, so no Loam host is
+; involved.
+
+(defun repl/write (stream text)
+  (wasi:io/streams.output-stream.blocking-write-and-flush
+    stream (string->bytes text)))
+
+(defun repl/read-byte (stream)
+  (let ((result (wasi:io/streams.input-stream.blocking-read stream 1)))
+    (if (ok? result)
+        (let ((data (value result)))
+          (if (nil? data) nil (first data)))
+        nil)))
+
+(defun repl/read-line-loop (stream acc)
+  (let ((byte (repl/read-byte stream)))
+    (cond
+      ((nil? byte)
+        (if (nil? acc) nil (bytes->string (reverse acc))))
+      ((= byte 10)
+        (bytes->string (reverse acc)))
+      ((= byte 13)
+        (repl/read-line-loop stream acc))
+      (else
+        (repl/read-line-loop stream (cons byte acc))))))
+
+(defun repl/read-line (stream)
+  (repl/read-line-loop stream nil))
+
+(defun repl/run (buffer)
+  (repl/write 2 (if (nil? buffer) "> " "... "))
+  (let ((line (repl/read-line 1)))
+    (if (nil? line)
+        (begin
+          (repl/write 2 "\n")
+          nil)
+        (let ((step (repl/step line buffer)))
+          (let ((action (field step :action)))
+            (cond
+              ((= action :quit) nil)
+              ((= action :print)
+                (begin
+                  (repl/write 2 (str (field step :text) "\n"))
+                  (repl/run nil)))
+              ((= action :error)
+                (begin
+                  (repl/write 3 (str (field step :message) "\n"))
+                  (repl/run nil)))
+              (else
+                (let ((result (load (field step :source))))
+                  (begin
+                    (repl/write 2 (str (repl/text result) "\n"))
+                    (repl/run nil))))))))))
+
+(defun main ()
+  (begin
+    (repl/write 2 "Soil REPL. :help for commands.\n")
+    (repl/run nil)))
