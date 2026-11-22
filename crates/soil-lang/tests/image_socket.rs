@@ -10,6 +10,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value as Json, json};
+use soil::vfs_host::{VfsHost, vfs::Host as VfsHostTrait};
 use soil_lang::{Host, NativeHost};
 
 struct Daemon(Child);
@@ -110,6 +111,84 @@ fn two_clients_share_one_session_image() {
     assert_eq!(status["ok"], true);
     assert_eq!(status["result"]["desktop"], "fpl");
     assert_eq!(status["result"]["project"], "suite");
+}
+
+#[test]
+fn compile_writes_a_wasm_artifact_to_vfs() {
+    let root = tempfile::tempdir_in("/tmp").unwrap();
+    let workspace = root.path().join("workspace");
+    let records = root.path().join("records");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&records).unwrap();
+
+    let socket = root.path().join("image.sock");
+    let prelude = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib/prelude.soil");
+    let child = Command::new(env!("CARGO_BIN_EXE_soil-image"))
+        .arg("--socket")
+        .arg(&socket)
+        .env("SOIL_PRELUDE", prelude)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _daemon = Daemon(child);
+
+    let mut stream = wait_for_socket(&socket);
+    let attached = request(
+        &mut stream,
+        json!({
+            "op": "attach",
+            "session": "s3",
+            "workspace": workspace,
+            "records": records,
+        }),
+    );
+    assert_eq!(attached["ok"], true);
+    let compiled = request(
+        &mut stream,
+        json!({
+            "op": "compile",
+            "session": "s3",
+            "source": "(defun add (a b) (+ a b))",
+        }),
+    );
+    assert_eq!(compiled["ok"], true);
+    assert_eq!(compiled["result"]["functions"], json!(["add"]));
+    assert!(compiled["result"]["bytes"].as_u64().unwrap() > 0);
+    let path = compiled["result"]["path"].as_str().unwrap();
+    assert!(path.starts_with("compiled/"));
+
+    let mut vfs = VfsHost::open(&workspace).unwrap();
+    let entry = VfsHostTrait::stat(&mut vfs, path.to_string()).unwrap();
+    let page = VfsHostTrait::read(&mut vfs, path.to_string(), 0, entry.size as u32).unwrap();
+    assert_eq!(&page.data[..4], b"\0asm");
+
+    let by_source = request(
+        &mut stream,
+        json!({
+            "op": "call-compiled",
+            "session": "s3",
+            "source": "(defun add (a b) (+ a b))",
+            "function": "add",
+            "args": [20, 22],
+        }),
+    );
+    assert_eq!(by_source["ok"], true, "{by_source}");
+    assert_eq!(by_source["result"]["result"], 42);
+    assert_eq!(by_source["result"]["compiled"], true);
+
+    let by_path = request(
+        &mut stream,
+        json!({
+            "op": "call-compiled",
+            "session": "s3",
+            "path": path,
+            "function": "add",
+            "args": [1, 2],
+        }),
+    );
+    assert_eq!(by_path["ok"], true);
+    assert_eq!(by_path["result"]["result"], 3);
 }
 
 #[test]

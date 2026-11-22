@@ -103,6 +103,49 @@ impl NativeHost {
         Ok(self)
     }
 
+    /// Read opaque bytes from the VFS, bounded like source reads.
+    pub fn read_bytes(&mut self, path: &str) -> anyhow::Result<Vec<u8>> {
+        let entry = VfsHostTrait::stat(&mut self.vfs, path.to_string())
+            .map_err(|error| anyhow::anyhow!("stat {path}: {error:?}"))?;
+        if entry.size > 16 * 1024 * 1024 {
+            anyhow::bail!("artifact {path} is too large: {} bytes", entry.size);
+        }
+        let length = u32::try_from(entry.size)
+            .map_err(|_| anyhow::anyhow!("artifact {path} is too large"))?;
+        let chunk = VfsHostTrait::read(&mut self.vfs, path.to_string(), 0, length)
+            .map_err(|error| anyhow::anyhow!("read {path}: {error:?}"))?;
+        Ok(chunk.data)
+    }
+
+    /// Write opaque bytes through the same VFS writer used for source.
+    ///
+    /// Compilation artifacts are not Soil source; they need a media type and
+    /// byte-exact storage, so they cannot go through `write_source`.
+    pub fn write_bytes(
+        &mut self,
+        path: &str,
+        bytes: &[u8],
+        media_type: &str,
+    ) -> anyhow::Result<()> {
+        let mut writer = self
+            .vfs
+            .begin_writer(
+                path.to_string(),
+                media_type.to_string(),
+                Some(bytes.len() as u64),
+                None,
+                None,
+            )
+            .map_err(|error| anyhow::anyhow!("begin-write {path}: {error:?}"))?;
+        writer
+            .write(bytes)
+            .map_err(|error| anyhow::anyhow!("write {path}: {error:?}"))?;
+        writer
+            .finish()
+            .map_err(|error| anyhow::anyhow!("finish {path}: {error:?}"))?;
+        Ok(())
+    }
+
     fn call_time(&mut self, function: &str, args: &[Value]) -> std::result::Result<Value, String> {
         match function {
             "monotonic-ms" => Ok(ok(Value::Int(soil::time::monotonic_ms() as i64))),
