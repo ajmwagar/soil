@@ -1,0 +1,2 @@
+package test:results@0.1.0;
+world probe { export run: func() -> result<u32, string>; }

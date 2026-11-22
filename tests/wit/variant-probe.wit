@@ -1,0 +1,5 @@
+package test:variants@0.1.0;
+world probe {
+  variant v { none, some(u32), text(string) }
+  export run: func() -> v;
+}

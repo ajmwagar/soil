@@ -1,0 +1,8 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; result<u32,string>: ok(42).
+(defun-i32 run ()
+  (begin
+    (i32.store8 (i32.const 512) (i32.const 0))
+    (i32.store (i32.const 516) (i32.const 42))
+    (i32.const 512)))
+(defun-i32-void run_post (ptr))

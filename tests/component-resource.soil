@@ -1,0 +1,7 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Resource handle ABI through wasi:clocks pollable and wasi:io/poll.
+(import "cm32p2|wasi:clocks/monotonic-clock@0.2" "subscribe-duration" "subscribe-duration" (i64) i32)
+(import "cm32p2|wasi:io/poll@0.2" "[method]pollable.ready" "pollable-ready" (i32) i32)
+
+(defun-i32 run ()
+  (pollable-ready (subscribe-duration 0)))

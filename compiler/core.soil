@@ -186,10 +186,24 @@
 (defun compiler/import? (form)
   (and (not (atom form)) (= (wasm/head form) "import")))
 
+(defun compiler/import-param (type)
+  (str " (param " type ")"))
+
+(defun compiler/import-params (types)
+  (if (nil? types)
+      ""
+      (str (compiler/import-param (first types))
+           (compiler/import-params (rest types)))))
+
+(defun compiler/import-result (type)
+  (if (= (str type) "unit") "" (str " (result " type ")")))
+
 (defun compiler/import (form)
   (str "  (import " (json-encode (nth 1 form))
        " " (json-encode (nth 2 form))
-       " (func $" (nth 3 form) " (param i32)))\n"))
+       " (func $" (nth 3 form)
+       (compiler/import-params (nth 4 form))
+       (compiler/import-result (nth 5 form)) "))\n"))
 
 (defun compiler/imports (forms)
   (cond

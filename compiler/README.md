@@ -185,3 +185,26 @@ Resources, nested records, options/results, and `soil:records`/`soil:vfs`/
 ```sh
 scripts/test-component-list.sh     # list<u32> export: [10, 20, 30]
 ```
+
+```sh
+scripts/test-component-resource.sh  # pollable resource handle + method
+scripts/test-component-abi.sh       # option, result, variant exports
+```
+
+Resource handles are i32 table indices at the core ABI boundary. The host owns
+the table; the component adapter lowers/borrows/drops them.
+
+The canonical ABI now covers:
+
+```text
+strings
+lists
+records
+option
+result
+variants
+resource handles
+```
+
+Still ahead: variants carrying strings/lists in all positions, flags, nested
+records, and the real `soil:records` / `soil:vfs` / `soil:inference` worlds.

@@ -1,6 +1,6 @@
 ; SPDX-License-Identifier: MIT OR Apache-2.0
 ; Read the wall-clock record's seconds field through the component ABI.
-(import "cm32p2|wasi:clocks/wall-clock@0.2" "now" "now" (param i32))
+(import "cm32p2|wasi:clocks/wall-clock@0.2" "now" "now" (i32) unit)
 
 (defun run ()
   (begin

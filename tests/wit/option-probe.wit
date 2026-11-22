@@ -1,0 +1,2 @@
+package test:options@0.1.0;
+world probe { export run: func() -> option<u32>; }

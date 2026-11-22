@@ -166,3 +166,9 @@ world probe {
   import wall-clock;
   export run: func() -> u64;
 }
+
+world resources {
+  import monotonic-clock;
+  import wasi:io/poll@0.2.12;
+  export run: func() -> u32;
+}
