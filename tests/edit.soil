@@ -1,0 +1,19 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+
+(defun fake/exec (command)
+  (list 'ok
+    (list
+      (list :status 0)
+      (list :stdout "{\"session\":\"s1\",\"spore\":\"acme:marbles\"}"))))
+
+(defun test/edit-command ()
+  (= (edit/command "open" (list "acme:marbles"))
+     (list "loam" "edit" "open" "acme:marbles" "--json")))
+
+(defun test/edit-call ()
+  (let ((result (edit/open-with (quote fake/exec) "acme:marbles")))
+    (and (= (field result :session) "s1")
+         (= (field result :spore) "acme:marbles"))))
+
+(defun test/edit-quote ()
+  (= (edit/quote "a'b") "'a'\\''b'"))

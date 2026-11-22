@@ -1,0 +1,78 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Soil interface over host-owned edit sessions.
+;
+; The host owns the base package, scoped workdir, build, signing, and patch
+; storage. This module only shapes commands and decodes JSON responses.
+;
+; The first adapter is `session/exec` -> `loam edit ... --json`. A later WIT
+; adapter can implement the same functions without changing callers.
+
+(defun edit/quote (value)
+  (str "'" (string-replace (str value) "'" "'\\''") "'"))
+
+(defun edit/shell-join (command)
+  (if (nil? command)
+      ""
+      (str (edit/quote (first command))
+           (if (nil? (rest command)) "" (str " " (edit/shell-join (rest command)))))))
+
+(defun edit/command (op args)
+  (append (list "loam" "edit" op) (append args (list "--json"))))
+
+(defun edit/exec-command (command)
+  (host-call "session" "exec"
+    (list (edit/shell-join command) nil 30000)))
+
+(defun edit/stdout (result)
+  (let ((value (value result)))
+    (let ((stream (field value :stdout)))
+      (if (nil? stream) "" stream))))
+
+(defun edit/decode (result)
+  (if (not (ok? result))
+      result
+      (if (= (field (value result) :status) 0)
+          (json-decode (edit/stdout result))
+          (list 'err (edit/stdout result)))))
+
+(defun edit/call-with (exec op args)
+  (edit/decode (apply exec (list (edit/command op args)))))
+
+(defun edit/call (op args)
+  (edit/call-with edit/exec-command op args))
+
+(defun edit/open-with (exec spore-id)
+  (edit/call-with exec "open" (list spore-id)))
+
+(defun edit/open (spore-id)
+  (edit/open-with edit/exec-command spore-id))
+
+(defun edit/checkpoint-with (exec session message)
+  (edit/call-with exec "checkpoint" (list session message)))
+
+(defun edit/checkpoint (session message)
+  (edit/checkpoint-with edit/exec-command session message))
+
+(defun edit/build-with (exec session)
+  (edit/call-with exec "build" (list session)))
+
+(defun edit/build (session)
+  (edit/build-with edit/exec-command session))
+
+(defun edit/save-with (exec session message)
+  (edit/call-with exec "save" (list session message)))
+
+(defun edit/save (session message)
+  (edit/save-with edit/exec-command session message))
+
+(defun edit/apply-with (exec session)
+  (edit/call-with exec "apply" (list session)))
+
+(defun edit/apply (session)
+  (edit/apply-with edit/exec-command session))
+
+(defun edit/discard-with (exec session)
+  (edit/call-with exec "discard" (list session)))
+
+(defun edit/discard (session)
+  (edit/discard-with edit/exec-command session))

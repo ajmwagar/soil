@@ -34,6 +34,7 @@ STD=(
   std/soil/records.soil
   std/wasi/perf.soil
   std/soil/events.soil
+  std/loam/edit.soil
 )
 FIXTURES=(
   boot/boot.soil
@@ -61,6 +62,7 @@ TESTS=(
   tests/package.soil
   tests/image.soil
   tests/selfhost.soil
+  tests/edit.soil
 )
 
 base_files() {
