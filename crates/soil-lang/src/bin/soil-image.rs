@@ -30,6 +30,9 @@ struct Image {
     loaded: HashMap<String, String>,
     desktop: Option<String>,
     project: Option<String>,
+    workspace: String,
+    records: String,
+    book: String,
 }
 
 fn prelude() -> Result<String, String> {
@@ -141,6 +144,9 @@ fn dispatch(images: &mut HashMap<String, Image>, prelude: &str, request: &Json) 
                             loaded: HashMap::new(),
                             desktop: desktop.clone(),
                             project: project.clone(),
+                            workspace: workspace.to_string(),
+                            records: records.to_string(),
+                            book: book.to_string(),
                         },
                     );
                     Ok(json!({
@@ -161,6 +167,41 @@ fn dispatch(images: &mut HashMap<String, Image>, prelude: &str, request: &Json) 
                 Ok(json!({"detached": session, "session": session}))
             }
         }
+        "compile" => (|| -> Result<Json, String> {
+            let source = text_field(request, "source").to_string();
+            let image = images
+                .get(&session)
+                .ok_or_else(|| format!("unknown session {session}"))?;
+            if source.trim().is_empty() {
+                return Err("compile needs source".to_string());
+            }
+            let program = soil_lang::parse(&source).map_err(|error| format!("{error:#}"))?;
+            let functions: Vec<String> = program
+                .functions
+                .iter()
+                .map(|function| function.name.clone())
+                .collect();
+            let wasm = soil_lang::compile(&program).map_err(|error| format!("{error:#}"))?;
+            let hash = blake3::hash(&wasm).to_hex().to_string();
+            let path = request
+                .get("path")
+                .and_then(Json::as_str)
+                .filter(|path| !path.trim().is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("compiled/{hash}.wasm"));
+            let mut writer = NativeHost::open(&image.workspace, &image.records, &image.book)
+                .map_err(|error| format!("open host: {error:#}"))?;
+            writer
+                .write_bytes(&path, &wasm, "application/wasm")
+                .map_err(|error| format!("write {path}: {error:#}"))?;
+            Ok(json!({
+                "session": session,
+                "path": path,
+                "bytes": wasm.len(),
+                "functions": functions,
+                "hash": hash,
+            }))
+        })(),
         "load" => {
             let path = text_field(request, "path").to_string();
             images

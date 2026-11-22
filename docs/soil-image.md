@@ -38,6 +38,7 @@ One JSON request per line, one JSON response per line:
 ```json
 {"op":"attach","session":"s1","desktop":"fpl","project":"suite","workspace":"/vfs","records":"/records","book":"soil"}
 {"op":"load","session":"s1","path":"lib/example.soil"}
+{"op":"compile","session":"s1","source":"(defun add (a b) (+ a b))"}
 {"op":"eval","session":"s1","source":"(defun f (x) (+ x 1))"}
 {"op":"status","session":"s1"}
 {"op":"reload","session":"s1"}
@@ -72,6 +73,31 @@ lines. Several clients may attach to the same session. `attach` is idempotent
 for a live session: the second client joins the existing image instead of
 replacing its definitions. Requests are serialized by the image thread, so one
 session never evaluates two forms at once.
+
+## Compile
+
+`compile` turns the numeric core into a Wasm artifact and writes it through the
+same VFS the image uses:
+
+```json
+{"op":"compile","session":"s1","source":"(defun add (a b) (+ a b))"}
+```
+
+Response:
+
+```json
+{"ok":true,"result":{"session":"s1","path":"compiled/<blake3>.wasm","bytes":123,"functions":["add"],"hash":"..."}}
+```
+
+This is intentionally narrower than the interpreter:
+
+- only the numeric core (`i64`, arithmetic, `let`, `if`, `cond`, calls)
+- no host capabilities, strings, lists, macros, or dynamic values
+- the artifact is content-addressed by its Wasm bytes
+- execution of the artifact is a separate step; `compile` does not eval it
+
+That gives the harness a stable build artifact without making the live image
+depend on a native Wasm engine.
 
 ## Provenance
 
@@ -117,6 +143,7 @@ the changed files so origins point at the new source.
 - canonical form printing; comments inside a replaced form are not preserved
 - no form-level merge yet: a changed file is a conflict rather than a merge
 - one evaluation at a time across the process, not per session
+- no compiled-call op yet: `compile` writes an artifact, but the image does not execute it
 - no streaming eval events yet; a response is one JSON line
 - no session lease yet: one daemon owns its sessions
 
