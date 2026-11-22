@@ -46,8 +46,6 @@ data. The server never keeps a second Rust parser.
 
 ## Why it shares the image
 
-`soil-lang-wasm` is the generic Soil interpreter command. Its WIT world currently
-imports `soil:records` and `soil:time` because `mb` needs them. The LSP does not
-call either; the capability boundary is the signed command grant, not a second
-Rust crate. Splitting the image by a build profile is a packaging optimization,
-not a new runtime.
+The LSP only needs stdio. Under the Wasmtime runner that is `wasi:cli` +
+`wasi:io`; it does not need `soil:records` or `soil:time`. The capability
+boundary is the command grant, not a second Rust crate.

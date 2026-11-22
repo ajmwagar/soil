@@ -1,0 +1,24 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Time helpers over wasi:clocks.
+;
+; WASI clocks are the source of truth: wall-clock for "when", monotonic-clock
+; for "how long". No soil:time capability is required.
+
+(defun wall-clock ()
+  (wasi:clocks/wall-clock.now))
+
+(defun wall-clock-resolution ()
+  (wasi:clocks/wall-clock.resolution))
+
+(defun now-seconds ()
+  (field (wall-clock) :seconds))
+
+(defun now-ms ()
+  (+ (* (field (wall-clock) :seconds) 1000)
+     (int (/ (field (wall-clock) :nanoseconds) 1000000))))
+
+(defun monotonic-ns ()
+  (wasi:clocks/monotonic-clock.now))
+
+(defun monotonic-ms ()
+  (int (/ (monotonic-ns) 1000000)))

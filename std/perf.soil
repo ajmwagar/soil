@@ -7,7 +7,7 @@
 ; can assert or render the result.
 
 (defun perf/now ()
-  (value (soil:time/monotonic-ms)))
+  (monotonic-ms))
 
 (defun perf/elapsed-ms (start)
   (- (perf/now) start))

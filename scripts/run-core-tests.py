@@ -30,7 +30,7 @@ CORE = [
     "core/image.soil",
 ]
 STD = [
-    "std/time.soil",
+    "core/time.soil",
     "std/records.soil",
     "std/perf.soil",
     "std/events.soil",
