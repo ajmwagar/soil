@@ -38,3 +38,17 @@ after changes, and reloads open pages.
 
 The generated API pages come from the `;;;` comments in `core/` and `std/`. The page
 catalog — order, titles, summaries — lives in `site/docs-copy.soil`.
+
+## Deploy
+
+GitHub Pages builds `.github/workflows/pages.yml` on every push to `master`.
+The workflow checks out `ajmwagar/soil-rust`, builds `soil-run`, and uses it as
+`SOIL_LANG`:
+
+```sh
+SOIL_PRELUDE=core/prelude.soil SOIL_DOCS=1 SOIL_LANG=soil-run ./site/build.sh
+```
+
+`site/build.sh` writes `CNAME` (`soil-lang.org`) and `.nojekyll` into
+`site/dist/`. Pages serves the uploaded artifact; `html_url` is
+`https://soil-lang.org/` once DNS points at GitHub Pages.

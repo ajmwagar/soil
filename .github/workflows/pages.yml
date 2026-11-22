@@ -1,0 +1,58 @@
+name: pages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ajmwagar/soil-rust
+          path: soil-rust
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: soil-rust -> target
+
+      - name: Build bootstrap runner
+        run: cargo build --release --manifest-path soil-rust/Cargo.toml --bin soil-run
+
+      - name: Build site
+        env:
+          SOIL_LANG: ${{ github.workspace }}/soil-rust/target/release/soil-run
+          SOIL_PRELUDE: core/prelude.soil
+          SOIL_DOCS: "1"
+        run: ./site/build.sh
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

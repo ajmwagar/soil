@@ -58,4 +58,6 @@ done
 if [ "${SOIL_DOCS:-1}" = "1" ]; then
   site/docs.sh
 fi
+printf "soil-lang.org\n" > site/dist/CNAME
+touch site/dist/.nojekyll
 echo "wrote site/dist/"
