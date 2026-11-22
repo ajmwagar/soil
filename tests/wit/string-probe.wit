@@ -1,0 +1,5 @@
+package test:strings@0.1.0;
+
+world probe {
+  export run: func() -> string;
+}

@@ -1,0 +1,9 @@
+package test:records@0.1.0;
+
+world probe {
+  record point {
+    x: u32,
+    y: u32,
+  }
+  export run: func() -> point;
+}

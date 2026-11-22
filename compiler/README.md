@@ -157,3 +157,27 @@ This required:
 
 The binary emitter still targets the numeric core; the component target is the
 WAT path for now.
+
+### Canonical ABI probes
+
+```sh
+scripts/test-component-string.sh   # string export: "hi"
+scripts/test-component-env.sh      # get-environment list count
+scripts/test-component-clock.sh    # wall-clock record seconds
+scripts/test-component-record.sh   # record export {x:7,y:9}
+scripts/componentize-soil.sh       # get-arguments first-string length
+```
+
+The component path now covers:
+
+```text
+i32 memory and address operations
+string exports
+list<string> imports
+record imports/exports
+cabi_realloc with 8-byte alignment
+return-area loading
+```
+
+Resources, nested records, options/results, and `soil:records`/`soil:vfs`/
+`soil:inference` are still ahead.

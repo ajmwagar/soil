@@ -1,0 +1,8 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Count environment entries through wasi:cli/environment.
+(import "cm32p2|wasi:cli/environment@0.2" "get-environment" "get-environment" (param i32))
+
+(defun run ()
+  (begin
+    (get-environment (i32.const 16))
+    (i64.extend_i32_u (i32.load (i32.const 20)))))

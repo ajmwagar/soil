@@ -160,3 +160,9 @@ world imports {
   @unstable(feature = clocks-timezone)
   import timezone;
 }
+
+world probe {
+  import monotonic-clock;
+  import wall-clock;
+  export run: func() -> u64;
+}

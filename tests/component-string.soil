@@ -1,0 +1,12 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Canonical ABI string export: "hi" at a fixed return area and data offset.
+
+(defun-i32 run ()
+  (begin
+    (i32.store (i32.const 512) (i32.const 2048))
+    (i32.store (i32.add (i32.const 512) (i32.const 4)) (i32.const 2))
+    (i32.store8 (i32.const 2048) (i32.const 104))
+    (i32.store8 (i32.const 2049) (i32.const 105))
+    (i32.const 512)))
+
+(defun-i32-void run_post (ptr))

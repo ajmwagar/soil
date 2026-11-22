@@ -60,8 +60,14 @@
       (str "    i32.const " (nth 1 expr) "\n"))
     ((= (str (first expr)) "i32.load")
       (str (compiler/expr (nth 1 expr)) "    i32.load\n"))
+    ((= (str (first expr)) "i64.load")
+      (str (compiler/expr (nth 1 expr)) "    i64.load\n"))
     ((= (str (first expr)) "i32.add")
       (str (compiler/expr (nth 1 expr)) (compiler/expr (nth 2 expr)) "    i32.add\n"))
+    ((= (str (first expr)) "i32.store")
+      (str (compiler/expr (nth 1 expr)) (compiler/expr (nth 2 expr)) "    i32.store\n"))
+    ((= (str (first expr)) "i32.store8")
+      (str (compiler/expr (nth 1 expr)) (compiler/expr (nth 2 expr)) "    i32.store8\n"))
     ((= (str (first expr)) "i64.extend_i32_u")
       (str (compiler/expr (nth 1 expr)) "    i64.extend_i32_u\n"))
     ((= (str (first expr)) "not")
@@ -92,13 +98,41 @@
          (compiler/expr (nth 3 form))
          "  )\n")))
 
+(defun compiler/params-i32 (params)
+  (if (nil? params)
+      ""
+      (str " (param $" (first params) " i32)"
+           (compiler/params-i32 (rest params)))))
+
+(defun compiler/defun-i32 (form)
+  (let ((name (str (nth 1 form))))
+    (str "  (func $" name " (export \"" name "\")"
+         (compiler/params-i32 (nth 2 form))
+         " (result i32)\n"
+         (compiler/expr (nth 3 form))
+         "  )\n")))
+
+(defun compiler/defun-i32-void (form)
+  (let ((name (str (nth 1 form))))
+    (str "  (func $" name " (export \"" name "\")"
+         (compiler/params-i32 (nth 2 form))
+         "\n"
+         (if (nil? (nth 3 form)) "" (compiler/expr (nth 3 form)))
+         "  )\n")))
+
 (defun compiler/forms (forms)
   (if (nil? forms)
       ""
-      (str (if (= (str (first (first forms))) "defun")
-               (compiler/defun (first forms))
-               "")
-           (compiler/forms (rest forms)))))
+      (let ((form (first forms)))
+        (str (cond
+               ((and (not (atom form)) (= (str (first form)) "defun"))
+                 (compiler/defun form))
+               ((and (not (atom form)) (= (str (first form)) "defun-i32"))
+                 (compiler/defun-i32 form))
+               ((and (not (atom form)) (= (str (first form)) "defun-i32-void"))
+                 (compiler/defun-i32-void form))
+               (else ""))
+             (compiler/forms (rest forms))))))
 
 
 ; ---------------------------------------------------------------------------
@@ -171,14 +205,23 @@
          "  (memory (export \"cm32p2_memory\") 1)\n"
          "  (global $heap (mut i32) (i32.const 1024))\n"
          "  (func (export \"cabi_realloc\") (param i32 i32 i32 i32) (result i32)\n"
-         "    (local $old i32)\n"
+         "    (local $ret i32)\n"
          "    global.get $heap\n"
-         "    local.set $old\n"
-         "    global.get $heap\n"
+         "    i32.const 7\n"
+         "    i32.add\n"
+         "    i32.const -8\n"
+         "    i32.and\n"
+         "    local.set $ret\n"
+         "    local.get $ret\n"
          "    local.get 3\n"
          "    i32.add\n"
          "    global.set $heap\n"
-         "    local.get $old)\n"
+         "    local.get 0\n"
+         "    if (result i32)\n"
+         "      local.get 0\n"
+         "    else\n"
+         "      local.get $ret\n"
+         "    end)\n"
          (compiler/forms forms)
          ")\n")))
 
