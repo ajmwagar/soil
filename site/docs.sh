@@ -2,7 +2,7 @@
 # Generate the API docs from Soil `;;;` doc comments.
 #
 # The page catalog (order, titles, summaries) lives in docs-copy.soil. The
-# entries on each page come from the `;;;` comments in the stdlib source.
+# entries on each page come from the `;;;` comments in the core/std source.
 # Extraction runs in Soil. The evaluator is recursive and this machine's stack
 # is small, so the wrapper feeds it fixed-size source windows and joins the
 # entries; projection to Markdown, llms.txt, and HTML stays in docs.soil.
@@ -31,10 +31,10 @@ import tempfile
 root = os.getcwd()
 bin_path = os.environ["BIN"]
 prelude = [
-    "stdlib/prelude.soil",
-    "stdlib/ui.soil",
-    "stdlib/highlight.soil",
-    "stdlib/doc.soil",
+    "core/prelude.soil",
+    "core/ui.soil",
+    "core/highlight.soil",
+    "core/doc.soil",
     "site/docs-copy.soil",
 ]
 
@@ -92,8 +92,15 @@ def extract(chunk):
         return run_soil([source, app]) or []
 
 pages = []
+def source_path(slug):
+    for directory in ("core", "std"):
+        path = os.path.join(root, directory, slug + ".soil")
+        if os.path.exists(path):
+            return path
+    raise SystemExit("no source for %s" % slug)
+
 for slug, title, summary in sources:
-    with open(os.path.join(root, "stdlib", slug + ".soil")) as handle:
+    with open(source_path(slug)) as handle:
         source = handle.read()
     entries = []
     for chunk in chunks(source):

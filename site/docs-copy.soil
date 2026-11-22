@@ -20,6 +20,7 @@
         (list (list :slug "events") (list :title "Events") (list :summary "Unibus subscriptions, bounded polling, object publishing, and dedupe."))
         (list (list :slug "ui") (list :title "UI forms") (list :summary "Forms, escaping, HTML rendering, and the Soil component library."))
         (list (list :slug "records") (list :title "Records") (list :summary "Typed records over the host records capability."))
+        (list (list :slug "time") (list :title "Time") (list :summary "Host wall-clock helpers over soil:time."))
         (list (list :slug "perf") (list :title "Performance") (list :summary "Counters and timing helpers for language and host work."))
         (list (list :slug "highlight") (list :title "Highlighter") (list :summary "A small Soil tokenizer used by code blocks and the landing page."))
         (list (list :slug "cli") (list :title "CLI") (list :summary "A data-driven command spec, argv parser, help renderer, and man-page generator."))))))

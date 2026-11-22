@@ -25,7 +25,7 @@ SOIL_RUN=${SOIL_RUN:-../soil-rust/target/debug/soil-run}
 
 SOURCE="$(cat tests/runtime-smoke.soil)"
 "$SOIL_RUN" \
-  --prelude stdlib/prelude.soil \
+  --prelude core/prelude.soil \
   --call main \
   compiler/core.soil compiler/main.soil \
   --arg "$SOURCE" > /tmp/runtime-bytes.txt
@@ -58,7 +58,7 @@ the function returns a value; the returned number is still the result.
 
 ```sh
 "$SOIL_RUN" \
-  --prelude stdlib/prelude.soil \
+  --prelude core/prelude.soil \
   --call main \
   compiler/core.soil tests/selfhost.soil tests/selfhost-main.soil
 # true

@@ -161,57 +161,6 @@
       value
       (json-get-in (field value (first keys)) (rest keys))))
 
-;;; Return the `:entries` list of a records page.
-(defun page-entries (page)
-  (field page :entries))
-
-;;; Return the `:key` record from a records entry.
-(defun entry-key (entry)
-  (field entry :key))
-
-;;; Return the id part of a records entry key.
-(defun entry-id (entry)
-  (field (entry-key entry) :id))
-
-;;; Return the collection part of a records entry key.
-(defun entry-collection (entry)
-  (field (entry-key entry) :collection))
-
-;;; Return the schema name of a records entry.
-(defun entry-schema (entry)
-  (field entry :schema))
-
-;;; Return the update timestamp of a records entry, in milliseconds.
-(defun entry-updated-at (entry)
-  (field entry :updated-at-ms))
-
-;;; Decode and return the JSON body of a records entry.
-(defun entry-body (entry)
-  (json-decode (field entry :body)))
-
-;;; Build a records key from a collection name and an id.
-(defun record-key (collection id)
-  (list (list :collection collection) (list :id id)))
-
-;;; Build a records entry from a key, schema, body, and timestamp.
-(defun make-entry (collection id schema body now)
-  (list
-    (list :key (record-key collection id))
-    (list :schema schema)
-    (list :revision 0)
-    (list :updated-at-ms now)
-    (list :origin "soil")
-    (list :deleted #f)
-    (list :body (json-encode body))))
-
-;;; Write an entry through the host records capability.
-(defun upsert-record (collection id schema body now)
-  (soil:records/upsert (make-entry collection id schema body now)))
-
-;;; Return the host wall clock as Unix milliseconds.
-(defun now-ms ()
-  (field (value (soil:time/wall-clock)) :unix-ms))
-
 ; McCarthy-style accessors.
 ;;; Return `(car (car x))`.
 (defun caar (x) (car (car x)))

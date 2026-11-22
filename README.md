@@ -24,27 +24,38 @@ WebAssembly. You may use any Wasm runtime you like. However Soil is designed to 
 |---|---|
 | [`compiler/core.soil`](compiler/core.soil) | The Soil-to-Wasm compiler |
 | [`compiler/runtime.soil`](compiler/runtime.soil) | The first Soil object runtime |
-| [`stdlib/`](stdlib) | The language prelude and standard library |
-| [`examples/`](examples) | UI and stdlib programs |
+| [`core/`](core) | Prelude and host-free modules: date, URL, JSON, UI, highlight, docs, CLI |
+| [`std/`](std) | Modules that call `soil:*` WIT: events, records, time, perf |
+| [`examples/`](examples) | Core, std, and UI programs |
 | [`site/`](site) | The soil-lang.org landing page and getting-started guide |
 | [`tests/`](tests) | Soil test programs |
 | [`docs/`](docs) | Language, compiler, and object-model notes |
 
-## Standard library
+## Core and std
+
+`core/` has no `soil:*` imports. `std/` is the layer that calls `soil:*` WIT.
+
+### Core
 
 | Module | What it does |
 |---|---|
-| [`prelude.soil`](stdlib/prelude.soil) | Lists, records, JSON, and the small helpers every program uses |
-| [`date.soil`](stdlib/date.soil) | UTC formatting, parsing, day boundaries, and relative labels |
-| [`url.soil`](stdlib/url.soil) | Percent encoding, query strings, joining, and validation |
-| [`json.soil`](stdlib/json.soil) | Object helpers, deep merge, path set, and pretty printing |
-| [`events.soil`](stdlib/events.soil) | Unibus subscriptions, bounded polling, publishing, and dedupe |
-| [`ui.soil`](stdlib/ui.soil) | Forms, escaping, HTML rendering, and the component library |
-| [`records.soil`](stdlib/records.soil) | Typed records over the host records capability |
-| [`cli.soil`](stdlib/cli.soil) | Command specs, argv parsing, help, and man pages |
-| [`highlight.soil`](stdlib/highlight.soil) | A small Soil tokenizer for code blocks |
-| [`doc.soil`](stdlib/doc.soil) | Documentation extraction and rendering |
-| [`perf.soil`](stdlib/perf.soil) | Counters and timing helpers |
+| [`prelude.soil`](core/prelude.soil) | Lists, JSON, records, and the small helpers every program uses |
+| [`date.soil`](core/date.soil) | UTC formatting, parsing, day boundaries, and relative labels |
+| [`url.soil`](core/url.soil) | Percent encoding, query strings, joining, and validation |
+| [`json.soil`](core/json.soil) | Object helpers, deep merge, path set, and pretty printing |
+| [`ui.soil`](core/ui.soil) | Forms, escaping, HTML rendering, and the component library |
+| [`cli.soil`](core/cli.soil) | Command specs, argv parsing, help, and man pages |
+| [`highlight.soil`](core/highlight.soil) | A small Soil tokenizer for code blocks |
+| [`doc.soil`](core/doc.soil) | Documentation extraction and rendering |
+
+### Std
+
+| Module | What it does |
+|---|---|
+| [`events.soil`](std/events.soil) | Unibus subscriptions, bounded polling, publishing, and dedupe |
+| [`records.soil`](std/records.soil) | Typed records and write helpers over `soil:records` |
+| [`time.soil`](std/time.soil) | Host wall-clock helpers over `soil:time` |
+| [`perf.soil`](std/perf.soil) | Counters and timing helpers |
 
 ## Documentation
 
@@ -52,9 +63,9 @@ You can learn more about Soil at [https://soil-lang.org](https://soil-lang.org)
 
 ## Examples
 
-- [`examples/stdlib/data.soil`](examples/stdlib/data.soil) — date, URL, and JSON
-- [`examples/stdlib/events.soil`](examples/stdlib/events.soil) — subscription and body encoding
-- [`examples/stdlib/ui_components.soil`](examples/stdlib/ui_components.soil) — a page built from components
+- [`examples/core/data.soil`](examples/core/data.soil) — date, URL, and JSON
+- [`examples/std/events.soil`](examples/std/events.soil) — subscription and body encoding
+- [`examples/core/ui_components.soil`](examples/core/ui_components.soil) — a page built from components
 - [`examples/ui/counter.soil`](examples/ui/counter.soil) — the smallest complete UI
 - [`examples/ui/`](examples/ui) — counter, todo, calculator, tic-tac-toe, tabs, form
 
