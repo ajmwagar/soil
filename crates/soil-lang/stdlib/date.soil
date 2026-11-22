@@ -155,7 +155,7 @@
                   (list 'err (str "date: " text " has no such day")))
                 (else
                   (list 'ok
-                    (* (date/days-from-civil year month day) 86400000))))))))))
+                    (* (date/days-from-civil year month day) 86400000)))))))))
 
 (defun date/relative-value (value diff unit)
   (if (< diff 0)
