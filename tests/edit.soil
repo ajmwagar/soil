@@ -17,3 +17,15 @@
 
 (defun test/edit-quote ()
   (= (edit/quote "a'b") "'a'\\''b'"))
+
+(defun fake/list-exec (command)
+  (list 'ok
+    (list
+      (list :status 0)
+      (list :stdout "{\"ok\":true,\"files\":[{\"path\":\"a.soil\"},{\"path\":\"b.soil\"}]}"))))
+
+(defun test/edit-list ()
+  (let ((paths (edit/paths-with (quote fake/list-exec) "s1")))
+    (and (= (length paths) 2)
+         (= (first paths) "a.soil")
+         (= (nth 1 paths) "b.soil"))))
