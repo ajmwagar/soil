@@ -29,7 +29,7 @@
         (list :github-label "Read the source")
         (list :code-name "counter.soil")
         (list :code "(defun view (state)\n  (el \"main\" nil\n    (list\n      (el \"h1\" nil (list (txt \"Hello from Soil\")))\n      (el \"button\" (list (attr :data-op \"inc\"))\n        (list (txt \"+\"))))))")
-        (list :code-note "The form is the program. The host renders it.")))
+        (list :live-label "Live counter")))
 
     (list :language
       (list
@@ -40,16 +40,16 @@
         (list :essay-label "Read Beating the Averages")
         (list :facts
           (list
-            "Wasm target"
-            "homoiconic source"
-            "agent-readable by construction"))))
+            "Bootstrapped from Rust."
+            "Run in Browser or Native"))))
 
     (list :loam
       (list
         (list :title "Loam runs it.")
         (list :body "Loam is the Rust runtime for Soil: Wasmtime and Cranelift for near-native execution, wgpu for GPU surfaces. Run the same module natively or in the browser.")
         (list :body-2 "Soil is the language. Loam is the host. The boundary is WIT capabilities, so a program can run on a laptop, a phone, or the web.")
-        (list :label "Visit Loam")))
+        (list :label "Visit Loam")
+        (list :logo-alt "Loam")))
 
     (list :library
       (list
@@ -89,7 +89,7 @@
 
     (list :closing
       (list
-        (list :title "The site is Soil too.")
+        (list :title "This site is Soil too.")
         (list :body "This page, the getting-started guide, and the inline examples are Soil views. The build writes HTML. No client framework is required.")
         (list :compiler-label "Compiler")
         (list :core-link-label "Core")
@@ -123,7 +123,33 @@
       (list
         (list :left "Soil · soil-lang.org")
         (list :sponsor "Sponsored by Future Present Labs")
-        (list :license "MIT OR Apache-2.0")))))
+        (list :license "MIT OR Apache-2.0")
+        (list :language-label "Language")
+        (list :runtime-label "Runtime")
+        (list :source-label "Source")
+        (list :sponsor-label "Sponsor")
+        (list :compiler-label "Compiler")
+        (list :core-label "Core")
+        (list :std-label "Std")
+        (list :examples-label "Examples")
+        (list :loam-label "Loam")
+        (list :wasmtime-label "Wasmtime")
+        (list :wgpu-label "wgpu")
+        (list :github-label "GitHub")
+        (list :site-source-label "Site source")
+        (list :license-label "License")
+        (list :strata-label "Dig")
+        (list :strata-topsoil "Topsoil")
+        (list :strata-loam "Loam")
+        (list :strata-clay "Clay")
+        (list :strata-sand "Sand")
+        (list :strata-bedrock "Bedrock")
+        (list :strata-topsoil-body "The language, the compiler, and the library.")
+        (list :strata-loam-body "The runtime, the engine, and the GPU boundary.")
+        (list :strata-clay-body "The site, the examples, and the source.")
+        (list :strata-sand-body "The parts that keep it honest.")
+        (list :strata-bedrock-body "Nothing below but the license.")
+        (list :back-to-top "Back to top")))))
 
 ;;; Read one section or one key inside a section from `site-copy`.
 (defun copy (section key)
