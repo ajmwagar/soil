@@ -1,0 +1,32 @@
+// Process spawning with bidirectional pipes.
+//
+// The host owns child processes and their stdio pipes. Soil gets opaque
+// handles. This is the native adapter behind `soil:process`; it is
+// deliberately opt-in (`--allow-process`) like `session.exec`.
+package soil:process@0.1.0;
+
+interface process {
+  enum error {
+    denied,
+    not-found,
+    invalid,
+    io,
+  }
+
+  resource child {
+    write: func(data: list<u8>) -> result<u64, error>;
+    read: func(max: u32) -> result<option<list<u8>>, error>;
+    read-stderr: func(max: u32) -> result<option<list<u8>>, error>;
+    close: func() -> result<i32, error>;
+  }
+
+  spawn: func(command: string, args: list<string>, cwd: option<string>) -> result<child, error>;
+}
+
+world process-host {
+  import process;
+}
+
+world guest {
+  import process;
+}

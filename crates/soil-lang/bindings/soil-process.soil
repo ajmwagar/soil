@@ -1,0 +1,61 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+(define-package "soil:process@0.1.0" :base "soil:process" :version "0.1.0")
+
+(define-enum soil:process/error denied not-found invalid io)
+
+(define-resource soil:process/child)
+
+(define-capability soil:process/[method]child.write
+  :interface "soil:process"
+  :function "[method]child.write"
+  :grant "soil:process"
+  :version "0.1.0"
+  :params ((self (unsupported "handle")) (data (list u8)))
+  :result (result u64 soil:process/error))
+
+(defun soil:process/[method]child.write (self data)
+  (host-call "soil:process" "[method]child.write" (list self data)))
+
+(define-capability soil:process/[method]child.read
+  :interface "soil:process"
+  :function "[method]child.read"
+  :grant "soil:process"
+  :version "0.1.0"
+  :params ((self (unsupported "handle")) (max u32))
+  :result (result (option (list u8)) soil:process/error))
+
+(defun soil:process/[method]child.read (self max)
+  (host-call "soil:process" "[method]child.read" (list self max)))
+
+(define-capability soil:process/[method]child.read-stderr
+  :interface "soil:process"
+  :function "[method]child.read-stderr"
+  :grant "soil:process"
+  :version "0.1.0"
+  :params ((self (unsupported "handle")) (max u32))
+  :result (result (option (list u8)) soil:process/error))
+
+(defun soil:process/[method]child.read-stderr (self max)
+  (host-call "soil:process" "[method]child.read-stderr" (list self max)))
+
+(define-capability soil:process/[method]child.close
+  :interface "soil:process"
+  :function "[method]child.close"
+  :grant "soil:process"
+  :version "0.1.0"
+  :params ((self (unsupported "handle")))
+  :result (result i32 soil:process/error))
+
+(defun soil:process/[method]child.close (self)
+  (host-call "soil:process" "[method]child.close" (list self)))
+
+(define-capability soil:process/spawn
+  :interface "soil:process"
+  :function "spawn"
+  :grant "soil:process"
+  :version "0.1.0"
+  :params ((command string) (args (list string)) (cwd (option string)))
+  :result (result (unsupported "handle") soil:process/error))
+
+(defun soil:process/spawn (command args cwd)
+  (host-call "soil:process" "spawn" (list command args cwd)))

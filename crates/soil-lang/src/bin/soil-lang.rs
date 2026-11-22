@@ -16,6 +16,7 @@ fn main() -> Result<()> {
     let mut inference_profile: Option<String> = None;
     let mut program_args: Vec<String> = Vec::new();
     let mut allow_exec = false;
+    let mut allow_process = false;
     let mut book = "soil".to_string();
     let mut repl = false;
     let mut args = std::env::args().skip(1);
@@ -65,6 +66,7 @@ fn main() -> Result<()> {
                 );
             }
             "--allow-exec" => allow_exec = true,
+            "--allow-process" => allow_process = true,
             "--" => {
                 program_args.extend(args.by_ref());
                 break;
@@ -96,6 +98,9 @@ fn main() -> Result<()> {
             let mut native = NativeHost::open(workspace, records, book)?;
             if allow_exec {
                 native = native.with_session(&workspace_root)?;
+            }
+            if allow_process {
+                native = native.with_process();
             }
             if let Some(config) = inference_config {
                 native = native.with_inference(config, inference_profile.as_deref())?;

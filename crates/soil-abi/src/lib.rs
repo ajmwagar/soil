@@ -368,6 +368,12 @@ pub const CONTRACTS: &[Contract] = &[
         interfaces: &[("cid", &["find"])],
     },
     Contract {
+        file: "wit/soil-process.wit",
+        source: include_str!("../../../wit/soil-process.wit"),
+        package: "soil:process@0.1.0",
+        interfaces: &[("process", &["spawn"])],
+    },
+    Contract {
         file: "wit/soil-worktrees.wit",
         source: include_str!("../../../wit/soil-worktrees.wit"),
         package: "soil:worktrees@0.1.0",
