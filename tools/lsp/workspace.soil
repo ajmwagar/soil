@@ -1,0 +1,65 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Workspace index client for the LSP.
+;
+; Open documents remain the fast path. Closed files come from soil:index and
+; soil:vfs, so the editor sees the same workspace the host indexes.
+
+(defun workspace/uri (path)
+  (if (string-contains? path "://")
+      path
+      (str "file:///" path)))
+
+(defun workspace/read (path)
+  (vfs/read-text path))
+
+(defun workspace/doc (path)
+  (let ((text (workspace/read path)))
+    (if (nil? text)
+        nil
+        (let ((parsed (lsp/parse-doc text)))
+          (if (ok? parsed)
+              (list
+                (list :uri (workspace/uri path))
+                (list :text text)
+                (list :parsed (value parsed)))
+              nil)))))
+
+(defun workspace/search (text limit)
+  (index/search text :substring nil nil 0 limit))
+
+(defun workspace/find-definition (name hits)
+  (if (nil? hits)
+      nil
+      (let ((path (field (first hits) :path)))
+        (let ((doc (workspace/doc path)))
+          (if (nil? doc)
+              (workspace/find-definition name (rest hits))
+              (let ((form (lsp/definition-in-doc name doc)))
+                (if (nil? form)
+                    (workspace/find-definition name (rest hits))
+                    (list path doc form))))))))
+
+(defun workspace/definition (name)
+  (workspace/find-definition name (index/hits (workspace/search name 50))))
+
+(defun workspace/symbol-doc (doc)
+  (let ((parsed (field doc :parsed)))
+    (if (nil? parsed)
+        nil
+        (map-with (lambda (form) (lsp/form-symbol form (field doc :text)))
+          (field doc :text)
+          (filter 'lsp/definition-form? (field parsed :forms))))))
+
+(defun workspace/symbol-hits (hits out)
+  (if (nil? hits)
+      out
+      (let ((doc (workspace/doc (field (first hits) :path))))
+        (workspace/symbol-hits (rest hits)
+          (if (nil? doc)
+              out
+              (append out (or-empty (workspace/symbol-doc doc))))))))
+
+(defun workspace/symbols (query limit)
+  (workspace/symbol-hits
+    (index/hits (workspace/search query limit))
+    nil))

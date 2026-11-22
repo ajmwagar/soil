@@ -5,8 +5,8 @@ name = "soil-lsp"
 version = "0.1.0"
 summary = "Soil Lisp language server"
 module = "module.wasm"
-# The LSP only needs stdio.
-requires = []
+# Workspace indexing and read-only source access.
+requires = ["soil:index", "soil:vfs"]
 
 [limits]
 # A language server is long-lived; the runner's epoch is a runaway guard, not

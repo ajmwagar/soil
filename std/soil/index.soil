@@ -1,0 +1,26 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Search and browse over soil:index.
+
+(defun index/state ()
+  (soil:index/state))
+
+(defun index/refresh ()
+  (soil:index/refresh))
+
+(defun index/browse (parent order offset limit)
+  (soil:index/browse parent order offset limit))
+
+(defun index/search (text mode parent media-type-prefix offset limit)
+  (soil:index/search
+    (list
+      (list :text text)
+      (list :mode mode)
+      (list :parent parent)
+      (list :media-type-prefix media-type-prefix)
+      (list :offset offset)
+      (list :limit limit))))
+
+(defun index/hits (result)
+  (if (ok? result)
+      (or-empty (field (value result) :hits))
+      nil))

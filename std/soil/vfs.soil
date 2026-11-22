@@ -1,0 +1,11 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Read-only VFS helpers over soil:vfs.
+
+(defun vfs/read-text (path)
+  (let ((result (soil:vfs/read path 0 1048576)))
+    (if (ok? result)
+        (bytes->string (field (value result) :data))
+        nil)))
+
+(defun vfs/stat (path)
+  (soil:vfs/stat path))

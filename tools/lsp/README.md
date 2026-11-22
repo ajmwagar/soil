@@ -40,15 +40,17 @@ vim.lsp.start({
 - hover with the definition's `;;;` Markdown
 - go to definition across open documents
 - completion from built-ins and open-document definitions
+- workspace symbol search over `soil:index`
+- go to definition across open and closed files
 
 The analysis is the reader and evaluator's own `read-document`/`try-read-document`
 data. The server never keeps a second Rust parser.
 
 ## Why it shares the image
 
-The LSP only needs stdio. Under the Wasmtime runner that is `wasi:cli` +
-`wasi:io`; it does not need `soil:records` or `soil:time`. The capability
-boundary is the command grant, not a second Rust crate.
+The LSP uses `wasi:cli` + `wasi:io` for transport, and `soil:index` +
+`soil:vfs` for workspace indexing. Open buffers remain the fast path; closed
+files are read through the VFS and searched through the host index.
 
 ## Tests
 

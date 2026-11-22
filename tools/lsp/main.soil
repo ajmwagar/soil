@@ -10,6 +10,7 @@
       (list
         (list :textDocumentSync 1)
         (list :documentSymbolProvider #t)
+        (list :workspaceSymbolProvider #t)
         (list :definitionProvider #t)
         (list :hoverProvider #t)
         (list :completionProvider (json-object))))
@@ -100,7 +101,14 @@
                             (lsp/send (lsp/response (field message :id) nil))
                             (let ((found (lsp/definition-in-docs (field token :text) docs)))
                               (if (nil? found)
-                                  (lsp/send (lsp/response (field message :id) nil))
+                                  (let ((workspace (workspace/definition (field token :text))))
+                                    (if (nil? workspace)
+                                        (lsp/send (lsp/response (field message :id) nil))
+                                        (lsp/send (lsp/response (field message :id)
+                                          (lsp/form-location
+                                            (first workspace)
+                                            (nth 1 workspace)
+                                            (nth 2 workspace))))))
                                   (lsp/send (lsp/response (field message :id)
                                     (lsp/form-location
                                       (first found)
@@ -155,6 +163,12 @@
       ((= method "textDocument/definition") (lsp/definition message docs))
       ((= method "textDocument/hover") (lsp/hover-request message docs))
       ((= method "textDocument/completion") (lsp/completion message docs))
+      ((= method "workspace/symbol")
+        (let ((params (field message :params)))
+          (lsp/send
+            (lsp/response (field message :id)
+              (workspace/symbols (field params :query) 100))))
+        docs)
       (else docs))))
 
 (defun lsp/run (docs)

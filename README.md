@@ -58,6 +58,8 @@ WebAssembly. You may use any Wasm runtime you like. However Soil is designed to 
 | [`wasi/perf.soil`](std/wasi/perf.soil) | Counters and timing helpers |
 | [`soil/events.soil`](std/soil/events.soil) | Unibus subscriptions, bounded polling, publishing, and dedupe |
 | [`soil/records.soil`](std/soil/records.soil) | Typed records and write helpers over `soil:records` |
+| [`soil/index.soil`](std/soil/index.soil) | Workspace browse/search over `soil:index` |
+| [`soil/vfs.soil`](std/soil/vfs.soil) | Read-only VFS helpers over `soil:vfs` |
 
 ## Documentation
 

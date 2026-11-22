@@ -15,6 +15,8 @@ do
     std/bindings/wasi-io.generated.soil \
     std/bindings/wasi-cli.generated.soil \
     std/wasi/stdio.soil \
-    tools/lsp/protocol.soil tools/lsp/document.soil tools/lsp/main.soil \
+    std/bindings/soil-index.generated.soil std/bindings/soil-vfs.generated.soil \
+    std/soil/index.soil std/soil/vfs.soil \
+    tools/lsp/protocol.soil tools/lsp/document.soil tools/lsp/workspace.soil tools/lsp/main.soil \
     tests/lsp.soil
 done
