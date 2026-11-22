@@ -47,6 +47,12 @@
 (defun edit/open (spore-id)
   (edit/open-with edit/exec-command spore-id))
 
+(defun edit/read-with (exec session path)
+  (edit/call-with exec "read" (list session path)))
+
+(defun edit/read (session path)
+  (edit/read-with edit/exec-command session path))
+
 (defun edit/checkpoint-with (exec session message)
   (edit/call-with exec "checkpoint" (list session message)))
 

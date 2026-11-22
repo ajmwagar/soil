@@ -1,0 +1,37 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Direct analyzer calls for codemode and the REPL.
+;
+; The LSP server is a JSON-RPC adapter over these same functions. Agents do not
+; need to speak JSON-RPC to get syntax/symbol feedback.
+
+(defun lsp/diagnostics-text (text)
+  (lsp/diagnostics text))
+
+(defun lsp/symbols-text (text)
+  (let ((parsed (lsp/parse-doc text)))
+    (if (ok? parsed)
+        (map-with (lambda (form text) (lsp/form-symbol form text))
+          text
+          (filter 'lsp/definition-form? (field (value parsed) :forms)))
+        nil)))
+
+(defun lsp/definition-text (name text)
+  (let ((parsed (lsp/parse-doc text)))
+    (if (ok? parsed)
+        (lsp/definition-in-doc name
+          (list (list :text text) (list :parsed (value parsed))))
+        nil)))
+
+(defun lsp/hover-at (text offset docs)
+  (let ((parsed (lsp/parse-doc text)))
+    (if (ok? parsed)
+        (let ((token (lsp/token-at-offset (field (value parsed) :tokens) offset)))
+          (if (nil? token)
+              nil
+              (lsp/hover text token docs)))
+        nil)))
+
+(defun lsp/completion-text (text docs)
+  (lsp/completion-items
+    (cons (list (list :text text) (list :parsed (lsp/parse-doc text)))
+          docs)))

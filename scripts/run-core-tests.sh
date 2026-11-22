@@ -65,6 +65,7 @@ TESTS=(
   tests/selfhost.soil
   tests/edit.soil
   tests/safe-eval.soil
+  tests/edit-lsp.soil
 )
 
 base_files() {
@@ -82,6 +83,10 @@ test_files() {
     tests/lsp.soil) for f in tools/lsp/*.soil; do printf '%s\n' "$f"; done ;;
     tests/selfhost.soil) printf '%s\n' compiler/core.soil ;;
     tests/witgen.soil) printf '%s\n' tools/witgen/main.soil ;;
+    tests/edit-lsp.soil)
+      printf '%s\n' tools/lsp/protocol.soil tools/lsp/document.soil tools/lsp/workspace.soil tools/lsp/analyze.soil
+      printf '%s\n' std/loam/edit-lsp.soil
+      ;;
   esac
   printf '%s\n' "$test_file"
 }

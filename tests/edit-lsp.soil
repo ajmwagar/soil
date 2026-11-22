@@ -1,0 +1,42 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+
+(defun fake/read (path)
+  (if (= path "a.soil")
+      "(defun foo (x) (+ x 1))\n"
+      (if (= path "b.soil")
+          "(defun bar (y) (+ y 1))\n"
+          nil)))
+
+(defun fake/hits ()
+  (list
+    (list (list :path "a.soil"))
+    (list (list :path "b.soil"))))
+
+(defun fake/edit-exec (command)
+  (list 'ok
+    (list
+      (list :status 0)
+      (list :stdout "{\"text\":\"(defun foo (x) (+ x 1))\\n\"}"))))
+
+(defun test/workspace-doc-with ()
+  (let ((doc (workspace/doc-with (quote fake/read) "a.soil")))
+    (and (not (nil? doc))
+         (string-contains? (field doc :text) "defun foo"))))
+
+(defun test/workspace-definition-with ()
+  (let ((found (workspace/find-definition-with (quote fake/read) "foo" (fake/hits))))
+    (and (not (nil? found))
+         (= (first found) "a.soil"))))
+
+(defun test/lsp-analyze-text ()
+  (and
+    (= (length (lsp/diagnostics-text "(defun foo () 1)")) 0)
+    (= (length (lsp/diagnostics-text "(defun foo (")) 1)
+    (= (field (first (lsp/symbols-text "(defun foo () 1)")) :name) "foo")
+    (= (field (lsp/definition-text "foo" "(defun foo () 1)") :id) "defun:foo")))
+
+(defun test/edit-read-with ()
+  (let ((read (edit/read-with (quote fake/edit-exec) "s1" "a.soil")))
+    (and (= (field read :text) "(defun foo (x) (+ x 1))\n")
+         (= (field (workspace/doc-with (lambda (path) (field read :text)) "a.soil") :uri)
+            "file:///a.soil"))))

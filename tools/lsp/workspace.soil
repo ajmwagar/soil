@@ -3,6 +3,9 @@
 ;
 ; Open documents remain the fast path. Closed files come from soil:index and
 ; soil:vfs, so the editor sees the same workspace the host indexes.
+;
+; `*-with` variants inject a reader so an edit session can serve a layered
+; base+overlay view without changing the LSP server.
 
 (defun workspace/uri (path)
   (if (string-contains? path "://")
@@ -12,8 +15,8 @@
 (defun workspace/read (path)
   (vfs/read-text path))
 
-(defun workspace/doc (path)
-  (let ((text (workspace/read path)))
+(defun workspace/doc-with (reader path)
+  (let ((text (apply reader (list path))))
     (if (nil? text)
         nil
         (let ((parsed (lsp/parse-doc text)))
@@ -24,20 +27,26 @@
                 (list :parsed (value parsed)))
               nil)))))
 
+(defun workspace/doc (path)
+  (workspace/doc-with (quote workspace/read) path))
+
 (defun workspace/search (text limit)
   (index/search text :substring nil nil 0 limit))
 
-(defun workspace/find-definition (name hits)
+(defun workspace/find-definition-with (reader name hits)
   (if (nil? hits)
       nil
       (let ((path (field (first hits) :path)))
-        (let ((doc (workspace/doc path)))
+        (let ((doc (workspace/doc-with reader path)))
           (if (nil? doc)
-              (workspace/find-definition name (rest hits))
+              (workspace/find-definition-with reader name (rest hits))
               (let ((form (lsp/definition-in-doc name doc)))
                 (if (nil? form)
-                    (workspace/find-definition name (rest hits))
+                    (workspace/find-definition-with reader name (rest hits))
                     (list path doc form))))))))
+
+(defun workspace/find-definition (name hits)
+  (workspace/find-definition-with (quote workspace/read) name hits))
 
 (defun workspace/definition (name)
   (workspace/find-definition name (index/hits (workspace/search name 50))))
@@ -50,14 +59,17 @@
           (field doc :text)
           (filter 'lsp/definition-form? (field parsed :forms))))))
 
-(defun workspace/symbol-hits (hits out)
+(defun workspace/symbol-hits-with (reader hits out)
   (if (nil? hits)
       out
-      (let ((doc (workspace/doc (field (first hits) :path))))
-        (workspace/symbol-hits (rest hits)
+      (let ((doc (workspace/doc-with reader (field (first hits) :path))))
+        (workspace/symbol-hits-with reader (rest hits)
           (if (nil? doc)
               out
               (append out (or-empty (workspace/symbol-doc doc))))))))
+
+(defun workspace/symbol-hits (hits out)
+  (workspace/symbol-hits-with (quote workspace/read) hits out))
 
 (defun workspace/symbols (query limit)
   (workspace/symbol-hits
