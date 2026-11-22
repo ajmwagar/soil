@@ -166,8 +166,31 @@ fn serve(stream: TcpStream, config: &Config) -> Result<()> {
         && let Some(handle) = items.get(1).and_then(Value::as_f64)
     {
         let page = items.get(2).and_then(Value::as_f64).unwrap_or(0.0) as i64;
+        let mut last_head = runtime
+            .call("server/head", &[])
+            .ok()
+            .and_then(|value| match value {
+                Value::String(head) => Some(head),
+                _ => None,
+            })
+            .unwrap_or_default();
         loop {
-            thread::sleep(std::time::Duration::from_millis(500));
+            thread::sleep(std::time::Duration::from_millis(100));
+            let head = match runtime.call("server/head", &[]) {
+                Ok(Value::String(head)) => head,
+                Ok(_) => String::new(),
+                Err(error) => {
+                    eprintln!("stream-head: {error:#}");
+                    break;
+                }
+            };
+            if head == last_head {
+                continue;
+            }
+            last_head = head;
+            // Let a burst of token events settle before doing the full Soil
+            // render. The stream stays responsive without rendering per token.
+            thread::sleep(std::time::Duration::from_millis(80));
             if let Err(error) = runtime.call(
                 "server/stream-tick",
                 &[Value::Int(handle as i64), Value::Int(page)],
