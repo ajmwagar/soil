@@ -6,4 +6,6 @@
     (render-page
       (copy :site :title)
       (styles)
-      (view #f))))
+      (list
+        (view #f)
+        (el "script" (list (attr :src "site.js")) nil)))))

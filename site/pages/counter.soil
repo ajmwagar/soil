@@ -4,4 +4,4 @@
     (render-page
       "Counter — Soil"
       (styles)
-      (view (initial-state)))))
+      (example-page "counter" (initial-state) (view (initial-state))))))

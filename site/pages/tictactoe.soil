@@ -4,4 +4,4 @@
     (render-page
       "Tic-tac-toe — Soil"
       (styles)
-      (view (initial-state)))))
+      (example-page "tictactoe" (initial-state) (view (initial-state))))))

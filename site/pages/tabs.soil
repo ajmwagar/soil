@@ -4,4 +4,4 @@
     (render-page
       "Tabs — Soil"
       (styles)
-      (view (initial-state)))))
+      (example-page "tabs" (initial-state) (view (initial-state))))))

@@ -38,21 +38,71 @@ prelude = [
     "site/docs-copy.soil",
 ]
 
-def chunks(text, limit=18):
+def top_level_units(text):
     lines = text.splitlines()
+    units = []
+    index = 0
+    while index < len(lines):
+        pending = []
+        while index < len(lines):
+            stripped = lines[index].strip()
+            if stripped == "" or stripped.startswith(";"):
+                pending.append(lines[index])
+                index += 1
+                continue
+            break
+        if index >= len(lines):
+            if pending:
+                units.append("\n".join(pending))
+            break
+        start = index
+        depth = 0
+        in_string = False
+        escaped = False
+        while index < len(lines):
+            line = lines[index]
+            comment = False
+            for character in line:
+                if comment:
+                    break
+                if in_string:
+                    if escaped:
+                        escaped = False
+                    elif character == "\\":
+                        escaped = True
+                    elif character == "\"":
+                        in_string = False
+                else:
+                    if character == ";":
+                        comment = True
+                    elif character == "\"":
+                        in_string = True
+                    elif character == "(":
+                        depth += 1
+                    elif character == ")":
+                        depth -= 1
+            index += 1
+            if depth <= 0:
+                break
+        units.append("\n".join(pending + lines[start:index]))
+    return units
+
+def chunks(text, limit=18):
+    # Never split a top-level form: a truncated source block is worse than a
+    # slightly larger evaluator chunk.
     out = []
-    start = 0
-    while start < len(lines):
-        end = min(start + limit, len(lines))
-        # Keep a trailing doc-comment run with the form it documents.
-        while end > start and (
-            lines[end - 1].lstrip().startswith(";;;") or not lines[end - 1].strip()
-        ):
-            end -= 1
-        if end <= start:
-            end = min(start + limit, len(lines))
-        out.append("\n".join(lines[start:end]))
-        start = end
+    current = []
+    count = 0
+    for unit in top_level_units(text):
+        size = unit.count("\n") + 1
+        if current and count + size > limit:
+            out.append("\n".join(current))
+            current = []
+            count = 0
+        current.append(unit)
+        count += size
+    if current:
+        out.append("\n".join(current))
     return out
 
 def run_soil(extra):
