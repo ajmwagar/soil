@@ -217,9 +217,14 @@
     ((= name (str (first names))) index)
     (else (wasm/index-of name (rest names) (+ index 1)))))
 
+(defun wasm/string-atom? (expr)
+  (and (atom expr)
+       (not (symbol? expr))
+       (wasm/string-literal? expr)))
+
 (defun wasm/count-lets (expr)
   (if (atom expr)
-      0
+      (if (wasm/string-atom? expr) 1 0)
       (+ (if (= (wasm/head expr) "let") (length (nth 1 expr)) 0)
          (wasm/count-lets-list expr))))
 
@@ -291,6 +296,37 @@
               (+ local 1)
               (append (append out (first emitted)) (wasm/local-set local))))))))
 
+
+(defun wasm/string-literal? (value)
+  (= (first (string-chars (json-encode value))) "\""))
+
+(defun wasm/emit-string-bytes (bytes slot index names)
+  (if (nil? bytes)
+      nil
+      (append
+        (wasm/cat
+          (list (wasm/local-get slot)
+                (wasm/int index)
+                (wasm/int (first bytes))
+                (list 16)
+                (wasm/uleb (wasm/index-of "rt/string-set" names 0))
+                (list 26)))
+        (wasm/emit-string-bytes (rest bytes) slot (+ index 1) names))))
+
+(defun wasm/emit-string (text names locals)
+  (let ((slot locals)
+        (bytes (string->bytes text)))
+    (let ((prefix
+            (wasm/cat
+              (list
+                (wasm/int (length bytes))
+                (list 16)
+                (wasm/uleb (wasm/index-of "rt/string-new" names 0))
+                (wasm/local-set slot))))
+          (sets (wasm/emit-string-bytes bytes slot 0 names))
+          (suffix (wasm/local-get slot)))
+      (list (append prefix (append sets suffix)) (+ slot 1)))))
+
 (defun wasm/emit (expr env consts names locals)
   (cond
     ((symbol? expr)
@@ -298,6 +334,8 @@
         (if (nil? local)
             (list (wasm/int (wasm/const-value (str expr) consts)) locals)
             (list (wasm/local-get local) locals))))
+    ((wasm/string-literal? expr)
+      (wasm/emit-string expr names locals))
     ((atom expr)
       (list (wasm/atom-int expr) locals))
     (else

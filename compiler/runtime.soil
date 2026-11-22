@@ -20,3 +20,44 @@
 
 (defun rt/cdr (cell)
   (i64.load (i32.wrap_i64 (+ cell 8))))
+
+; ---------------------------------------------------------------------------
+; Objects beyond cons cells.
+;
+; Values are still untagged i64s in this slice. A string/bytes object is:
+;   +0  length (i64)
+;   +8  element 0 (i64)
+;   ... element N-1
+; One i64 per element keeps the current compiler free of i64.load8/store8.
+
+(defun rt/alloc (bytes)
+  (let ((ptr (global.get 0)))
+    (begin
+      (global.set 0 (+ ptr bytes))
+      ptr)))
+
+(defun rt/string-new (length)
+  (let ((ptr (rt/alloc (+ 8 (* length 8)))))
+    (begin
+      (i64.store (i32.wrap_i64 ptr) length)
+      ptr)))
+
+(defun rt/string-length (string)
+  (i64.load (i32.wrap_i64 string)))
+
+(defun rt/string-get (string index)
+  (i64.load (i32.wrap_i64 (+ (+ string 8) (* index 8)))))
+
+(defun rt/string-set (string index value)
+  (begin
+    (i64.store (i32.wrap_i64 (+ (+ string 8) (* index 8))) value)
+    string))
+
+(defun rt/test-string-length ()
+  (rt/string-length (rt/string-new 3)))
+
+(defun rt/test-string-set-get ()
+  (let ((string (rt/string-new 3)))
+    (begin
+      (rt/string-set string 0 65)
+      (rt/string-get string 0))))
