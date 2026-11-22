@@ -22,6 +22,7 @@ use soil_lang::{NativeHost, Runtime};
 
 struct Image {
     runtime: Runtime,
+    loaded: HashMap<String, String>,
 }
 
 fn prelude() -> Result<String, String> {
@@ -33,6 +34,14 @@ fn prelude() -> Result<String, String> {
             .to_string()
     });
     std::fs::read_to_string(&path).map_err(|error| format!("read prelude {path}: {error}"))
+}
+
+impl Image {
+    fn remember(&mut self, path: &str) -> anyhow::Result<()> {
+        let hash = self.runtime.source_hash(path)?;
+        self.loaded.insert(path.to_string(), hash);
+        Ok(())
+    }
 }
 
 fn result_text(value: &Value) -> String {
@@ -123,7 +132,13 @@ fn main() {
                                 .load(&prelude)
                                 .map_err(|error| format!("load prelude: {error:#}"))?;
                             runtime.clear_provenance();
-                            images.insert(name.to_string(), Image { runtime });
+                            images.insert(
+                                name.to_string(),
+                                Image {
+                                    runtime,
+                                    loaded: HashMap::new(),
+                                },
+                            );
                             Ok(json!({"image": name}))
                         })
                     })
@@ -145,7 +160,10 @@ fn main() {
                         image
                             .runtime
                             .load_vfs(path)
-                            .map(|value| json!({"loaded": path, "result": result_text(&value)}))
+                            .and_then(|value| {
+                                image.remember(path)?;
+                                Ok(json!({"loaded": path, "result": result_text(&value)}))
+                            })
                             .map_err(|error| format!("{error:#}"))
                     })
             }
@@ -165,6 +183,29 @@ fn main() {
                             .map_err(|error| format!("{error:#}"))
                     })
             }
+            "reload" => images
+                .get_mut(name)
+                .ok_or_else(|| format!("unknown image {name}"))
+                .and_then(|image| {
+                    let paths: Vec<String> = image.loaded.keys().cloned().collect();
+                    let mut reloaded = Vec::new();
+                    for path in paths {
+                        let current = image
+                            .runtime
+                            .source_hash(&path)
+                            .map_err(|error| format!("{error:#}"))?;
+                        if image.loaded.get(&path) == Some(&current) {
+                            continue;
+                        }
+                        image
+                            .runtime
+                            .load_vfs(&path)
+                            .map_err(|error| format!("reload {path}: {error:#}"))?;
+                        image.loaded.insert(path.clone(), current);
+                        reloaded.push(path);
+                    }
+                    Ok(json!({"reloaded": reloaded}))
+                }),
             "status" => images
                 .get_mut(name)
                 .ok_or_else(|| format!("unknown image {name}"))
@@ -172,6 +213,7 @@ fn main() {
                     json!({
                         "dirty": image.runtime.dirty_definitions(),
                         "unattached": image.runtime.unattached_definitions(),
+                        "loaded": image.loaded.keys().cloned().collect::<Vec<_>>(),
                     })
                 }),
             "flush" => {
@@ -183,13 +225,20 @@ fn main() {
                     .get_mut(name)
                     .ok_or_else(|| format!("unknown image {name}"))
                     .and_then(|image| {
-                        if dry_run {
+                        let report = if dry_run {
                             image.runtime.flush_preview()
                         } else {
                             image.runtime.flush_apply()
                         }
-                        .map(flush_json)
-                        .map_err(|error| format!("{error:#}"))
+                        .map_err(|error| format!("{error:#}"))?;
+                        if !dry_run {
+                            for file in &report.files {
+                                image
+                                    .remember(&file.path)
+                                    .map_err(|error| format!("{error:#}"))?;
+                            }
+                        }
+                        Ok(flush_json(report))
                     })
             }
             "flush_new" => {
@@ -216,12 +265,14 @@ fn main() {
                             .runtime
                             .flush_unattached(path, &names)
                             .map(|file| {
-                                json!({
+                                image.remember(&file.path)?;
+                                Ok(json!({
                                     "path": file.path,
                                     "definitions": file.definitions,
                                     "source": file.source,
-                                })
+                                }))
                             })
+                            .and_then(|result| result)
                             .map_err(|error| format!("{error:#}"))
                     })
             }

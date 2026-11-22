@@ -199,6 +199,15 @@ impl Runtime {
         self.load_source(&source, Some(path))
     }
 
+    /// Content hash of a VFS source path as the image currently sees it.
+    pub fn source_hash(&mut self, path: &str) -> Result<String> {
+        let source = self
+            .host
+            .read_source(path)
+            .map_err(|error| anyhow!("read {path}: {error}"))?;
+        Ok(blake3::hash(source.as_bytes()).to_hex().to_string())
+    }
+
     pub fn load_source(&mut self, source: &str, origin: Option<&str>) -> Result<Value> {
         let document = parse_document(source)?;
         let source_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
