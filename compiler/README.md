@@ -38,8 +38,16 @@ list into the actual Wasm binary.
 
 ## Run it in Wasmtime
 
-Install Wasmtime with your package manager, or use the
-[official installer](https://docs.wasmtime.dev/cli-install.html).
+Install Wasmtime with the official installer:
+
+```sh
+# Linux and macOS
+curl https://wasmtime.dev/install.sh -sSf | bash
+
+# Windows: use the MSI from
+# https://github.com/bytecodealliance/wasmtime/releases/latest
+wasmtime -V
+```
 
 Validate and run:
 
