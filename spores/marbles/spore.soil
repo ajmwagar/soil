@@ -12,7 +12,8 @@
   (wit "wit/marbles.wit")
   (module "module.wasm")
 
-  (distribution "binary")
+  (distribution "both")
+  (source "source/")
 
   (requires
     ("soil:records/records@0.1.0" "issue, project, dependency, and event storage")
