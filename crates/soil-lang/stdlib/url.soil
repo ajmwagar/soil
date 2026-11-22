@@ -46,14 +46,12 @@
   (url/encode-bytes (string->bytes (str text)) #t))
 
 (defun url/hex-value (character)
-  (cond
-    ((and (>= character "0") (<= character "9"))
-      (- (first (string->bytes character)) 48))
-    ((and (>= character "A") (<= character "F"))
-      (+ 10 (- (first (string->bytes character)) 65)))
-    ((and (>= character "a") (<= character "f"))
-      (+ 10 (- (first (string->bytes character)) 97)))
-    (else nil)))
+  (let ((byte (first (string->bytes character))))
+    (cond
+      ((and (>= byte 48) (<= byte 57)) (- byte 48))
+      ((and (>= byte 65) (<= byte 70)) (+ 10 (- byte 65)))
+      ((and (>= byte 97) (<= byte 102)) (+ 10 (- byte 97)))
+      (else nil))))
 
 (defun url/decode-chars (characters spaces out)
   (cond
