@@ -1,14 +1,13 @@
 ; SPDX-License-Identifier: MIT OR Apache-2.0
-; Call two host WITs from Soil: soil:time and soil:records.
+; Call a WASI clock and soil:records from Soil.
 ; Run with:
-;   soil-lang --prelude stdlib/prelude.soil \
+;   soil-lang --prelude core/prelude.soil \
 ;     --records-root /tmp/r --book soil \
-;     bindings/soil-time.soil bindings/soil-records.soil \
-;     examples/wit_call.soil
+;     core/time.soil std/bindings/wasi-clocks.generated.soil std/bindings/soil-records.soil \
+;     examples/legacy/wit_call.soil
 
 (defun main ()
-  (let ((clock (value (soil:time/wall-clock))))
-    (let ((now (field clock :unix-ms)))
+  (let ((now (now-ms)))
       (let ((entry (make-entry
                      "demo:wit"
                      "hello"
@@ -20,4 +19,4 @@
           (let ((read (soil:records/get (record-key "demo:wit" "hello"))))
             (list (list :time now)
                   (list :write-ok (ok? write))
-                  (list :read (entry-body (value read))))))))))
+                  (list :read (entry-body (value read)))))))))

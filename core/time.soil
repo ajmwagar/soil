@@ -22,3 +22,12 @@
 
 (defun monotonic-ms ()
   (int (/ (monotonic-ns) 1000000)))
+
+;;; Sleep for `ms` milliseconds using a WASI pollable.
+;;;
+;;; There is no host sleep: subscribe to a monotonic duration, then poll it.
+(defun sleep-ms (ms)
+  (let ((pollable
+          (wasi:clocks/monotonic-clock.subscribe-duration
+            (* ms 1000000))))
+    (wasi:io/poll.poll (list pollable))))

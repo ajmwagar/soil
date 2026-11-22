@@ -13,7 +13,7 @@
 ;
 ;   soil-lang ... --repeat 0 --interval-ms 2000 examples/frigate_automation.soil
 ;
-; A production daemon belongs in a Spore with a soil:time tick; this file is
+; A production daemon belongs in a Spore with a wasi:clocks tick; this file is
 ; the policy in plain Soil, not a new scheduler.
 
 ;;; Labels that are worth interrupting a person for.

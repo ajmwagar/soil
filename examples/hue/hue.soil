@@ -684,7 +684,7 @@
             0
             (hue/count lights)
             (/ index frames)))
-        (soil:time/tick frame-ms)
+        (sleep-ms frame-ms)
         (hue/animate-frames
           bridge lights mood palette layout frames frame-ms (+ index 1)))))
 
