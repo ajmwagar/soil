@@ -71,3 +71,23 @@ the function returns a value; the returned number is still the result.
   compiler/core.soil tests/selfhost.soil tests/selfhost-main.soil
 # true
 ```
+
+## Direct WIT imports
+
+The compiler now emits flat i64 WIT imports:
+
+```lisp
+(import "wasi:cli/stdin" "get-stdin" () i64)
+
+(defun main ()
+  (wasi:cli/stdin.get-stdin))
+```
+
+This emits a real Wasm import section:
+
+```wat
+(import "wasi:cli/stdin" "get-stdin" (func (result i64)))
+```
+
+Current limit: parameters and result are i64-only. Strings, lists, resources,
+and canonical ABI lowering are the next slice.

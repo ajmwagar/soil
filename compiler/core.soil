@@ -178,12 +178,25 @@
 (defun wasm/defun? (form)
   (and (not (atom form)) (= (wasm/head form) "defun")))
 
+(defun wasm/import? (form)
+  (and (not (atom form)) (= (wasm/head form) "import")))
+
 (defun wasm/defuns (forms)
   (cond
     ((nil? forms) nil)
     ((wasm/defun? (first forms))
       (cons (first forms) (wasm/defuns (rest forms))))
     (else (wasm/defuns (rest forms)))))
+
+(defun wasm/imports (forms)
+  (cond
+    ((nil? forms) nil)
+    ((wasm/import? (first forms))
+      (cons (first forms) (wasm/imports (rest forms))))
+    (else (wasm/imports (rest forms)))))
+
+(defun wasm/import-name (form)
+  (str (nth 1 form) "." (nth 2 form)))
 
 (defun wasm/consts (forms)
   (cond
@@ -406,25 +419,54 @@
           (wasm/vec (wasm/repeat (wasm/count (nth 2 form)) 126))
           (wasm/vec (list 126)))))
 
-(defun wasm/types (defuns)
-  (if (nil? defuns)
+(defun wasm/import-type-entry (form)
+  (wasm/cat
+    (list (list 96)
+          (wasm/vec (wasm/repeat (wasm/count (nth 3 form)) 126))
+          (wasm/vec (list 126)))))
+
+(defun wasm/types-all (imports defuns)
+  (if (nil? imports)
+      (if (nil? defuns)
+          nil
+          (append (wasm/type-entry (first defuns)) (wasm/types-all nil (rest defuns))))
+      (append (wasm/import-type-entry (first imports))
+              (wasm/types-all (rest imports) defuns))))
+
+(defun wasm/indices-from (start n)
+  (if (<= n 0)
       nil
-      (append (wasm/type-entry (first defuns)) (wasm/types (rest defuns)))))
+      (cons (wasm/uleb start) (wasm/indices-from (+ start 1) (- n 1)))))
 
-(defun wasm/indices (n)
-  (if (<= n 0) nil (cons (wasm/uleb (- n 1)) (wasm/indices (- n 1)))))
+(defun wasm/function-indices (start n)
+  (wasm/cat (wasm/indices-from start n)))
 
-(defun wasm/function-indices (n)
-  (wasm/cat (reverse (wasm/indices n))))
+(defun wasm/import-entry (form type-index)
+  (wasm/cat
+    (list (wasm/name (str (nth 1 form)))
+          (wasm/name (str (nth 2 form)))
+          (list 0)
+          (wasm/uleb type-index))))
+
+(defun wasm/import-entries (imports index)
+  (if (nil? imports)
+      nil
+      (append (wasm/import-entry (first imports) index)
+              (wasm/import-entries (rest imports) (+ index 1)))))
+
+(defun wasm/import-section (imports)
+  (if (nil? imports)
+      nil
+      (wasm/section 2 (wasm/counted (length imports) (wasm/import-entries imports 0)))))
 
 (defun wasm/export-entry (form index)
   (wasm/cat (list (wasm/name (str (nth 1 form))) (list 0) (wasm/uleb index))))
 
-(defun wasm/exports (defuns index)
+(defun wasm/exports (defuns index start)
   (if (nil? defuns)
       nil
-      (append (wasm/export-entry (first defuns) index)
-              (wasm/exports (rest defuns) (+ index 1)))))
+      (append (wasm/export-entry (first defuns) (+ start index))
+              (wasm/exports (rest defuns) (+ index 1) start))))
 
 (defun wasm/body (form names consts)
   (let ((params (nth 2 form)))
@@ -471,18 +513,25 @@
 
 (defun wasm/compile-source (source)
   (let ((forms (read source)))
-    (let ((defuns (wasm/defuns forms)))
-      (let ((names (map (lambda (form) (str (nth 1 form))) defuns)))
-        (let ((consts (wasm/consts forms)))
-          (let ((types (wasm/counted (length defuns) (wasm/types defuns))))
-            (let ((indices (wasm/counted (length defuns) (wasm/function-indices (length defuns)))))
-              (let ((exports (wasm/counted (length defuns) (wasm/exports defuns 0))))
-                (let ((bodies (wasm/counted (length defuns) (wasm/bodies defuns names consts))))
-                  (wasm/cat
-                    (list (list 0 97 115 109 1 0 0 0)
-                      (wasm/section 1 types)
-                      (wasm/section 3 indices)
-                      (wasm/memory-section forms)
-                      (wasm/global-section forms)
-                      (wasm/section 7 exports)
-                      (wasm/section 10 bodies))))))))))))
+    (let ((imports (wasm/imports forms)))
+      (let ((defuns (wasm/defuns forms)))
+        (let ((names (append (map (lambda (form) (wasm/import-name form)) imports)
+                             (map (lambda (form) (str (nth 1 form))) defuns))))
+          (let ((consts (wasm/consts forms)))
+            (let ((types (wasm/counted (+ (wasm/count imports) (wasm/count defuns))
+                                       (wasm/types-all imports defuns))))
+              (let ((indices (wasm/counted (length defuns)
+                                           (wasm/function-indices (wasm/count imports) (wasm/count defuns)))))
+                (let ((exports (wasm/counted (length defuns)
+                                             (wasm/exports defuns 0 (wasm/count imports)))))
+                  (let ((bodies (wasm/counted (length defuns)
+                                              (wasm/bodies defuns names consts))))
+                    (wasm/cat
+                      (list (list 0 97 115 109 1 0 0 0)
+                        (wasm/section 1 types)
+                        (wasm/import-section imports)
+                        (wasm/section 3 indices)
+                        (wasm/memory-section forms)
+                        (wasm/global-section forms)
+                        (wasm/section 7 exports)
+                        (wasm/section 10 bodies)))))))))))))
