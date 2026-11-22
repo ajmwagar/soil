@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://soil-lang.org/sitemap.xml
+# LLM index: https://soil-lang.org/llms.txt
