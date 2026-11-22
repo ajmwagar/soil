@@ -27,6 +27,7 @@ WebAssembly. You may use any Wasm runtime you like. However Soil is designed to 
 | [`core/`](core) | Prelude and host-free modules: date, URL, JSON, UI, highlight, docs, CLI |
 | [`std/`](std) | Modules that call `soil:*` WIT: events, records, time, perf |
 | [`std/loam/`](std/loam) | Loam-host-only helpers, including edit sessions |
+| [`std/inference/`](std/inference) | Inference adapters over soil:http / soil:streams |
 | [`examples/`](examples) | Core, std, and UI programs |
 | [`spores/`](spores) | Packaged Spores; `spores/marbles` is the first binary Spore |
 | [`tools/tend/`](tools/tend) | The Soil build tool: manifest, lint, format, docs |

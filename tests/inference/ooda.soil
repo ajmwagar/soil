@@ -1,0 +1,23 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+
+(defun fake/fetch (request)
+  (list 'ok
+    (list
+      (list :status 200)
+      (list :body (string->bytes
+                    "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"hello\"}}]}")))))
+
+(defun test/ooda-request ()
+  (let ((request (ooda/request "https://ai.example/v1/chat/completions"
+                    "fpl/decide" "system" "user" 64 0.2 "cred")))
+    (and
+      (= (field request :url) "https://ai.example/v1/chat/completions")
+      (= (field request :method) 'post)
+      (string-contains? (bytes->string (field request :body)) "\"model\":\"fpl/decide\"")
+      (string-contains? (bytes->string (field request :body)) "\"max_tokens\":64"))))
+
+(defun test/ooda-complete ()
+  (let ((result (ooda/complete-with (quote fake/fetch)
+                  "https://ai.example/v1/chat/completions"
+                  "fpl/decide" "system" "user" nil nil nil)))
+    (and (ok? result) (= (value result) "hello"))))

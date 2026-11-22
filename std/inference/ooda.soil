@@ -1,0 +1,63 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; OODA / OpenAI-compatible non-streaming completions over soil:http.
+;
+; This is an adapter, not the soil:inference contract. The host owns the
+; endpoint allowlist, credentials, redirects, budgets, and TLS.
+
+(defun ooda/message (role content)
+  (list (list :role role) (list :content content)))
+
+(defun ooda/body (model system user max-tokens temperature)
+  (let ((body
+          (list
+            (list :model model)
+            (list :messages
+              (list
+                (ooda/message "system" system)
+                (ooda/message "user" user))))))
+    (let ((body (if (nil? max-tokens) body
+                    (assoc :max_tokens max-tokens body))))
+      (if (nil? temperature) body
+          (assoc :temperature temperature body)))))
+
+(defun ooda/headers ()
+  (list
+    (list :name "content-type")
+    (list :value "application/json")))
+
+(defun ooda/request (url model system user max-tokens temperature credential)
+  (list
+    (list :url url)
+    (list :method 'post)
+    (list :headers (list (ooda/headers)))
+    (list :body (string->bytes
+                  (json-encode (ooda/body model system user max-tokens temperature))))
+    (list :credential credential)
+    (list :max-bytes 4194304)
+    (list :timeout-ms 120000)))
+
+(defun ooda/error (message)
+  (list 'err message))
+
+(defun ooda/first-content (body)
+  (let ((choices (field body :choices)))
+    (if (nil? choices)
+        nil
+        (let ((message (field (first choices) :message)))
+          (if (nil? message) nil (field message :content))))))
+
+(defun ooda/complete-with (fetch url model system user max-tokens temperature credential)
+  (let ((result (apply fetch (list (ooda/request url model system user max-tokens temperature credential)))))
+    (if (not (ok? result))
+        (ooda/error (str result))
+        (let ((response (value result)))
+          (if (not (= (field response :status) 200))
+              (ooda/error (str "http status " (field response :status)))
+              (let ((body (json-decode (bytes->string (field response :body)))))
+                (let ((content (ooda/first-content body)))
+                  (if (nil? content)
+                      (ooda/error "completion returned no content")
+                      (list 'ok content)))))))))
+
+(defun ooda/complete (url model system user)
+  (ooda/complete-with soil:http/fetch url model system user nil nil nil))

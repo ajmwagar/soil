@@ -35,6 +35,7 @@ STD=(
   std/wasi/perf.soil
   std/soil/events.soil
   std/loam/edit.soil
+  std/inference/ooda.soil
 )
 FIXTURES=(
   boot/boot.soil
@@ -67,6 +68,7 @@ TESTS=(
   tests/edit.soil
   tests/safe-eval.soil
   tests/edit-lsp.soil
+  tests/inference/ooda.soil
   tests/vitals.soil
 )
 
