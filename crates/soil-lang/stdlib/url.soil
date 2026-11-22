@@ -75,6 +75,7 @@
 
 ;;; Decode percent escapes. `+` remains a literal plus; use
 ;;; [[url/decode-query]] when the input came from a form or query string.
+;;; A malformed `%` escape is kept literally rather than dropping the text.
 (defun url/decode (text)
   (url/decode-chars (string-chars (str text)) #f nil))
 
