@@ -24,12 +24,18 @@ use std::io::{self, BufRead, Write};
 use serde_json::{Value as Json, json};
 use soil_lang::sexp::Value;
 use soil_lang::{NativeHost, Runtime};
+use wasmtime::{Engine, Instance, Module, Store, Val};
 
 struct Image {
     runtime: Runtime,
     loaded: HashMap<String, String>,
     desktop: Option<String>,
     project: Option<String>,
+    workspace: String,
+    records: String,
+    book: String,
+    engine: Engine,
+    modules: HashMap<String, Module>,
 }
 
 fn prelude() -> Result<String, String> {
@@ -141,6 +147,11 @@ fn dispatch(images: &mut HashMap<String, Image>, prelude: &str, request: &Json) 
                             loaded: HashMap::new(),
                             desktop: desktop.clone(),
                             project: project.clone(),
+                            workspace: workspace.to_string(),
+                            records: records.to_string(),
+                            book: book.to_string(),
+                            engine: Engine::default(),
+                            modules: HashMap::new(),
                         },
                     );
                     Ok(json!({
@@ -161,6 +172,132 @@ fn dispatch(images: &mut HashMap<String, Image>, prelude: &str, request: &Json) 
                 Ok(json!({"detached": session, "session": session}))
             }
         }
+        "compile" => (|| -> Result<Json, String> {
+            let source = text_field(request, "source").to_string();
+            let image = images
+                .get(&session)
+                .ok_or_else(|| format!("unknown session {session}"))?;
+            if source.trim().is_empty() {
+                return Err("compile needs source".to_string());
+            }
+            let program = soil_lang::parse(&source).map_err(|error| format!("{error:#}"))?;
+            let functions: Vec<String> = program
+                .functions
+                .iter()
+                .map(|function| function.name.clone())
+                .collect();
+            let wasm = soil_lang::compile(&program).map_err(|error| format!("{error:#}"))?;
+            let hash = blake3::hash(&wasm).to_hex().to_string();
+            let path = request
+                .get("path")
+                .and_then(Json::as_str)
+                .filter(|path| !path.trim().is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("compiled/{hash}.wasm"));
+            let mut writer = NativeHost::open(&image.workspace, &image.records, &image.book)
+                .map_err(|error| format!("open host: {error:#}"))?;
+            writer
+                .write_bytes(&path, &wasm, "application/wasm")
+                .map_err(|error| format!("write {path}: {error:#}"))?;
+            Ok(json!({
+                "session": session,
+                "path": path,
+                "bytes": wasm.len(),
+                "functions": functions,
+                "hash": hash,
+            }))
+        })(),
+        "call-compiled" => (|| -> Result<Json, String> {
+            let function = text_field(request, "function").to_string();
+            if function.is_empty() {
+                return Err("call-compiled needs function".to_string());
+            }
+            let args: Vec<i64> = request
+                .get("args")
+                .and_then(Json::as_array)
+                .map(|args| {
+                    args.iter()
+                        .map(|arg| {
+                            arg.as_i64()
+                                .ok_or_else(|| "call-compiled args must be i64".to_string())
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?
+                .unwrap_or_default();
+            let image = images
+                .get_mut(&session)
+                .ok_or_else(|| format!("unknown session {session}"))?;
+            let source = text_field(request, "source").to_string();
+            let requested_path = request
+                .get("path")
+                .and_then(Json::as_str)
+                .filter(|path| !path.trim().is_empty())
+                .map(str::to_string);
+            let (wasm, path) = if !source.trim().is_empty() {
+                let program = soil_lang::parse(&source).map_err(|error| format!("{error:#}"))?;
+                let wasm = soil_lang::compile(&program).map_err(|error| format!("{error:#}"))?;
+                let hash = blake3::hash(&wasm).to_hex().to_string();
+                let path = requested_path.unwrap_or_else(|| format!("compiled/{hash}.wasm"));
+                let mut writer = NativeHost::open(&image.workspace, &image.records, &image.book)
+                    .map_err(|error| format!("open host: {error:#}"))?;
+                writer
+                    .write_bytes(&path, &wasm, "application/wasm")
+                    .map_err(|error| format!("write {path}: {error:#}"))?;
+                (wasm, path)
+            } else {
+                let path = requested_path
+                    .ok_or_else(|| "call-compiled needs source or path".to_string())?;
+                let mut reader = NativeHost::open(&image.workspace, &image.records, &image.book)
+                    .map_err(|error| format!("open host: {error:#}"))?;
+                let wasm = reader
+                    .read_bytes(&path)
+                    .map_err(|error| format!("read {path}: {error:#}"))?;
+                (wasm, path)
+            };
+            let hash = blake3::hash(&wasm).to_hex().to_string();
+            if !image.modules.contains_key(&hash) {
+                let module =
+                    Module::new(&image.engine, &wasm).map_err(|error| format!("{error:#}"))?;
+                image.modules.insert(hash.clone(), module);
+            }
+            let module = image
+                .modules
+                .get(&hash)
+                .ok_or_else(|| "compiled module vanished".to_string())?;
+            let mut store = Store::new(&image.engine, ());
+            let instance = Instance::new(&mut store, module, &[])
+                .map_err(|error| format!("instantiate {path}: {error:#}"))?;
+            let func = instance
+                .get_func(&mut store, &function)
+                .ok_or_else(|| format!("compiled module has no function {function}"))?;
+            let ty = func.ty(&store);
+            let params: Vec<Val> = args.iter().copied().map(Val::I64).collect();
+            if params.len() != ty.params().len() {
+                return Err(format!(
+                    "compiled function expects {} args, got {}",
+                    ty.params().len(),
+                    params.len()
+                ));
+            }
+            let mut results = vec![Val::I64(0); ty.results().len()];
+            func.call(&mut store, &params, &mut results)
+                .map_err(|error| format!("call compiled: {error:#}"))?;
+            let result = match results.first() {
+                Some(Val::I64(value)) => json!(value),
+                Some(other) => return Err(format!("unexpected compiled result {other:?}")),
+                None => Json::Null,
+            };
+            Ok(json!({
+                "session": session,
+                "path": path,
+                "hash": hash,
+                "function": function,
+                "args": args,
+                "result": result,
+                "compiled": true,
+            }))
+        })(),
         "load" => {
             let path = text_field(request, "path").to_string();
             images
