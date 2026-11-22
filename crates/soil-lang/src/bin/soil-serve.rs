@@ -179,8 +179,15 @@ fn serve(stream: TcpStream, config: &Config) -> Result<()> {
                 _ => None,
             })
             .unwrap_or_default();
+        let mut last_ping = std::time::Instant::now();
         loop {
             thread::sleep(std::time::Duration::from_millis(100));
+            if last_ping.elapsed() >= std::time::Duration::from_secs(5) {
+                match runtime.call("server/ping", &[Value::Int(handle as i64)]) {
+                    Ok(Value::Bool(false)) | Err(_) => break,
+                    _ => last_ping = std::time::Instant::now(),
+                }
+            }
             let head = match runtime.call("server/head", &[]) {
                 Ok(Value::String(head)) => head,
                 Ok(_) => String::new(),
