@@ -1,0 +1,8 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Bootstrap CLI entry point.
+;
+; `argv` is supplied by soil-run's --arg/-- handling. The first argument is
+; the Soil source string to compile.
+
+(defun main ()
+  (compiler/compile-wasm (first (argv))))

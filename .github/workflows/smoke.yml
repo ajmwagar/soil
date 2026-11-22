@@ -1,0 +1,55 @@
+name: smoke
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ajmwagar/soil-rust
+          path: soil-rust
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: soil-rust -> target
+
+      - name: Build bootstrap runner
+        run: cargo build --manifest-path soil-rust/Cargo.toml --bin soil-run
+
+      - name: Compiler self-tests
+        run: |
+          soil-rust/target/debug/soil-run \
+            --prelude stdlib/prelude.soil \
+            --call main \
+            compiler/core.soil tests/selfhost.soil tests/selfhost-main.soil \
+            | grep -qx true
+
+      - name: Compile the object runtime
+        run: |
+          SOURCE="$(cat tests/runtime-smoke.soil)"
+          soil-rust/target/debug/soil-run \
+            --prelude stdlib/prelude.soil \
+            --call main \
+            compiler/core.soil compiler/main.soil \
+            --arg "$SOURCE" > /tmp/runtime-bytes.txt
+          python3 scripts/bytes-to-wasm.py /tmp/runtime-bytes.txt /tmp/runtime.wasm
+
+      - name: Install wasmtime
+        run: curl -sSfL https://wasmtime.dev/install.sh | bash
+
+      - name: Run the object runtime
+        run: |
+          export PATH="$HOME/.wasmtime/bin:$PATH"
+          wasmtime --version
+          test "$(wasmtime run --invoke rt/test-cons /tmp/runtime.wasm 2>/dev/null)" = "1"
+          test "$(wasmtime run --invoke rt/test-cdr /tmp/runtime.wasm 2>/dev/null)" = "2"
