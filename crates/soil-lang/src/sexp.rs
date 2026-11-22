@@ -296,6 +296,41 @@ impl<'a> Parser<'a> {
                 let value = self.parse_value()?;
                 Ok(Value::List(vec![Value::Symbol("quote".to_string()), value]))
             }
+            b'#' if self.bytes.get(self.pos + 1) == Some(&b'\'') => {
+                self.pos += 2;
+                let value = self.parse_value()?;
+                Ok(Value::List(vec![
+                    Value::Symbol("function".to_string()),
+                    value,
+                ]))
+            }
+            b'`' => {
+                self.pos += 1;
+                let value = self.parse_value()?;
+                Ok(Value::List(vec![
+                    Value::Symbol("quasiquote".to_string()),
+                    value,
+                ]))
+            }
+            b',' => {
+                self.pos += 1;
+                let splicing = self.bytes.get(self.pos) == Some(&b'@');
+                if splicing {
+                    self.pos += 1;
+                }
+                let value = self.parse_value()?;
+                Ok(Value::List(vec![
+                    Value::Symbol(
+                        if splicing {
+                            "unquote-splicing"
+                        } else {
+                            "unquote"
+                        }
+                        .to_string(),
+                    ),
+                    value,
+                ]))
+            }
             b'"' => self.parse_string(),
             _ => self.parse_atom(),
         }
@@ -399,5 +434,5 @@ impl<'a> Parser<'a> {
 }
 
 fn is_delimiter(byte: u8) -> bool {
-    byte.is_ascii_whitespace() || matches!(byte, b'(' | b')' | b'"' | b';')
+    byte.is_ascii_whitespace() || matches!(byte, b'(' | b')' | b'"' | b';' | b'`' | b',' | b'\'')
 }
