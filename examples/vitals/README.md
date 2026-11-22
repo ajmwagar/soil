@@ -54,5 +54,9 @@ open /tmp/vitals.html
 ```
 
 The rings, cards and sleep hypnogram are ordinary Soil forms; the host only
-turns them into HTML. This is the second backend the view model needs before a
-GPUI adapter is worth building.
+turns them into HTML. The rings are inline SVG arcs rather than CSS
+`conic-gradient`, because Blitz renders conic gradients as a solid ring with no
+progress. SVG arcs render correctly in both a browser and Blitz.
+
+This is the second backend the view model needs before a GPUI adapter is worth
+building.

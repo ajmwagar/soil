@@ -49,33 +49,75 @@
 (defun vitals-ui/update (state action)
   state)
 
-(defun vitals-ui/ring (ring)
+(defun vitals-ui/ring-color (id)
+  (cond
+    ((= id "heart") "#ff6b8b")
+    ((= id "oxygen") "#58a6ff")
+    (else "#c8f169")))
+
+(defun vitals-ui/ring-svg (ring)
   (let ((value (field ring :value))
         (max (field ring :max))
         (id (field ring :id)))
-    (vitals-ui/article "ring-card"
-      (list
-        (vitals-ui/div "ring-head"
+    (let ((pct (vitals-ui/percent value max)))
+      (let ((circ 345.575)
+            (dash (* 345.575 (/ pct 100.0))))
+        (el "svg"
           (list
-            (vitals-ui/span "ring-label" (list (txt (field ring :label))))
-            (vitals-ui/span (str "fresh " (field ring :freshness))
-              (list (txt (field ring :freshness))))))
-        (vitals-ui/div "ring-wrap"
+            (attr :class "ring-svg")
+            (attr :viewBox "0 0 132 132")
+            (attr :width "132")
+            (attr :height "132"))
           (list
-            (el "div"
+            (el "circle"
               (list
-                (attr :class (str "ring-dial ring-" id))
-                (attr :style (str "--p:" (vitals-ui/percent value max) "%")))
+                (attr :cx "66") (attr :cy "66") (attr :r "55")
+                (attr :fill "none")
+                (attr :stroke "rgba(255,255,255,.07)")
+                (attr :stroke-width "11"))
+              nil)
+            (el "circle"
               (list
-                (vitals-ui/div "ring-core"
-                  (list
-                    (vitals-ui/div "ring-value" (list (txt (vitals-ui/or value "—"))))
-                    (vitals-ui/div "ring-unit" (list (txt (field ring :unit))))))))))
-        (vitals-ui/div "ring-meta"
-          (list
-            (vitals-ui/span "" (list (txt (vitals-ui/or (field ring :source_device) "no source"))))
-            (vitals-ui/span ""
-              (list (txt (str (vitals-ui/or value "—") " / " (vitals-ui/or max "—")))))))))))
+                (attr :cx "66") (attr :cy "66") (attr :r "55")
+                (attr :fill "none")
+                (attr :stroke (vitals-ui/ring-color id))
+                (attr :stroke-width "11")
+                (attr :stroke-linecap "round")
+                (attr :stroke-dasharray (str dash " " circ))
+                (attr :transform "rotate(-90 66 66)"))
+              nil)
+            (el "text"
+              (list
+                (attr :x "66") (attr :y "70")
+                (attr :text-anchor "middle")
+                (attr :fill "#e9ecf2")
+                (attr :font-size "30")
+                (attr :font-weight "700"))
+              (list (txt (vitals-ui/or value "—"))))
+            (el "text"
+              (list
+                (attr :x "66") (attr :y "92")
+                (attr :text-anchor "middle")
+                (attr :fill "#8b93a7")
+                (attr :font-size "10")
+                (attr :letter-spacing "1.5"))
+              (list (txt (field ring :unit))))))))))
+
+(defun vitals-ui/ring (ring)
+  (vitals-ui/article "ring-card"
+    (list
+      (vitals-ui/div "ring-head"
+        (list
+          (vitals-ui/span "ring-label" (list (txt (field ring :label))))
+          (vitals-ui/span (str "fresh " (field ring :freshness))
+            (list (txt (field ring :freshness))))))
+      (vitals-ui/div "ring-wrap" (list (vitals-ui/ring-svg ring)))
+      (vitals-ui/div "ring-meta"
+        (list
+          (vitals-ui/span "" (list (txt (vitals-ui/or (field ring :source_device) "no source"))))
+          (vitals-ui/span ""
+            (list (txt (str (vitals-ui/or (field ring :value) "—") " / "
+                            (vitals-ui/or (field ring :max) "—"))))))))))
 
 (defun vitals-ui/rings (rings)
   (vitals-ui/div "rings" (map 'vitals-ui/ring rings)))
@@ -204,12 +246,7 @@
     ".ring-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px; }\n"
     ".ring-label { font-size:12px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); font-weight:700; }\n"
     ".ring-wrap { display:grid; place-items:center; padding:4px 0 8px; }\n"
-    ".ring-dial { --p:0%; width:132px; height:132px; border-radius:50%; padding:11px; background:conic-gradient(var(--accent) var(--p), rgba(255,255,255,.07) 0); }\n"
-    ".ring-heart { background:conic-gradient(#ff6b8b var(--p), rgba(255,255,255,.07) 0); }\n"
-    ".ring-oxygen { background:conic-gradient(#58a6ff var(--p), rgba(255,255,255,.07) 0); }\n"
-    ".ring-core { width:100%; height:100%; border-radius:50%; background:#0e1219; display:grid; place-content:center; text-align:center; border:1px solid rgba(255,255,255,.05); }\n"
-    ".ring-value { font:700 30px/1 ui-sans-serif,system-ui,sans-serif; letter-spacing:-.04em; font-variant-numeric:tabular-nums; }\n"
-    ".ring-unit { color:var(--muted); font-size:11px; margin-top:5px; letter-spacing:.08em; text-transform:uppercase; }\n"
+    ".ring-svg { display:block; width:132px; height:132px; }\n"
     ".ring-meta { display:flex; justify-content:space-between; gap:8px; color:var(--muted); font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }\n"
     ".fresh { font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }\n"
     ".fresh.fresh { color:#7ee2a8; }\n"
