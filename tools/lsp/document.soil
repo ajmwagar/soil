@@ -127,10 +127,66 @@
     (list :message message)))
 
 (defun lsp/parse-doc (text)
-  (let ((result (try-read-document text)))
-    (if (ok? result)
-        (list (list :ok (value result)))
-        (list (list :err (value result))))))
+  (let ((scan (lsp/scan text)))
+    (if (ok? scan)
+        (list (list :ok (read-document text)))
+        (list (list :err (value scan))))))
+
+; A small structural scan used before the real reader. The reader reports
+; parse errors by failing; LSP diagnostics need an offset without throwing.
+; This scanner only guards the common cases (strings, lists, comments); the
+; reader remains the source of truth for everything else.
+(defun lsp/scan-ok () (list 'ok #t))
+(defun lsp/scan-err (message offset)
+  (list 'err (list (list :message message) (list :offset offset))))
+(defun lsp/byte-length (text) (length (string->bytes text)))
+
+(defun lsp/scan (text)
+  (lsp/scan-chars (string-chars text) 0 0 #f #f))
+
+(defun lsp/scan-skip-comment (chars depth offset)
+  (cond
+    ((nil? chars) (lsp/scan-ok))
+    ((= (first chars) "\n")
+      (lsp/scan-chars (rest chars) depth (+ offset 1) #f #f))
+    (else
+      (lsp/scan-skip-comment (rest chars) depth
+        (+ offset (lsp/byte-length (first chars)))))))
+
+(defun lsp/scan-chars (chars depth offset in-string escaped)
+  (cond
+    ((nil? chars)
+      (cond
+        (in-string (lsp/scan-err "unterminated string" offset))
+        ((> depth 0) (lsp/scan-err "unterminated list" offset))
+        (else (lsp/scan-ok))))
+    (escaped
+      (lsp/scan-chars (rest chars) depth
+        (+ offset (lsp/byte-length (first chars))) in-string #f))
+    (in-string
+      (let ((current (first chars)))
+        (cond
+          ((= current "\\")
+            (lsp/scan-chars (rest chars) depth (+ offset 1) #t #t))
+          ((= current "\"")
+            (lsp/scan-chars (rest chars) depth (+ offset 1) #f #f))
+          (else
+            (lsp/scan-chars (rest chars) depth
+              (+ offset (lsp/byte-length current)) #t #f)))))
+    ((= (first chars) "\"")
+      (lsp/scan-chars (rest chars) depth (+ offset 1) #t #f))
+    ((= (first chars) ";")
+      (lsp/scan-skip-comment (rest chars) depth (+ offset 1)))
+    ((= (first chars) "(")
+      (lsp/scan-chars (rest chars) (+ depth 1) (+ offset 1) #f #f))
+    ((= (first chars) ")")
+      (if (<= depth 0)
+          (lsp/scan-err "unexpected )" offset)
+          (lsp/scan-chars (rest chars) (- depth 1) (+ offset 1) #f #f)))
+    (else
+      (lsp/scan-chars (rest chars) depth
+        (+ offset (lsp/byte-length (first chars))) #f #f))))
+
 
 (defun lsp/diagnostics (text)
   (let ((result (lsp/parse-doc text)))

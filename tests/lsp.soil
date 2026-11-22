@@ -3,9 +3,9 @@
 (defun test/lsp-position-roundtrip ()
   (let ((text "(defun a () 1)\n(defun b () 2)\n"))
     (and (= (lsp/offset text 0 0) 0)
-         (= (lsp/offset text 1 0) 16)
-         (= (field (lsp/position text 16) :line) 1)
-         (= (field (lsp/position text 16) :character) 0))))
+         (= (lsp/offset text 1 0) 15)
+         (= (field (lsp/position text 15) :line) 1)
+         (= (field (lsp/position text 15) :character) 0))))
 
 (defun test/lsp-parse-ok ()
   (let ((result (lsp/parse-doc "(defun a () 1)\n")))
@@ -48,3 +48,16 @@
   (let ((text ";;; Adds one.\n(defun inc (x) (+ x 1))\n"))
     (let ((parsed (value (lsp/parse-doc text))))
       (= (lsp/form-docs (first (field parsed :forms))) "Adds one."))))
+
+(defun test/lsp-scan-ok ()
+  (ok? (lsp/scan "(defun a () 1)\n")))
+
+(defun test/lsp-scan-list ()
+  (let ((result (lsp/scan "(defun a () 1")))
+    (and (not (ok? result))
+         (= (field (value result) :offset) 13))))
+
+(defun test/lsp-scan-string ()
+  (let ((result (lsp/scan "\"hi")))
+    (and (not (ok? result))
+         (= (field (value result) :offset) 3))))
