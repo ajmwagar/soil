@@ -23,7 +23,7 @@ bit comes before integers and objects are mixed freely.
 
 ## First slice — done
 
-`examples/compiler/runtime.soil` is compiled by `examples/compiler/core.soil`
+`compiler/runtime.soil` is compiled by `compiler/core.soil`
 into a Wasm module with:
 
 ```text

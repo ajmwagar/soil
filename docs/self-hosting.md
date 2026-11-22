@@ -3,7 +3,7 @@
 Status: **bootstrap stages 0, 1, and the Wasm-hosted compiler**, 2026-11-22.
 
 The Rust compiler remains the reference. The Soil compiler lives in
-`examples/compiler/core.soil` and has two backends:
+`compiler/core.soil` and has two backends:
 
 - `compiler/compile-wat` emits WebAssembly text
 - `compiler/compile-wasm` emits the binary module, byte-for-byte matching the
@@ -63,7 +63,7 @@ calls, `defconst`, `and`, `or`, and `not`.
 
 ### Wasm-hosted compiler — done
 
-`crates/soil-compiler-wasm` embeds the Soil compiler and runs it on the
+`compiler` embeds the Soil compiler and runs it on the
 `wasm32-wasip2` interpreter:
 
 ```sh
@@ -76,7 +76,7 @@ compiler can run in Wasm and emit a runnable module.
 
 ### Stage 2 — the object model — started
 
-`examples/compiler/runtime.soil` now implements the first Soil-native object
+`compiler/runtime.soil` now implements the first Soil-native object
 runtime: linear memory, a mutable heap global, bump allocation, and cons cells.
 It is compiled by the Soil compiler and runs under Loam/Wasmtime. See
 [Object model](object-model.md).

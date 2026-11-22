@@ -11,8 +11,8 @@ Use an existing `soil-lang` binary and `wasmtime`:
 ```sh
 SOIL_LANG=${SOIL_LANG:-target/debug/soil-lang}
 
-$SOIL_LANG --prelude crates/soil-lang/stdlib/prelude.soil \
-  --call main examples/compiler/core.soil /tmp/compile-runtime.soil \
+$SOIL_LANG --prelude stdlib/prelude.soil \
+  --call main compiler/core.soil /tmp/compile-runtime.soil \
   > /tmp/runtime-bytes.txt
 ```
 
