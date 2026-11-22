@@ -107,3 +107,32 @@
         (if (nil? (rest forms))
             value
             (repl/eval-forms (rest forms))))))
+
+;;; Return true when `text` contains no unterminated list or string.
+;;; This is what lets a session decide whether a buffered line is ready to
+;;; `load` without treating an incomplete form as a syntax error.
+(defun repl/scan-complete (chars depth in-string escaped comment)
+  (cond
+    ((nil? chars) (and (= depth 0) (not in-string)))
+    (comment
+      (if (= (first chars) "\n")
+          (repl/scan-complete (rest chars) depth in-string escaped #f)
+          (repl/scan-complete (rest chars) depth in-string escaped #t)))
+    (in-string
+      (cond
+        (escaped (repl/scan-complete (rest chars) depth in-string #f #f))
+        ((= (first chars) "\\") (repl/scan-complete (rest chars) depth in-string #t #f))
+        ((= (first chars) "\"") (repl/scan-complete (rest chars) depth #f #f #f))
+        (else (repl/scan-complete (rest chars) depth #t #f #f))))
+    ((= (first chars) ";")
+      (repl/scan-complete (rest chars) depth in-string escaped #t))
+    ((= (first chars) "\"")
+      (repl/scan-complete (rest chars) depth #t #f #f))
+    ((= (first chars) "(")
+      (repl/scan-complete (rest chars) (+ depth 1) #f #f #f))
+    ((= (first chars) ")")
+      (repl/scan-complete (rest chars) (- depth 1) #f #f #f))
+    (else (repl/scan-complete (rest chars) depth in-string escaped #f))))
+
+(defun repl/complete? (text)
+  (repl/scan-complete (string-chars text) 0 #f #f #f))

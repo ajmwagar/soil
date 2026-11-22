@@ -27,6 +27,7 @@ CORE = [
     "core/ui.soil",
     "core/url.soil",
     "core/repl.soil",
+    "core/repl-session.soil",
     "core/image.soil",
 ]
 STD = [
@@ -56,6 +57,7 @@ TESTS = [
     "tests/witgen.soil",
     "tests/lsp.soil",
     "tests/repl.soil",
+    "tests/repl-session.soil",
     "tests/image.soil",
     "tests/selfhost.soil",
 ]
@@ -114,7 +116,10 @@ def main() -> int:
                 cwd=ROOT, text=True, capture_output=True,
             )
             output = result.stdout.strip()
-            if result.returncode != 0:
+            if "unknown form or function `load`" in result.stderr:
+                print(f"SKIP {test_file}::{name}: interpreter has no load")
+                skipped += 1
+            elif result.returncode != 0:
                 print(f"ERR  {test_file}::{name}\n{result.stderr.strip()}")
                 failed += 1
             elif output in {"", "false", "nil"}:

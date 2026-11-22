@@ -1,0 +1,144 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Transport-neutral multiplayer REPL sessions.
+;
+; One image, many clients. Each client has its own input buffer. Evaluation is
+; serialized by the host loop, so two clients cannot interleave a `load`.
+; Every client has an outbox; eval/join/leave events are broadcast so attached
+; clients can see activity without sharing prompt state.
+;
+; A socket, stdio, or web transport only reads a line, calls `session/step`, and
+; drains that client's outbox. Core has no socket or WASI import.
+
+(defun session/new ()
+  (list (list :clients nil) (list :seq 0)))
+
+(defun session/clients (state)
+  (field state :clients))
+
+(defun session/client (state id)
+  (find-with (lambda (client id) (= (field client :id) id)) id (session/clients state)))
+
+(defun session/replace-client (clients id client)
+  (if (nil? clients)
+      nil
+      (let ((current (first clients)))
+        (if (= (field current :id) id)
+            (cons client (rest clients))
+            (cons current (session/replace-client (rest clients) id client))))))
+
+(defun session/set-client (state id client)
+  (assoc :clients (session/replace-client (session/clients state) id client) state))
+
+(defun session/without-client (clients id)
+  (cond
+    ((nil? clients) nil)
+    ((= (field (first clients) :id) id) (rest clients))
+    (else (cons (first clients) (session/without-client (rest clients) id)))))
+
+(defun session/add-client (state id)
+  (if (nil? (session/client state id))
+      (assoc :clients
+        (append (or-empty (session/clients state))
+          (list (list (list :id id) (list :buffer nil) (list :events nil))))
+        state)
+      state))
+
+(defun session/emit-client (clients id event)
+  (if (nil? clients)
+      nil
+      (let ((client (first clients)))
+        (if (= (field client :id) id)
+            (cons (assoc :events (append (or-empty (field client :events)) (list event)) client)
+                  (rest clients))
+            (cons client (session/emit-client (rest clients) id event))))))
+
+(defun session/emit-all (clients event)
+  (if (nil? clients)
+      nil
+      (let ((client (first clients)))
+        (cons (assoc :events (append (or-empty (field client :events)) (list event)) client)
+              (session/emit-all (rest clients) event)))))
+
+;;; Return `(event state)` where the state's sequence is advanced.
+(defun session/make-event (state id kind text source)
+  (list
+    (list (list :seq (field state :seq))
+          (list :client id)
+          (list :kind kind)
+          (list :text text)
+          (list :source source))
+    (assoc :seq (+ 1 (field state :seq)) state)))
+
+(defun session/record (state id kind text source)
+  (let ((made (session/make-event state id kind text source)))
+    (let ((event (first made))
+          (next (nth 1 made)))
+      (list event (assoc :clients (session/emit-client (session/clients next) id event) next)))))
+
+(defun session/broadcast (state id kind text source)
+  (let ((made (session/make-event state id kind text source)))
+    (let ((event (first made))
+          (next (nth 1 made)))
+      (list event (assoc :clients (session/emit-all (session/clients next) event) next)))))
+
+(defun session/join (state id)
+  (let ((joined (session/add-client state id)))
+    (nth 1 (session/broadcast joined id :join (str id " joined") nil))))
+
+(defun session/leave (state id)
+  (if (nil? (session/client state id))
+      state
+      (let ((removed (assoc :clients (session/without-client (session/clients state) id) state)))
+        (nth 1 (session/broadcast removed id :leave (str id " left") nil)))))
+
+(defun session/set-buffer (state id buffer)
+  (let ((client (session/client state id)))
+    (if (nil? client)
+        state
+        (session/set-client state id (assoc :buffer buffer client)))))
+
+(defun session/drain-one (clients id)
+  (if (nil? clients)
+      (list nil nil)
+      (let ((client (first clients)))
+        (if (= (field client :id) id)
+            (list (or-empty (field client :events))
+                  (cons (assoc :events nil client) (rest clients)))
+            (let ((tail (session/drain-one (rest clients) id)))
+              (list (first tail) (cons client (nth 1 tail))))))))
+
+;;; Return `(events state)` and clear this client's outbox.
+(defun session/drain (state id)
+  (let ((drained (session/drain-one (session/clients state) id)))
+    (list (first drained)
+          (assoc :clients (nth 1 drained) state))))
+
+(defun session/complete-buffer (state id source)
+  (session/set-buffer state id (if (repl/complete? source) nil source)))
+
+(defun session/step-action (state id step)
+  (let ((action (field step :action)))
+    (cond
+      ((= action :quit) (session/leave state id))
+      ((= action :print)
+        (nth 1 (session/record state id :print (field step :text) nil)))
+      ((= action :error)
+        (nth 1 (session/record state id :error (field step :message) nil)))
+      ((= action :load)
+        (let ((source (field step :source)))
+          (if (repl/complete? source)
+              (let ((value (load source)))
+                (let ((state (session/complete-buffer state id source)))
+                  (nth 1 (session/broadcast state id :eval (repl/text value) source))))
+              (session/set-buffer state id source))))
+      (else
+        (nth 1 (session/record state id :error
+               (str "unsupported session action " action) nil))))))
+
+;;; Consume one line for one client. The caller serializes calls per image.
+(defun session/step (state id line)
+  (let ((client (session/client state id)))
+    (if (nil? client)
+        state
+        (session/step-action state id
+          (repl/step line (field client :buffer))))))

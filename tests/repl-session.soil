@@ -1,0 +1,35 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Multiplayer REPL session tests, pure Soil.
+
+(defun test/repl-complete ()
+  (and
+    (repl/complete? "(defun f (x) x)")
+    (not (repl/complete? "(defun f (x)"))
+    (repl/complete? "(str \"(\")")
+    (not (repl/complete? "(str \"abc)"))))
+
+(defun test/session-shared-image ()
+  (let ((state (session/join (session/join (session/new) "a") "b")))
+    (let ((state (session/step state "a" "(defun shared (x) (* x 2))")))
+      (let ((state (session/step state "b" "(shared 21)")))
+        (let ((seen (session/drain state "a")))
+          (and
+            (= (field (last-of (first seen)) :text) "42")
+            (= (field (last-of (first seen)) :client) "b")
+            (not (nil? (session/client (nth 1 seen) "a")))))))))
+
+(defun test/session-independent-buffers ()
+  (let ((state (session/join (session/join (session/new) "a") "b")))
+    (let ((state (session/step state "a" "(defun later (x)")))
+      (let ((state (session/step state "b" "(+ 1 2)")))
+        (let ((state (session/step state "a" " x)")))
+          (let ((state (session/step state "b" "(later 9)")))
+            (let ((seen (session/drain state "b")))
+              (= (field (last-of (first seen)) :text) "9"))))))))
+
+(defun test/session-leave ()
+  (let ((state (session/join (session/join (session/new) "a") "b")))
+    (let ((state (session/step state "a" ":quit")))
+      (and
+        (nil? (session/client state "a"))
+        (not (nil? (session/client state "b")))))))
