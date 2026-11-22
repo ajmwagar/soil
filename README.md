@@ -33,7 +33,7 @@ WebAssembly. You may use any Wasm runtime you like. However Soil is designed to 
 | [`tools/lsp/`](tools/lsp) | The Soil language server |
 | [`site/`](site) | The soil-lang.org landing page and getting-started guide |
 | [`tests/`](tests) | Core tests and the migrated Loam-host corpus |
-| [`docs/`](docs) | Language, compiler, object-model, Spore, and safe-eval notes |
+| [`docs/`](docs) | Language, compiler, object-model, package, Spore, and safe-eval notes |
 
 ## Core and std
 

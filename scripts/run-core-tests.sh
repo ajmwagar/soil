@@ -60,6 +60,7 @@ TESTS=(
   tests/repl.soil
   tests/repl-session.soil
   tests/package.soil
+  tests/package-resolution.soil
   tests/image.soil
   tests/selfhost.soil
   tests/edit.soil
