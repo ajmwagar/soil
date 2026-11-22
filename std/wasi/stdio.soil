@@ -1,0 +1,53 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; WASI stdio bindings used by the native-looking REPL and LSP entry points.
+;
+; The generated wasi:cli / wasi:io stubs are checked in under std/bindings.
+; Handle 1 is stdin, 2 stdout, 3 stderr in the bootstrap runner.
+
+(defun wasi/read-byte (stream)
+  (let ((result (wasi:io/streams.input-stream.blocking-read stream 1)))
+    (if (ok? result)
+        (let ((data (value result)))
+          (if (nil? data) nil (first data)))
+        nil)))
+
+(defun wasi/bytes-string (acc)
+  (if (nil? acc) "" (bytes->string (reverse acc))))
+
+(defun wasi/read-line-loop (stream acc)
+  (let ((byte (wasi/read-byte stream)))
+    (cond
+      ((nil? byte)
+        (if (nil? acc) nil (wasi/bytes-string acc)))
+      ((= byte 10)
+        (wasi/bytes-string acc))
+      ((= byte 13)
+        (wasi/read-line-loop stream acc))
+      (else
+        (wasi/read-line-loop stream (cons byte acc))))))
+
+(defun stdin-read-line ()
+  (wasi/read-line-loop 1 nil))
+
+(defun stdin-read-loop (stream remaining acc)
+  (if (<= remaining 0)
+      (wasi/bytes-string acc)
+      (let ((result (wasi:io/streams.input-stream.blocking-read stream remaining)))
+        (if (ok? result)
+            (let ((data (value result)))
+              (if (nil? data)
+                  (wasi/bytes-string acc)
+                  (stdin-read-loop stream
+                    (- remaining (length data))
+                    (append (reverse data) acc))))
+            (wasi/bytes-string acc)))))
+
+;;; Read exactly up to `count` bytes; EOF returns what was read.
+(defun stdin-read (count)
+  (stdin-read-loop 1 count nil))
+
+(defun stdout-write (text)
+  (wasi:io/streams.output-stream.blocking-write-and-flush 2 (string->bytes text)))
+
+(defun stderr-write (text)
+  (wasi:io/streams.output-stream.blocking-write-and-flush 3 (string->bytes text)))
