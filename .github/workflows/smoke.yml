@@ -29,7 +29,7 @@ jobs:
       - name: Compiler self-tests
         run: |
           soil-rust/target/debug/soil-run \
-            --prelude stdlib/prelude.soil \
+            --prelude core/prelude.soil \
             --call main \
             compiler/core.soil tests/selfhost.soil tests/selfhost-main.soil \
             | grep -qx true
@@ -38,7 +38,7 @@ jobs:
         run: |
           SOURCE="$(cat tests/runtime-smoke.soil)"
           soil-rust/target/debug/soil-run \
-            --prelude stdlib/prelude.soil \
+            --prelude core/prelude.soil \
             --call main \
             compiler/core.soil compiler/main.soil \
             --arg "$SOURCE" > /tmp/runtime-bytes.txt
