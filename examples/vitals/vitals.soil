@@ -1,0 +1,949 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Vitals fusion policy, ported from spores/vitals/core.
+;
+; This is the host-free half of the Vitals Spore: it turns wearer-scoped
+; `signal.sample.v1` bodies into the `vitals.summary.v1` record and the
+; `vitals.view.v1` view model. A host owns records, Unibus, time and pixels.
+;
+; The policy is deliberately opinionated:
+;   * ring primary for overnight HR/HRV/SpO2/temperature and sleep;
+;   * watch primary for motion and fallback for HR/sleep;
+;   * sleep stages come from one source, never averaged;
+;   * steps stay per device, never summed;
+;   * stale or guest-worn samples are not the owner's data.
+
+(defconst vitals/source "dev.fungos.vitals")
+(defconst vitals/schema "vitals.summary.v1")
+(defconst vitals/view-schema "vitals.view.v1")
+(defconst vitals/sleep-schema "vitals.sleep.v1")
+(defconst vitals/policy-version "vitals-fusion-v1")
+
+(defconst vitals/move-ring-max 10000)
+(defconst vitals/heart-ring-max 180)
+(defconst vitals/oxygen-ring-max 100)
+(defconst vitals/step-bucket-ms 300000)
+(defconst vitals/day-ms 86400000)
+
+;;; ---------------------------------------------------------------------------
+;;; Small helpers
+
+(defun vitals/lower-byte (byte)
+  (if (and (>= byte 65) (<= byte 90)) (+ byte 32) byte))
+
+(defun vitals/lower (text)
+  (string-from-bytes (map 'vitals/lower-byte (string->bytes (str text)))))
+
+(defun vitals/or-else (value fallback)
+  (if (nil? value) fallback value))
+
+(defun vitals/member? (value values)
+  (cond
+    ((nil? values) #f)
+    ((= value (first values)) #t)
+    (else (vitals/member? value (rest values)))))
+
+(defun vitals/unique-into (values seen out)
+  (if (nil? values)
+      (reverse out)
+      (let ((value (first values)))
+        (if (vitals/member? value seen)
+            (vitals/unique-into (rest values) seen out)
+            (vitals/unique-into (rest values) (cons value seen) (cons value out))))))
+
+(defun vitals/unique (values)
+  (vitals/unique-into values nil nil))
+
+(defun vitals/map-get (key map)
+  (cond
+    ((nil? map) nil)
+    ((= (first (first map)) key) (nth 1 (first map)))
+    (else (vitals/map-get key (rest map)))))
+
+(defun vitals/map-set (key value map)
+  (cond
+    ((nil? map) (list (list key value)))
+    ((= (first (first map)) key) (cons (list key value) (rest map)))
+    (else (cons (first map) (vitals/map-set key value (rest map))))))
+
+(defun vitals/map-keys (map)
+  (map 'first map))
+
+(defun vitals/map-values (map)
+  (map 'second map))
+
+(defun vitals/keyword-pair (pair)
+  (list (keyword (first pair)) (nth 1 pair)))
+
+(defun vitals/map-to-object (map)
+  (if (nil? map)
+      (list '__json_object__)
+      (map 'vitals/keyword-pair map)))
+
+(defun vitals/mod (a b)
+  (- a (* (floor (/ a b)) b)))
+
+;;; Sort a list of `(time value)` points by time. The lists are tiny (one day
+;;; of five-minute buckets), so insertion sort is the honest implementation.
+(defun vitals/insert-point (point points)
+  (cond
+    ((nil? points) (list point))
+    ((<= (first point) (first (first points))) (cons point points))
+    (else (cons (first points) (vitals/insert-point point (rest points))))))
+
+(defun vitals/sort-points (points)
+  (if (nil? points)
+      nil
+      (vitals/insert-point (first points) (vitals/sort-points (rest points)))))
+
+(defun vitals/insert-stage (stage stages)
+  (cond
+    ((nil? stages) (list stage))
+    ((<= (field stage :start) (field (first stages) :start)) (cons stage stages))
+    (else (cons (first stages) (vitals/insert-stage stage (rest stages))))))
+
+(defun vitals/sort-stages (stages)
+  (if (nil? stages)
+      nil
+      (vitals/insert-stage (first stages) (vitals/sort-stages (rest stages)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Policy and signal model
+
+(defun vitals/policy ()
+  (list
+    (list :fresh-ms 60000)
+    (list :stale-ms 300000)
+    (list :sleep-max-age-ms 43200000)
+    (list :ring-primary #t)))
+
+(defun vitals/policy-ring-primary? (policy)
+  (field policy :ring-primary))
+
+(defun vitals/freshness-name (freshness)
+  (cond
+    ((= freshness "fresh") "fresh")
+    ((= freshness "stale") "stale")
+    (else "expired")))
+
+(defun vitals/freshness-or-unknown (freshness)
+  (if (nil? freshness) "unknown" freshness))
+
+(defun vitals/signal-from-record (body)
+  (let ((signal-id (field body :signal_id)))
+    (let ((kind (field body :kind)))
+      (let ((source-device (field body :source_device)))
+        (let ((observed-at (field body :observed_at_device)))
+          (let ((value (field body :value)))
+            (if (or (nil? signal-id) (nil? kind) (nil? source-device)
+                    (nil? observed-at) (nil? value))
+                nil
+                (list
+                  (list :signal-id signal-id)
+                  (list :kind kind)
+                  (list :source-device source-device)
+                  (list :source-spore (vitals/or-else (field body :source_spore) "unknown"))
+                  (list :wearer (field body :wearer))
+                  (list :observed-at (int observed-at))
+                  (list :quality (vitals/or-else (field body :quality) 0.0))
+                  (list :value value)))))))))
+
+(defun vitals/signal-freshness (signal now policy)
+  (let ((observed (field signal :observed-at)))
+    (if (> observed now)
+        "stale"
+        (let ((age (- now observed)))
+          (cond
+            ((<= age (field policy :fresh-ms)) "fresh")
+            ((<= age (field policy :stale-ms)) "stale")
+            (else "expired"))))))
+
+(defun vitals/signal-fresh? (signal now policy)
+  (= (vitals/signal-freshness signal now policy) "fresh"))
+
+(defun vitals/device-kind (signal)
+  (let ((spore (vitals/lower (vitals/or-else (field signal :source-spore) ""))))
+    (let ((device (vitals/lower (vitals/or-else (field signal :source-device) ""))))
+      (cond
+        ((or (string-contains? spore "pinetime") (string-contains? device "pinetime")) "watch")
+        ((or (string-contains? spore "colmi")
+             (string-contains? spore "ring")
+             (string-contains? device "ring")) "ring")
+        (else "other")))))
+
+(defun vitals/reading (signal key)
+  (list
+    (list :value (field (field signal :value) (keyword key)))
+    (list :source-device (field signal :source-device))
+    (list :observed-at (field signal :observed-at))
+    (list :freshness "fresh")
+    (list :quality (field signal :quality))))
+
+(defun vitals/motion-reading (signal)
+  (let ((value (field signal :value)))
+    (let ((x (vitals/or-else (field value :x) 0.0)))
+      (let ((y (vitals/or-else (field value :y) 0.0)))
+        (let ((z (vitals/or-else (field value :z) 0.0)))
+          (list
+            (list :value (pow (+ (* x x) (* y y) (* z z)) 0.5))
+            (list :source-device (field signal :source-device))
+            (list :observed-at (field signal :observed-at))
+            (list :freshness "fresh")
+            (list :quality (field signal :quality))))))))
+
+;;; Pick the newest fresh sample for a kind and device class.
+(defun vitals/pick-loop (signals kind device-kind now policy best)
+  (if (nil? signals)
+      best
+      (let ((signal (first signals)))
+        (if (and (= (field signal :kind) kind)
+                 (= (vitals/device-kind signal) device-kind)
+                 (vitals/signal-fresh? signal now policy)
+                 (or (nil? best)
+                     (> (field signal :observed-at) (field best :observed-at))))
+            (vitals/pick-loop (rest signals) kind device-kind now policy signal)
+            (vitals/pick-loop (rest signals) kind device-kind now policy best)))))
+
+(defun vitals/pick (signals kind device-kind now policy)
+  (vitals/pick-loop signals kind device-kind now policy nil))
+
+;;; ---------------------------------------------------------------------------
+;;; Sleep
+
+(defun vitals/normalize-stage (stage)
+  (let ((lower (vitals/lower stage)))
+    (cond
+      ((or (= lower "awake") (= lower "wake")) "awake")
+      ((or (= lower "light") (= lower "n1") (= lower "n2")) "light")
+      ((or (= lower "deep") (= lower "n3") (= lower "slow_wave")) "deep")
+      ((or (= lower "rem") (= lower "dream")) "rem")
+      (else nil))))
+
+(defun vitals/sleep-freshness (end now policy)
+  (if (> end now)
+      "stale"
+      (let ((age (- now end)))
+        (let ((max-age (field policy :sleep-max-age-ms)))
+          (cond
+            ((<= age max-age) "fresh")
+            ((<= age (* max-age 2)) "stale")
+            (else "expired"))))))
+
+(defun vitals/parse-stages (raw start end)
+  (if (nil? raw)
+      nil
+      (let ((item (first raw)))
+        (let ((stage (vitals/normalize-stage (vitals/or-else (field item :stage) ""))))
+          (let ((stage-start (field item :start)))
+            (let ((stage-end (field item :end)))
+              (if (or (nil? stage) (nil? stage-start) (nil? stage-end)
+                      (<= stage-end stage-start))
+                  (vitals/parse-stages (rest raw) start end)
+                  (cons
+                    (list (list :stage stage)
+                          (list :start (int stage-start))
+                          (list :end (int stage-end)))
+                    (vitals/parse-stages (rest raw) start end)))))))))
+
+(defun vitals/clip-stages (stages start end cursor out)
+  (if (nil? stages)
+      (reverse out)
+      (let ((stage (first stages)))
+        (let ((stage-start (max (field stage :start) (max start cursor))))
+          (let ((stage-end (min (field stage :end) end)))
+            (if (<= stage-end stage-start)
+                (vitals/clip-stages (rest stages) start end cursor out)
+                (vitals/clip-stages
+                  (rest stages) start end stage-end
+                  (cons
+                    (list (list :stage (field stage :stage))
+                          (list :start stage-start)
+                          (list :end stage-end))
+                    out))))))))
+
+(defun vitals/stage-ms-init ()
+  (list
+    (list "awake" 0)
+    (list "light" 0)
+    (list "deep" 0)
+    (list "rem" 0)))
+
+(defun vitals/add-stage-ms (stage-ms clipped)
+  (if (nil? clipped)
+      stage-ms
+      (let ((stage (first clipped)))
+        (let ((key (field stage :stage)))
+          (let ((current (vitals/or-else (vitals/map-get key stage-ms) 0)))
+            (vitals/add-stage-ms
+              (vitals/map-set key (+ current (- (field stage :end) (field stage :start))) stage-ms)
+              (rest clipped)))))))
+
+(defun vitals/sum-stages (stage-ms names)
+  (if (nil? names)
+      0
+      (+ (vitals/or-else (vitals/map-get (first names) stage-ms) 0)
+         (vitals/sum-stages stage-ms (rest names)))))
+
+(defun vitals/parse-sleep (signal now policy)
+  (let ((value (field signal :value)))
+    (let ((start (field value :start)))
+      (let ((end (vitals/or-else (field value :end) (field signal :observed-at))))
+        (if (or (nil? start) (nil? end) (<= end start))
+            nil
+            (let ((freshness (vitals/sleep-freshness end now policy)))
+              (if (= freshness "expired")
+                  nil
+                  (let ((raw (vitals/parse-stages (field value :stages) start end)))
+                    (if (nil? raw)
+                        nil
+                        (let ((stages (vitals/clip-stages
+                                        (vitals/sort-stages raw) start end start nil)))
+                          (if (nil? stages)
+                              nil
+                              (let ((stage-ms (vitals/add-stage-ms (vitals/stage-ms-init) stages)))
+                                (let ((time-in-bed (- end start)))
+                                  (let ((sleep-ms (vitals/sum-stages stage-ms (list "light" "deep" "rem"))))
+                                    (let ((covered (vitals/sum-stages stage-ms (list "awake" "light" "deep" "rem"))))
+                                      (list
+                                        (list :start start)
+                                        (list :end end)
+                                        (list :stages stages)
+                                        (list :stage-ms stage-ms)
+                                        (list :sleep-ms sleep-ms)
+                                        (list :time-in-bed-ms time-in-bed)
+                                        (list :efficiency (/ sleep-ms time-in-bed))
+                                        (list :coverage (/ covered time-in-bed))
+                                        (list :source-device (field signal :source-device))
+                                        (list :quality (field signal :quality))
+                                        (list :freshness freshness)))))))))))))))))
+
+(defun vitals/keep-sleep (slot session)
+  (if (nil? slot)
+      session
+      (if (or (> (field session :coverage) (field slot :coverage))
+              (and (= (field session :coverage) (field slot :coverage))
+                   (> (field session :end) (field slot :end))))
+          session
+          slot)))
+
+(defun vitals/select-sleep-loop (signals now policy ring watch)
+  (if (nil? signals)
+      (if (vitals/policy-ring-primary? policy) (vitals/or-else ring watch) (vitals/or-else watch ring))
+      (let ((signal (first signals)))
+        (if (= (field signal :kind) "body.sleep.v1")
+            (let ((session (vitals/parse-sleep signal now policy)))
+              (if (nil? session)
+                  (vitals/select-sleep-loop (rest signals) now policy ring watch)
+                  (cond
+                    ((= (vitals/device-kind signal) "ring")
+                      (vitals/select-sleep-loop (rest signals) now policy
+                        (vitals/keep-sleep ring session) watch))
+                    ((= (vitals/device-kind signal) "watch")
+                      (vitals/select-sleep-loop (rest signals) now policy
+                        ring (vitals/keep-sleep watch session)))
+                    (else (vitals/select-sleep-loop (rest signals) now policy ring watch)))))
+            (vitals/select-sleep-loop (rest signals) now policy ring watch)))))
+
+(defun vitals/select-sleep (signals now policy)
+  (vitals/select-sleep-loop signals now policy nil nil))
+
+(defun vitals/stage-json (stage)
+  (list
+    (list :stage (field stage :stage))
+    (list :start (field stage :start))
+    (list :end (field stage :end))))
+
+(defun vitals/sleep-session-json (session)
+  (list
+    (list :schema vitals/sleep-schema)
+    (list :start (field session :start))
+    (list :end (field session :end))
+    (list :time_in_bed_ms (field session :time-in-bed-ms))
+    (list :sleep_ms (field session :sleep-ms))
+    (list :efficiency (field session :efficiency))
+    (list :coverage (field session :coverage))
+    (list :stage_ms (vitals/map-to-object (field session :stage-ms)))
+    (list :stages (map 'vitals/stage-json (field session :stages)))
+    (list :source_device (field session :source-device))
+    (list :quality (field session :quality))
+    (list :freshness (field session :freshness))))
+
+;;; ---------------------------------------------------------------------------
+;;; Steps
+
+(defun vitals/steps-by-device-loop (signals now policy latest)
+  (if (nil? signals)
+      latest
+      (let ((signal (first signals)))
+        (if (and (= (field signal :kind) "body.steps.v1")
+                 (vitals/signal-fresh? signal now policy))
+            (let ((count (field (field signal :value) :count)))
+              (if (nil? count)
+                  (vitals/steps-by-device-loop (rest signals) now policy latest)
+                  (let ((device (field signal :source-device)))
+                    (let ((entry (vitals/map-get device latest)))
+                      (if (or (nil? entry) (>= (field signal :observed-at) (first entry)))
+                          (vitals/steps-by-device-loop
+                            (rest signals) now policy
+                            (vitals/map-set device
+                              (list (field signal :observed-at) (int count)) latest))
+                          (vitals/steps-by-device-loop (rest signals) now policy latest))))))
+            (vitals/steps-by-device-loop (rest signals) now policy latest)))))
+
+(defun vitals/steps-finalize-pair (pair)
+  (list (first pair) (nth 1 (nth 1 pair))))
+
+(defun vitals/steps-finalize (latest)
+  (map 'vitals/steps-finalize-pair latest))
+
+(defun vitals/steps-by-device (signals now policy)
+  (vitals/steps-finalize (vitals/steps-by-device-loop signals now policy nil)))
+
+(defun vitals/add-sample (device point samples)
+  (let ((points (vitals/map-get device samples)))
+    (vitals/map-set device (cons point (vitals/or-else points nil)) samples)))
+
+(defun vitals/collect-samples (signals now samples)
+  (if (nil? signals)
+      samples
+      (let ((signal (first signals)))
+        (if (and (= (field signal :kind) "body.steps.v1")
+                 (<= (field signal :observed-at) now))
+            (let ((count (field (field signal :value) :count)))
+              (if (nil? count)
+                  (vitals/collect-samples (rest signals) now samples)
+                  (vitals/collect-samples
+                    (rest signals) now
+                    (vitals/add-sample
+                      (field signal :source-device)
+                      (list (field signal :observed-at) (int count))
+                      samples))))
+            (vitals/collect-samples (rest signals) now samples)))))
+
+(defun vitals/add-delta (bucket device delta buckets)
+  (let ((deltas (vitals/or-else (vitals/map-get bucket buckets) nil)))
+    (vitals/map-set bucket
+      (vitals/map-set device
+        (+ (vitals/or-else (vitals/map-get device deltas) 0) delta)
+        deltas)
+      buckets)))
+
+(defun vitals/dedup-points (points out previous)
+  (cond
+    ((nil? points) (reverse out))
+    ((and (not (nil? previous)) (= (first (first points)) previous))
+      (vitals/dedup-points (rest points) out previous))
+    (else
+      (vitals/dedup-points (rest points) (cons (first points) out) (first (first points))))))
+
+(defun vitals/seed-buckets (device first-point day-start buckets)
+  (if (and (>= (first first-point) day-start) (> (nth 1 first-point) 0))
+      (let ((bucket (- (first first-point) (vitals/mod (first first-point) vitals/step-bucket-ms))))
+        (if (>= bucket day-start)
+            (vitals/add-delta bucket device (nth 1 first-point) buckets)
+            buckets))
+      buckets))
+
+(defun vitals/scan-points (device points previous now day-start buckets)
+  (if (nil? points)
+      buckets
+      (let ((current (first points)))
+        (if (or (<= (first current) (first previous)) (> (first current) now))
+            (vitals/scan-points device (rest points) previous now day-start buckets)
+            (let ((delta (if (>= (nth 1 current) (nth 1 previous))
+                             (- (nth 1 current) (nth 1 previous))
+                             (nth 1 current))))
+              (let ((buckets
+                      (if (and (> delta 0) (>= (first current) day-start))
+                          (let ((bucket (- (first current)
+                                           (vitals/mod (first current) vitals/step-bucket-ms))))
+                            (if (>= bucket day-start)
+                                (vitals/add-delta bucket device delta buckets)
+                                buckets))
+                          buckets)))
+                (vitals/scan-points device (rest points) current now day-start buckets)))))))
+
+(defun vitals/collect-buckets (samples now day-start buckets)
+  (if (nil? samples)
+      buckets
+      (let ((device (first (first samples))))
+        (let ((points (vitals/sort-points (vitals/dedup-points (nth 1 (first samples)) nil nil))))
+          (if (nil? points)
+              (vitals/collect-buckets (rest samples) now day-start buckets)
+              (let ((buckets (vitals/seed-buckets device (first points) day-start buckets)))
+                (vitals/collect-buckets
+                  (rest samples) now day-start
+                  (vitals/scan-points device (rest points) (first points) now day-start buckets))))))))
+
+(defun vitals/best-bucket-loop (deltas primary best)
+  (if (nil? deltas)
+      best
+      (let ((device (first (first deltas))))
+        (let ((delta (nth 1 (first deltas))))
+          (let ((better
+                  (or (nil? best)
+                      (> delta (nth 1 best))
+                      (and (= delta (nth 1 best))
+                           (= primary device)
+                           (not (= primary (first best)))))))
+            (vitals/best-bucket-loop (rest deltas) primary
+              (if better (list device delta) best)))))))
+
+(defun vitals/best-bucket (deltas primary)
+  (vitals/best-bucket-loop deltas primary nil))
+
+(defun vitals/best-total-loop (latest primary best)
+  (if (nil? latest)
+      best
+      (let ((device (first (first latest))))
+        (let ((count (nth 1 (first latest))))
+          (let ((better
+                  (or (nil? best)
+                      (> count (nth 1 best))
+                      (and (= count (nth 1 best))
+                           (= primary device)
+                           (not (= primary (first best)))))))
+            (vitals/best-total-loop (rest latest) primary
+              (if better (list device count) best)))))))
+
+(defun vitals/best-total (latest primary)
+  (vitals/best-total-loop latest primary nil))
+
+(defun vitals/sum-buckets (buckets primary value contributors covered)
+  (if (nil? buckets)
+      (list value contributors covered)
+      (let ((best (vitals/best-bucket (nth 1 (first buckets)) primary)))
+        (if (or (nil? best) (= (nth 1 best) 0))
+            (vitals/sum-buckets (rest buckets) primary value contributors covered)
+            (let ((device (first best)))
+              (vitals/sum-buckets
+                (rest buckets) primary
+                (+ value (nth 1 best))
+                (vitals/map-set device
+                  (+ (vitals/or-else (vitals/map-get device contributors) 0) (nth 1 best))
+                  contributors)
+                (+ covered 1)))))))
+
+(defun vitals/estimate-steps (signals now latest primary)
+  (let ((day-start (- now (vitals/mod now vitals/day-ms))))
+    (let ((buckets-total (+ (int (/ (- now day-start) vitals/step-bucket-ms)) 1)))
+      (let ((samples (vitals/collect-samples signals now nil)))
+        (let ((buckets (vitals/collect-buckets samples now day-start nil)))
+          (let ((summary (vitals/sum-buckets buckets primary 0 nil 0)))
+            (let ((value (first summary))
+                  (contributors (nth 1 summary))
+                  (covered (nth 2 summary)))
+              (if (> covered 0)
+                  (list
+                    (list :value value)
+                    (list :source-device "fused")
+                    (list :policy "per-bucket-max")
+                    (list :confidence (/ covered (max buckets-total 1)))
+                    (list :buckets-covered covered)
+                    (list :buckets-total buckets-total)
+                    (list :contributors contributors)
+                    (list :window-start day-start)
+                    (list :window-end now))
+                  (let ((best (vitals/best-total latest primary)))
+                    (if (nil? best)
+                        (list
+                          (list :value nil)
+                          (list :source-device nil)
+                          (list :policy "max-fresh-device")
+                          (list :confidence 0.0)
+                          (list :buckets-covered 0)
+                          (list :buckets-total buckets-total)
+                          (list :contributors nil)
+                          (list :window-start day-start)
+                          (list :window-end now))
+                        (list
+                          (list :value (nth 1 best))
+                          (list :source-device (first best))
+                          (list :policy "max-fresh-device")
+                          (list :confidence 1.0)
+                          (list :buckets-covered 0)
+                          (list :buckets-total buckets-total)
+                          (list :contributors (list (list (first best) (nth 1 best))))
+                          (list :window-start day-start)
+                          (list :window-end now))))))))))))
+
+(defun vitals/step-estimate-json (estimate)
+  (list
+    (list :value (field estimate :value))
+    (list :source_device (field estimate :source-device))
+    (list :policy (field estimate :policy))
+    (list :confidence (field estimate :confidence))
+    (list :coverage
+      (list
+        (list :covered_buckets (field estimate :buckets-covered))
+        (list :total_buckets (field estimate :buckets-total))
+        (list :bucket_ms vitals/step-bucket-ms)))
+    (list :contributors (vitals/map-to-object (vitals/or-else (field estimate :contributors) nil)))
+    (list :window
+      (list
+        (list :start (field estimate :window-start))
+        (list :end (field estimate :window-end))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Fusion
+
+(defun vitals/min-observed-loop (signals best)
+  (if (nil? signals)
+      best
+      (vitals/min-observed-loop (rest signals) (min best (field (first signals) :observed-at)))))
+
+(defun vitals/min-observed (signals now)
+  (if (nil? signals)
+      now
+      (vitals/min-observed-loop (rest signals) (field (first signals) :observed-at))))
+
+(defun vitals/signal-fresh-with? (signal args)
+  (vitals/signal-fresh? signal (first args) (nth 1 args)))
+
+(defun vitals/signal-stale-with? (signal args)
+  (= (vitals/signal-freshness signal (first args) (nth 1 args)) "stale"))
+
+(defun vitals/wearer-is? (signal wearer)
+  (= (field signal :wearer) wearer))
+
+(defun vitals/source-device-of (signal)
+  (field signal :source-device))
+
+(defun vitals/any-fresh? (signals now policy)
+  (not (nil? (find-with 'vitals/signal-fresh-with? (list now policy) signals))))
+
+(defun vitals/any-stale? (signals now policy)
+  (not (nil? (find-with 'vitals/signal-stale-with? (list now policy) signals))))
+
+(defun vitals/overall-freshness (signals now policy)
+  (cond
+    ((vitals/any-fresh? signals now policy) "fresh")
+    ((vitals/any-stale? signals now policy) "stale")
+    (else "expired")))
+
+(defun vitals/fuse (signals wearer now policy)
+  (let ((visible (filter-with 'vitals/wearer-is? wearer signals)))
+    (let ((devices (vitals/unique (map 'vitals/source-device-of visible))))
+      (let ((ring-primary (vitals/policy-ring-primary? policy)))
+        (let ((ring-hr (vitals/pick visible "body.hr.v1" "ring" now policy)))
+          (let ((watch-hr (vitals/pick visible "body.hr.v1" "watch" now policy)))
+            (let ((heart-signal (if ring-primary (vitals/or-else ring-hr watch-hr) (vitals/or-else watch-hr ring-hr))))
+              (let ((hrv (vitals/pick visible "body.hrv.v1" "ring" now policy)))
+                (let ((spo2 (vitals/pick visible "body.spo2.v1" "ring" now policy)))
+                  (let ((temp (vitals/pick visible "body.temp.v1" "ring" now policy)))
+                    (let ((ring-sleep (vitals/pick visible "body.sleep.v1" "ring" now policy)))
+                      (let ((watch-sleep (vitals/pick visible "body.sleep.v1" "watch" now policy)))
+                        (let ((sleep-signal (if ring-primary (vitals/or-else ring-sleep watch-sleep) (vitals/or-else watch-sleep ring-sleep))))
+                          (let ((sleep (if (nil? sleep-signal) nil (vitals/reading sleep-signal "stage"))))
+                            (let ((sleep (if (and (not (nil? sleep)) (nil? (field sleep :value))) nil sleep)))
+                              (let ((sleep-session (vitals/select-sleep visible now policy)))
+                                (let ((watch-motion (vitals/pick visible "body.motion.v1" "watch" now policy)))
+                                  (let ((ring-motion (vitals/pick visible "body.motion.v1" "ring" now policy)))
+                                    (let ((motion-signal (vitals/or-else watch-motion ring-motion)))
+                                      (let ((steps (vitals/steps-by-device visible now policy)))
+                                        (let ((primary-motion (if (nil? motion-signal) nil (field motion-signal :source-device))))
+                                          (let ((motion (if (nil? motion-signal) nil (vitals/motion-reading motion-signal))))
+                                            (let ((estimate (vitals/estimate-steps visible now steps primary-motion)))
+                                              (list
+                                                (list :wearer wearer)
+                                                (list :window-start (vitals/min-observed visible now))
+                                                (list :window-end now)
+                                                (list :heart-rate (if (nil? heart-signal) nil (vitals/reading heart-signal "bpm")))
+                                                (list :hrv (if (nil? hrv) nil (vitals/reading hrv "rmssd_ms")))
+                                                (list :spo2 (if (nil? spo2) nil (vitals/reading spo2 "percent")))
+                                                (list :temperature-c (if (nil? temp) nil (vitals/reading temp "celsius")))
+                                                (list :sleep sleep)
+                                                (list :sleep-session sleep-session)
+                                                (list :steps steps)
+                                                (list :step-estimate estimate)
+                                                (list :motion motion)
+                                                (list :primary-motion-device primary-motion)
+                                                (list :devices devices)
+                                                (list :freshness (vitals/overall-freshness visible now policy))))))))))))))))))))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Rendering to the summary and view records
+
+(defun vitals/reading-json (reading key)
+  (list
+    (list key (field reading :value))
+    (list :source_device (field reading :source-device))
+    (list :observed_at (field reading :observed-at))
+    (list :freshness (field reading :freshness))
+    (list :quality (field reading :quality))))
+
+(defun vitals/summary-json (vitals)
+  (let ((steps (field vitals :steps)))
+    (let ((estimate (field vitals :step-estimate)))
+      (list
+        (list :schema vitals/schema)
+        (list :wearer (field vitals :wearer))
+        (list :window
+          (list
+            (list :start (field vitals :window-start))
+            (list :end (field vitals :window-end))))
+        (list :heart_rate
+          (if (nil? (field vitals :heart-rate)) nil
+              (vitals/reading-json (field vitals :heart-rate) :bpm)))
+        (list :hrv
+          (if (nil? (field vitals :hrv)) nil
+              (vitals/reading-json (field vitals :hrv) :rmssd_ms)))
+        (list :spo2
+          (if (nil? (field vitals :spo2)) nil
+              (vitals/reading-json (field vitals :spo2) :percent)))
+        (list :temperature_c
+          (if (nil? (field vitals :temperature-c)) nil
+              (vitals/reading-json (field vitals :temperature-c) :celsius)))
+        (list :sleep
+          (if (nil? (field vitals :sleep)) nil
+              (vitals/reading-json (field vitals :sleep) :stage)))
+        (list :sleep_session
+          (if (nil? (field vitals :sleep-session)) nil
+              (vitals/sleep-session-json (field vitals :sleep-session))))
+        (list :steps
+          (list
+            (list :by_device (vitals/map-to-object steps))
+            (list :primary_device (field vitals :primary-motion-device))
+            (list :estimate (vitals/step-estimate-json estimate))))
+        (list :motion
+          (if (nil? (field vitals :motion)) nil
+              (vitals/reading-json (field vitals :motion) :magnitude)))
+        (list :devices (field vitals :devices))
+        (list :freshness (field vitals :freshness))
+        (list :policy_version vitals/policy-version)
+        (list :source vitals/source)))))
+
+(defun vitals/format-duration (ms)
+  (let ((minutes (int (/ ms 60000))))
+    (let ((hours (int (/ minutes 60))))
+      (let ((remainder (- minutes (* hours 60))))
+        (if (> hours 0)
+            (str hours "h " remainder "m")
+            (str remainder "m"))))))
+
+(defun vitals/card (id label reading unit)
+  (if (nil? reading)
+      (list
+        (list :id id)
+        (list :label label)
+        (list :value nil)
+        (list :unit unit)
+        (list :source_device nil)
+        (list :freshness "unknown"))
+      (list
+        (list :id id)
+        (list :label label)
+        (list :value (field reading :value))
+        (list :unit unit)
+        (list :source_device (field reading :source-device))
+        (list :freshness (field reading :freshness))
+        (list :quality (field reading :quality)))))
+
+(defun vitals/sleep-card (vitals)
+  (let ((session (field vitals :sleep-session)))
+    (if (nil? session)
+        (vitals/card "sleep" "Sleep" nil "")
+        (list
+          (list :id "sleep")
+          (list :label "Sleep")
+          (list :value (vitals/format-duration (field session :sleep-ms)))
+          (list :unit "")
+          (list :source_device (field session :source-device))
+          (list :freshness (field session :freshness))
+          (list :quality (field session :quality))))))
+
+(defun vitals/ring (id label value max unit source freshness detail)
+  (list
+    (list :id id)
+    (list :label label)
+    (list :value value)
+    (list :max max)
+    (list :unit unit)
+    (list :source_device source)
+    (list :freshness freshness)
+    (list :detail detail)))
+
+(defun vitals/activity-rings (vitals)
+  (let ((estimate (field vitals :step-estimate)))
+    (let ((move-value (field estimate :value)))
+      (let ((heart (field vitals :heart-rate)))
+        (let ((oxygen (field vitals :spo2)))
+          (list
+            (vitals/ring "move" "Move" move-value vitals/move-ring-max "steps"
+              (field estimate :source-device)
+              (if (nil? move-value) "unknown" (field vitals :freshness))
+              (field estimate :policy))
+            (vitals/ring "heart" "Heart"
+              (if (nil? heart) nil (field heart :value))
+              vitals/heart-ring-max "bpm"
+              (if (nil? heart) nil (field heart :source-device))
+              (if (nil? heart) "unknown" (field heart :freshness))
+              nil)
+            (vitals/ring "oxygen" "Oxygen"
+              (if (nil? oxygen) nil (field oxygen :value))
+              vitals/oxygen-ring-max "%"
+              (if (nil? oxygen) nil (field oxygen :source-device))
+              (if (nil? oxygen) "unknown" (field oxygen :freshness))
+              nil)))))))
+
+(defun vitals/step-row (pair)
+  (list
+    (list :device (first pair))
+    (list :count (nth 1 pair))))
+
+(defun vitals/view-json (vitals)
+  (let ((steps (field vitals :steps)))
+    (let ((estimate (field vitals :step-estimate)))
+      (list
+        (list :schema vitals/view-schema)
+        (list :title "Vitals")
+        (list :wearer (field vitals :wearer))
+        (list :updated_at (field vitals :window-end))
+        (list :freshness (field vitals :freshness))
+        (list :empty (nil? (field vitals :devices)))
+        (list :rings (vitals/activity-rings vitals))
+        (list :cards
+          (list
+            (vitals/card "heart_rate" "Heart rate" (field vitals :heart-rate) "bpm")
+            (vitals/card "hrv" "HRV" (field vitals :hrv) "ms")
+            (vitals/card "spo2" "SpO2" (field vitals :spo2) "%")
+            (vitals/card "temperature" "Skin temperature" (field vitals :temperature-c) "C")
+            (vitals/sleep-card vitals)
+            (vitals/card "motion" "Motion" (field vitals :motion) "mg")))
+        (list :sleep_session
+          (if (nil? (field vitals :sleep-session)) nil
+              (vitals/sleep-session-json (field vitals :sleep-session))))
+        (list :steps
+          (list
+            (list :rows (map 'vitals/step-row steps))
+            (list :primary_device (field vitals :primary-motion-device))
+            (list :estimate (vitals/step-estimate-json estimate))))
+        (list :devices (field vitals :devices))
+        (list :policy_version vitals/policy-version)
+        (list :source vitals/source)))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Deterministic development fixture
+
+(defun vitals/seed-signal (device spore wearer kind value now)
+  (let ((observed (- now 1000)))
+    (let ((id (str "seed:" wearer ":" device ":" kind ":" now)))
+      (list
+        (list :collection "signal")
+        (list :id id)
+        (list :schema "signal.sample.v1")
+        (list :body
+          (list
+            (list :signal_id id)
+            (list :kind kind)
+            (list :schema_version 1)
+            (list :source_device device)
+            (list :source_spore spore)
+            (list :wearer wearer)
+            (list :observed_at_device observed)
+            (list :received_at_host observed)
+            (list :monotonic_age_ms 1000)
+            (list :clock_uncertainty_ms nil)
+            (list :sync_epoch 0)
+            (list :quality 1.0)
+            (list :provenance "simulated")
+            (list :model_version "vitals-seed@0.1.0")
+            (list :privacy_class "health")
+            (list :retention_class "raw")
+            (list :value value)))))))
+
+(defun vitals/build-sleep-loop (layout cursor stages)
+  (if (nil? layout)
+      (list (reverse stages) cursor)
+      (let ((stage (first (first layout)))
+            (minutes (nth 1 (first layout))))
+        (let ((end (+ cursor (* minutes 60000))))
+          (vitals/build-sleep-loop (rest layout) end
+            (cons
+              (list (list :stage stage) (list :start cursor) (list :end end))
+              stages))))))
+
+(defun vitals/build-sleep (start layout)
+  (let ((result (vitals/build-sleep-loop layout start nil)))
+    (list
+      (list :start start)
+      (list :end (nth 1 result))
+      (list :stages (first result)))))
+
+(defun vitals/seed-device (device wearer battery now)
+  (let ((observed (- now 1000)))
+    (list
+      (list :collection "device.state")
+      (list :id device)
+      (list :schema "device.state.v1")
+      (list :body
+        (list
+          (list :device_id device)
+          (list :battery_percent battery)
+          (list :wearer wearer)
+          (list :observed_at_device observed)
+          (list :received_at_host observed)
+          (list :provenance "simulated")
+          (list :source_spore vitals/source))))))
+
+(defun vitals/seed (now wearer)
+  (let ((sleep-start (- (- now 2000) 28800000)))
+    (let ((ring-layout
+            (list
+              (list "awake" 20) (list "light" 90) (list "deep" 80)
+              (list "light" 60) (list "rem" 50) (list "awake" 10)
+              (list "light" 60) (list "deep" 50) (list "rem" 50)
+              (list "awake" 10))))
+      (let ((watch-layout
+              (list
+                (list "awake" 20) (list "light" 100) (list "deep" 120)
+                (list "light" 60) (list "rem" 40) (list "awake" 10)
+                (list "light" 60) (list "deep" 40) (list "rem" 20)
+                (list "awake" 10))))
+        (append
+          (list
+            (vitals/seed-signal "sim-pinetime" "dev.fungos.pinetime" wearer
+              "body.hr.v1" (list (list :bpm 64) (list :contact #t)) now)
+            (vitals/seed-signal "sim-pinetime" "dev.fungos.pinetime" wearer
+              "body.steps.v1" (list (list :count 4231)) now)
+            (vitals/seed-signal "sim-pinetime" "dev.fungos.pinetime" wearer
+              "body.motion.v1" (list (list :x 12) (list :y -4) (list :z 1002)) now)
+            (vitals/seed-signal "sim-ring" "dev.fungos.colmi-ring" wearer
+              "body.hr.v1" (list (list :bpm 58) (list :contact #t)) now)
+            (vitals/seed-signal "sim-ring" "dev.fungos.colmi-ring" wearer
+              "body.hrv.v1" (list (list :rmssd_ms 48) (list :sdnn_ms 52)) now)
+            (vitals/seed-signal "sim-ring" "dev.fungos.colmi-ring" wearer
+              "body.spo2.v1" (list (list :percent 97)) now)
+            (vitals/seed-signal "sim-ring" "dev.fungos.colmi-ring" wearer
+              "body.temp.v1" (list (list :celsius 36.6)) now)
+            (vitals/seed-signal "sim-ring" "dev.fungos.colmi-ring" wearer
+              "body.sleep.v1" (vitals/build-sleep sleep-start ring-layout) now)
+            (vitals/seed-signal "sim-pinetime" "dev.fungos.pinetime" wearer
+              "body.sleep.v1" (vitals/build-sleep sleep-start watch-layout) now)
+            (vitals/seed-signal "sim-ring" "dev.fungos.colmi-ring" wearer
+              "body.steps.v1" (list (list :count 9000)) now)
+            (vitals/seed-signal "sim-ring-guest" "dev.fungos.colmi-ring" "guest"
+              "body.hr.v1" (list (list :bpm 88) (list :contact #t)) now)
+            (vitals/seed-signal "sim-ring-guest" "dev.fungos.colmi-ring" "guest"
+              "body.steps.v1" (list (list :count 7000)) now))
+          (list
+            (vitals/seed-device "sim-pinetime" wearer 82 now)
+            (vitals/seed-device "sim-ring" wearer 74 now)
+            (vitals/seed-device "sim-ring-guest" "guest" 61 now)))))))
+
+(defun vitals/signal-record? (record)
+  (= (field record :collection) "signal"))
+
+(defun vitals/signal-record-body (record)
+  (vitals/signal-from-record (field record :body)))
+
+(defun vitals/seed-signals (now wearer)
+  (map 'vitals/signal-record-body
+    (filter 'vitals/signal-record? (vitals/seed now wearer))))
+
+;;; The public names match the Rust core (`to_json` / `to_view`).
+(defun vitals/to-json (vitals)
+  (vitals/summary-json vitals))
+
+(defun vitals/to-view (vitals)
+  (vitals/view-json vitals))
