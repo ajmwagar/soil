@@ -38,22 +38,19 @@ signed base source
 
 ## Edit-session adapter
 
+The LSP reads the edit session work directory through `soil:vfs`:
+
 ```soil
-(edit/read session path)
-(edit/lsp-reader session)
-(edit/lsp-doc session path)
+(edit/lsp-doc path)
 (edit/lsp-diagnostics text)
 (edit/lsp-symbols text)
 (edit/lsp-definition docs name)
 ```
 
-The host command is still:
+The host roots the LSP workspace at the edit session's `work/` directory. It does
+not call `loam edit read` and does not need process execution.
 
-```sh
-loam edit read <session> <path> --json
-```
-
-until `loam edit` lands.
+`edit/read` remains an agent/REPL convenience command, not an LSP dependency.
 
 ## REPL
 
