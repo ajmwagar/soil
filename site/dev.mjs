@@ -68,9 +68,13 @@ function scheduleBuild() {
 
 for (const dir of watchDirs) {
   fs.watch(dir, { recursive: true }, (_event, filename) => {
-    if (!filename || filename.endsWith(".soil") || filename.endsWith(".md")) {
+    if (!filename) {
       scheduleBuild();
+      return;
     }
+    const changed = path.resolve(dir, filename);
+    if (changed === dist || changed.startsWith(`${dist}${path.sep}`)) return;
+    if (filename.endsWith(".soil") || filename.endsWith(".md")) scheduleBuild();
   });
 }
 
