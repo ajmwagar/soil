@@ -82,6 +82,11 @@
       (str "    local.get $base\n"
            (compiler/expr (nth 2 expr))
            "    f32.store offset=" (nth 1 expr) "\n"))
+    ((= (str (first expr)) "void-call")
+      ;; An import whose canonical ABI result is empty leaves no value on the
+      ;; stack, so `body-drop` must not emit `drop` after it. Wrapping the call
+      ;; is explicit: the source states that the call is a statement.
+      (compiler/expr (nth 1 expr)))
     ((= (str (first expr)) "i32.const32")
       (str "    i32.const " (nth 1 expr) "\n"))
     ((= (str (first expr)) "f32.const")
@@ -122,6 +127,9 @@
          (or (= head "i64.store")
              (= head "i32.store")
              (= head "i32.store8")
+             (= head "i32.store-at")
+             (= head "f32.store-at")
+             (= head "void-call")
              (= head "global.set")))))
 
 (defun compiler/body-drop (forms)

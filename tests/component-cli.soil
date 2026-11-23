@@ -4,7 +4,7 @@
 
 (defun run ()
   (begin
-    (get-arguments (i32.const 16))
+    (void-call (get-arguments (i32.const 16)))
     (i64.extend_i32_u
       (i32.load
         (i32.add (i32.load (i32.const 16)) (i32.const 4))))))

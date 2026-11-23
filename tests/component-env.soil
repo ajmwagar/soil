@@ -4,5 +4,5 @@
 
 (defun run ()
   (begin
-    (get-environment (i32.const 16))
+    (void-call (get-environment (i32.const 16)))
     (i64.extend_i32_u (i32.load (i32.const 20)))))
