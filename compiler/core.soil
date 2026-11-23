@@ -264,10 +264,19 @@
 (defun abi/align-up (n align)
   (* align (abi/div (+ n (- align 1)) align)))
 
+(defun abi/option? (type)
+  (and (not (atom type)) (= (str (first type)) "option")))
+
+(defun abi/option-payload-offset (type records)
+  ;; Discriminant is a u32; the payload starts after it, at its own alignment.
+  (abi/align-up 4 (abi/align (nth 1 type) records)))
+
 (defun abi/align (type records)
   (let ((scalar (abi/scalar-size (str type))))
     (if (> scalar 0)
         (min scalar 4)
+        (if (abi/option? type)
+            (max 4 (abi/align (nth 1 type) records))
         (if (= (str type) "string")
             4
             (if (not (atom type))
@@ -275,12 +284,17 @@
                 (let ((record (abi/find-record (str type) records)))
                   (if (nil? record)
                       4
-                      (nth 1 (abi/layout (drop 2 record) records 0 1)))))))))
+                      (nth 1 (abi/layout (drop 2 record) records 0 1))))))))))
 
 (defun abi/size (type records)
   (let ((scalar (abi/scalar-size (str type))))
     (if (> scalar 0)
         scalar
+        (if (abi/option? type)
+            (abi/align-up
+              (+ (abi/option-payload-offset type records)
+                 (abi/size (nth 1 type) records))
+              (abi/align type records))
         (if (= (str type) "string")
             8
             (if (not (atom type))
@@ -288,7 +302,7 @@
                 (let ((record (abi/find-record (str type) records)))
                   (if (nil? record)
                       4
-                      (abi/record-size record records))))))))
+                      (abi/record-size record records)))))))))
 
 (defun abi/layout (fields records offset align)
   (if (nil? fields)
@@ -368,6 +382,20 @@
                          "    local.get $p" index "_len\n"
                          "    i32.store offset=" (+ offset 4) "\n")
                     ctx)))
+        ((abi/option? ftype)
+          (let ((some? (and (not (atom value)) (= (str (first value)) "some"))))
+            (let ((disc (str "    local.get $base\n"
+                             "    i32.const " (if some? 1 0) "\n"
+                             "    i32.store offset=" offset "\n")))
+              (if some?
+                  (let ((inner (abi/emit-field (nth 1 ftype)
+                                               (nth 1 value)
+                                               records
+                                               (+ offset (abi/option-payload-offset ftype records))
+                                               ctx
+                                               params)))
+                    (list (str disc (first inner)) (nth 1 inner)))
+                  (list disc ctx)))))
         (else
           (let ((record (abi/find-record kind records)))
             (if (nil? record)
