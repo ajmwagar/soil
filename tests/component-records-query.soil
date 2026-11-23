@@ -24,9 +24,9 @@
 ;   1792  "title"
 
 (import "cm32p2|test:records-query/records@0.1" "query" records-query
-  (i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) i32)
+  (i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) unit)
 
-(defun-i32 run ()
+(defun-i32-void run ()
   (begin
     ; collection: "issue/"
     (i32.store8 (i32.const 1024) (i32.const 105))
@@ -85,4 +85,5 @@
       (i32.const 1280) (i32.const 1)   ; filters: 1 element
       (i32.const 1536) (i32.const 1)   ; fields: "title"
       (i32.const 0) (i32.const 0) (i32.const 0)  ; cursor: none
-      (i32.const 32))))                ; limit
+      (i32.const 32)                  ; limit
+      (i32.const 3000))))              ; indirect result<page, error>
