@@ -83,24 +83,35 @@ impl SoilRecordsHost {
         cursor: Option<String>,
         limit: usize,
     ) -> std::result::Result<Value, String> {
-        let cursor = cursor;
+        // Entity ids sort by collection prefix, so seek to the collection's
+        // range instead of reading the first N ids of the whole book and
+        // filtering afterwards (which was both slow and lossy).
+        let prefix = format!("{collection}:");
+        let seek = match (&cursor, collection.is_empty()) {
+            (Some(cursor), false) => Some(format!("{prefix}{cursor}")),
+            (Some(cursor), true) => Some(cursor.clone()),
+            (None, false) => Some(prefix.clone()),
+            (None, true) => None,
+        };
         let records = self
             .store
-            .scan_records(&self.book, cursor.as_deref(), 4096)
+            .scan_records(&self.book, seek.as_deref(), limit.max(1) + 1)
             .map_err(|error| error.to_string())?;
-        let prefix = format!("{collection}:");
-        let total = records.len();
-        let next = if total >= 4096 {
-            records.last().map(|r| Self::unscoped(collection, &r.entity_id))
-        } else {
-            None
-        };
-        let entries: Vec<_> = records
-            .into_iter()
-            .filter(|record| collection.is_empty() || record.entity_id.starts_with(&prefix))
-            .take(limit)
-            .map(|record| Self::entry_value(collection, record))
-            .collect();
+
+        let mut entries = Vec::new();
+        let mut next = None;
+        for record in records {
+            if !collection.is_empty() && !record.entity_id.starts_with(&prefix) {
+                // Past the collection's contiguous range.
+                break;
+            }
+            if entries.len() == limit {
+                // This record belongs to the next page.
+                next = Some(Self::unscoped(collection, &record.entity_id));
+                break;
+            }
+            entries.push(Self::entry_value(collection, record));
+        }
         Ok(page_value(entries, next))
     }
 
@@ -142,12 +153,14 @@ impl Host for SoilRecordsHost {
                     value => Some(value_text(value)),
                 });
                 let limit = args.get(2).and_then(Value::as_f64).unwrap_or(50.0) as usize;
-                Ok(ok(self.scan_page(&collection, cursor, limit)?))
+                let page = self.scan_page(&collection, cursor, limit)?;
+                Ok(ok(page))
             }
             "get" => {
                 let key = args.first().ok_or_else(|| "get needs a key".to_string())?;
                 let (collection, id) = parse_key(key)?;
-                Ok(match self.get_entry(&collection, &id)? {
+                let found = self.get_entry(&collection, &id)?;
+                Ok(match found {
                     Some(entry) => ok(entry),
                     None => err("not-found"),
                 })
