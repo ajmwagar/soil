@@ -167,3 +167,15 @@
   (and
     (url/http? text)
     (> (length (url/authority (str text))) 0)))
+
+(defun url/query-value-in (pairs key)
+  (if (nil? pairs)
+      ""
+      (let ((pair (first pairs)))
+        (if (= (first pair) key)
+            (nth 1 pair)
+            (url/query-value-in (rest pairs) key)))))
+
+;;; First value for `key` in a query string, or an empty string.
+(defun url/query-value (query key)
+  (url/query-value-in (url/parse-query query) key))
