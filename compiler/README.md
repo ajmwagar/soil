@@ -185,6 +185,22 @@ Resources, nested records, options/results, and `soil:records`/`soil:vfs`/
 ```sh
 scripts/test-component-list.sh     # list<u32> export: [10, 20, 30]
 ```
+```sh
+scripts/test-component-record-query.sh  # import: query-spec (strings, list<record>,
+                                        # list<string>, option<string>) -> u32
+```
+
+The query-spec is `soil:records/query`'s parameter. It flattens to 12 core
+values in declaration order:
+
+```text
+collection (ptr,len)  prefix (ptr,len)  filters (ptr,count)  fields (ptr,count)
+cursor (disc,ptr,len: none = 0,0,0)     limit (u32)
+```
+
+`wasm-tools component new` accepting that core signature is the proof: the
+adapter and our layout agree. This runs on the bootstrapped Wasm runtime because
+the compiler needs `defmacro`, which the native interpreter does not have.
 
 ```sh
 scripts/test-component-resource.sh  # pollable resource handle + method
