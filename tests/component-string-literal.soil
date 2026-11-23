@@ -1,0 +1,8 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; A source string is emitted as one data segment. `string-ptr` and
+; `string-len` are the two canonical-ABI halves an import needs.
+(defun-i32 ptr ()
+  (string-ptr "hi"))
+
+(defun-i32 len ()
+  (string-len "hi"))
