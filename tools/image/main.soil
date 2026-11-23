@@ -16,6 +16,37 @@
 ;           {"op":"list"}
 ;           {"op":"detach","session":"s1"}
 
+
+(defun image/snapshot-text (loaded)
+  (let ((entries
+          (if (nil? loaded)
+              ""
+              (reduce
+                (lambda (out entry)
+                  (str out "  (source "
+                       (json-encode (first entry)) " "
+                       (json-encode (nth 1 entry)) ")\n"))
+                "" loaded))))
+    (str "(image\n"
+         "  (format 1)\n"
+         entries
+         ")\n")))
+
+(defun image/snapshot-loaded (forms)
+  (cond
+    ((nil? forms) nil)
+    ((= (first (first forms)) 'source)
+      (cons (list (nth 1 (first forms)) (nth 2 (first forms)))
+            (image/snapshot-loaded (rest forms))))
+    (else (image/snapshot-loaded (rest forms)))))
+
+(defun image/restore-entries (entries)
+  (if (nil? entries)
+      (list 'ok nil)
+      (let ((entry (first entries)))
+        (load (nth 1 entry))
+        (image/restore-entries (rest entries)))))
+
 (defun image/write (value)
   (stdout-write (str (image/encode value) "\n")))
 
@@ -112,6 +143,32 @@
                       (image/response-ok
                         (list (list :session session) (list :path path) (list :saved #t)))
                       (image/response-err (str result))))))))
+      ((= op "snapshot")
+        (let ((path (image/request-or request :path "")))
+          (if (= path "")
+              (image/response-err "snapshot needs path")
+              (let ((result (fs/write path (image/snapshot-text loaded))))
+                (if (ok? result)
+                    (image/response-ok
+                      (list (list :session session) (list :path path) (list :snapshot #t)))
+                    (image/response-err (str result)))))))
+      ((= op "restore")
+        (let ((path (image/request-or request :path "")))
+          (if (= path "")
+              (image/response-err "restore needs path")
+              (let ((read (fs/read path)))
+                (if (not (ok? read))
+                    (image/response-err (str read))
+                    (let ((snapshot (first (read (value read)))))
+                      (let ((entries (image/snapshot-loaded (rest snapshot))))
+                        (let ((result (image/restore-entries entries)))
+                          (if (ok? result)
+                              (image/response-ok
+                                (list (list :session session)
+                                      (list :path path)
+                                      (list :restored (length entries))
+                                      (list :loaded (image/loaded-paths entries))))
+                              (image/response-err (str result)))))))))))
       ((= op "reload")
         (image/response-err "reload is not implemented in the in-memory image"))
       ((= op "compile")
@@ -136,6 +193,11 @@
         (assoc path (image/request-or request :source "") loaded))
       ((= op "flush")
         (assoc path (image/request-or request :source "") loaded))
+      ((= op "restore")
+        (let ((snapshot (fs/read path)))
+          (if (ok? snapshot)
+              (image/snapshot-loaded (rest (first (read (value snapshot)))))
+              loaded)))
       (else loaded))))
 
 (defun image/run (session attached loaded)

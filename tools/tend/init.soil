@@ -1,0 +1,196 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Non-destructive project scaffolding for `tend init`.
+;
+; The plan is data. Writing is a separate step so templates can be tested
+; without touching a filesystem.
+
+(defun tend/init-usage ()
+  "usage: tend init <spore|library|plugin|workspace> <name>")
+
+(defun tend/init-file (path text)
+  (list (list :path path) (list :text text)))
+
+(defun tend/init-join (root path)
+  (if (= root ".")
+      path
+      (str root "/" path)))
+
+(defun tend/init-prefix (root path)
+  (tend/init-join root path))
+
+(defun tend/init-name-ok? (name)
+  (and (not (nil? name))
+       (not (= name ""))
+       (not (string-contains? name "/"))
+       (not (string-contains? name " "))))
+
+(defun tend/init-tend (members test-name include)
+  (str "(tend\n"
+       "  (version 1)\n"
+       "  (members " members " \"tests/*.soil\")\n"
+       "  (test \"" test-name "\"\n"
+       "    (include \"" include "\")\n"
+       "    (prelude \"core/prelude.soil\")))\n"))
+
+(defun tend/init-spore-files (root name)
+  (list
+    (tend/init-file (tend/init-prefix root "tend.soil")
+      (tend/init-tend "\"src/*.soil\"" "spore" "tests/*.soil"))
+    (tend/init-file (tend/init-prefix root "README.md")
+      (str "# " name "\n\nA Soil Spore.\n"))
+    (tend/init-file (tend/init-prefix root "spore.toml")
+      (str "schema = 1\n\n"
+           "[spore]\n"
+           "id = \"dev.local." name "\"\n"
+           "name = \"" name "\"\n"
+           "version = \"0.1.0\"\n"
+           "license = \"MIT\"\n"
+           "summary = \"A Soil Spore\"\n"
+           "homepage = \"\"\n\n"
+           "[engine]\n"
+           "soil = \">=0.1\"\n"
+           "target = \"wasm32-wasip2\"\n\n"
+           "[module]\n"
+           "path = \"module.wasm\"\n\n"
+           "[launch]\n"
+           "default = \"native\"\n"
+           "surfaces = [\"native\"]\n\n"
+           "[grants]\n"
+           "\"soil:vfs\" = \"read the granted workspace\"\n\n"
+           "[denied]\n"
+           "host = [\"process\", \"secrets\", \"environment\", \"raw-filesystem\", \"clock\"]\n"
+           "transport = [\"socket\", \"quic\", \"iroh\"]\n\n"
+           "[presentation]\n"
+           "badge = \"" (string-join (take 1 (string-chars name)) "") "\"\n"
+           "color = \"#6f8cff\"\n"))
+    (tend/init-file (tend/init-prefix root "src/main.soil")
+      (str "; SPDX-License-Identifier: MIT OR Apache-2.0\n\n"
+           "(defun main ()\n"
+           "  (println \"" name " starting\"))\n"))
+    (tend/init-file (tend/init-prefix root "tests/spore.soil")
+      "; SPDX-License-Identifier: MIT OR Apache-2.0\n\n(defun test/smoke () #t)\n")))
+
+(defun tend/init-library-files (root name)
+  (list
+    (tend/init-file (tend/init-prefix root "tend.soil")
+      (tend/init-tend "\"lib/*.soil\"" "library" "tests/*.soil"))
+    (tend/init-file (tend/init-prefix root "README.md")
+      (str "# " name "\n\nA Soil library.\n"))
+    (tend/init-file (tend/init-prefix root (str "lib/" name ".soil"))
+      (str "; SPDX-License-Identifier: MIT OR Apache-2.0\n\n"
+           "(defun " name "/hello ()\n"
+           "  \"hello\")\n"))
+    (tend/init-file (tend/init-prefix root (str "tests/" name ".soil"))
+      (str "; SPDX-License-Identifier: MIT OR Apache-2.0\n\n"
+           "(defun test/hello ()\n"
+           "  (= (" name "/hello) \"hello\"))\n"))))
+
+(defun tend/init-plugin-files (root name)
+  (list
+    (tend/init-file (tend/init-prefix root "tend.soil")
+      (tend/init-tend "\"lib/*.soil\"" "plugin" "tests/*.soil"))
+    (tend/init-file (tend/init-prefix root "README.md")
+      (str "# " name "\n\nA WIT capability with a Soil facade.\n"))
+    (tend/init-file (tend/init-prefix root (str "wit/" name ".wit"))
+      (str "package local:" name "@0.1.0;\n\n"
+           "interface api {\n"
+           "  ping: func() -> string;\n"
+           "}\n\n"
+           "world provider {\n"
+           "  export api;\n"
+           "}\n"))
+    (tend/init-file (tend/init-prefix root "src/README.md")
+      "Implement the WIT provider here. The Soil facade lives in lib/.\n")
+    (tend/init-file (tend/init-prefix root (str "lib/" name ".soil"))
+      (str "; SPDX-License-Identifier: MIT OR Apache-2.0\n"
+           "; Soil facade over the WIT binding generated from wit/" name ".wit.\n\n"
+           "(defun " name "/ping ()\n"
+           "  \"pong\")\n"))
+    (tend/init-file (tend/init-prefix root (str "tests/" name ".soil"))
+      (str "; SPDX-License-Identifier: MIT OR Apache-2.0\n\n"
+           "(defun test/ping ()\n"
+           "  (= (" name "/ping) \"pong\"))\n"))))
+
+(defun tend/init-workspace-files (root)
+  (list
+    (tend/init-file (tend/init-prefix root "tend.soil")
+      "(tend\n  (version 1)\n  (members \"spores/*\" \"patches/*\"))\n")
+    (tend/init-file (tend/init-prefix root "README.md")
+      "# Spores workspace\n\n`spores/` holds apps. `patches/` holds desktop-local overlays.\n")
+    (tend/init-file (tend/init-prefix root "spores/.gitkeep") "")
+    (tend/init-file (tend/init-prefix root "patches/.gitkeep") "")))
+
+(defun tend/init-plan (kind name)
+  (let ((root (if (= kind "workspace") "." name)))
+    (list
+      (list :kind kind)
+      (list :root root)
+      (list :dirs
+        (if (= kind "workspace")
+            (list "spores" "patches")
+            (list root (str root "/src") (str root "/lib")
+                  (str root "/tests") (str root "/wit"))))
+      (list :files
+        (cond
+          ((= kind "spore") (tend/init-spore-files root name))
+          ((= kind "library") (tend/init-library-files root name))
+          ((= kind "plugin") (tend/init-plugin-files root name))
+          ((= kind "workspace") (tend/init-workspace-files root))
+          (else nil))))))
+
+(defun tend/init-ensure-dir (path)
+  (let ((listed (fs/list path)))
+    (if (ok? listed)
+        (list 'ok path)
+        (fs/mkdir path))))
+
+(defun tend/init-ensure-dirs (dirs)
+  (if (nil? dirs)
+      (list 'ok nil)
+      (let ((result (tend/init-ensure-dir (first dirs))))
+        (if (not (ok? result))
+            result
+            (tend/init-ensure-dirs (rest dirs))))))
+
+(defun tend/init-write-files (files)
+  (if (nil? files)
+      (list 'ok nil)
+      (let ((entry (first files))
+            (path (field (first files) :path)))
+        (let ((existing (fs/read path)))
+          (if (ok? existing)
+              (list 'err (str "refusing to overwrite " path))
+              (let ((written (fs/write path (field entry :text))))
+                (if (not (ok? written))
+                    written
+                    (tend/init-write-files (rest files)))))))))
+
+(defun tend/init-write (plan)
+  (let ((dirs (field plan :dirs))
+        (files (field plan :files)))
+    (let ((made (tend/init-ensure-dirs dirs)))
+      (if (not (ok? made))
+          made
+          (let ((written (tend/init-write-files files)))
+            (if (not (ok? written))
+                written
+                (list 'ok
+                  (list
+                    (list :kind (field plan :kind))
+                    (list :root (field plan :root))
+                    (list :files (length files))))))))))
+
+(defun tend/init (args)
+  (let ((kind (first args))
+        (name (nth 1 args)))
+    (let ((name (if (and (= kind "workspace") (nil? name)) "." name)))
+      (cond
+      ((nil? kind) (list 'err (tend/init-usage)))
+      ((nil? name) (list 'err (tend/init-usage)))
+      ((not (tend/init-name-ok? name))
+        (list 'err "name must be a simple directory name"))
+      ((not (tend/one-of? kind (list "spore" "library" "plugin" "workspace")))
+        (list 'err (str "unknown template " kind)))
+      (else
+        (let ((plan (tend/init-plan kind name)))
+          (tend/init-write plan)))))))

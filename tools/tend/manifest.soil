@@ -263,6 +263,71 @@
               (append commands (list command)))))
           result))))
 
+
+(defun tend/image-with (entry prelude compiler)
+  (list
+    (list :entry entry)
+    (list :prelude prelude)
+    (list :compiler compiler)))
+
+(defun tend/parse-image-opts (opts entry prelude compiler)
+  (if (nil? opts)
+      (if (nil? entry)
+          (tend/err "image needs an entry")
+          (tend/ok (tend/image-with entry prelude compiler)))
+      (let ((opt (first opts)))
+        (let ((key (first opt)))
+          (cond
+            ((= key 'entry)
+              (tend/parse-image-opts (rest opts) (nth 1 opt) prelude compiler))
+            ((= key 'prelude)
+              (tend/parse-image-opts (rest opts) entry (nth 1 opt) compiler))
+            ((= key 'compiler)
+              (tend/parse-image-opts (rest opts) entry prelude (nth 1 opt)))
+            (else
+              (tend/err (str "unknown image option " key))))))))
+
+(defun tend/parse-image (item manifest)
+  (let ((result (tend/parse-image-opts (drop 1 item) nil nil nil)))
+    (if (ok? result)
+        (tend/ok (tend/set manifest :image (value result)))
+        result)))
+
+(defun tend/spore-with (id name version exports grants)
+  (list
+    (list :id id)
+    (list :name name)
+    (list :version version)
+    (list :exports exports)
+    (list :grants grants)))
+
+(defun tend/parse-spore-opts (opts id name version exports grants)
+  (if (nil? opts)
+      (if (or (nil? id) (nil? version))
+          (tend/err "spore needs id and version")
+          (tend/ok (tend/spore-with id name version exports grants)))
+      (let ((opt (first opts)))
+        (let ((key (first opt)))
+          (cond
+            ((= key 'id)
+              (tend/parse-spore-opts (rest opts) (nth 1 opt) name version exports grants))
+            ((= key 'name)
+              (tend/parse-spore-opts (rest opts) id (nth 1 opt) version exports grants))
+            ((= key 'version)
+              (tend/parse-spore-opts (rest opts) id name (nth 1 opt) exports grants))
+            ((= key 'exports)
+              (tend/parse-spore-opts (rest opts) id name version (drop 1 opt) grants))
+            ((= key 'grants)
+              (tend/parse-spore-opts (rest opts) id name version exports (drop 1 opt)))
+            (else
+              (tend/err (str "unknown spore option " key))))))))
+
+(defun tend/parse-spore (item manifest)
+  (let ((result (tend/parse-spore-opts (drop 1 item) nil nil nil nil nil)))
+    (if (ok? result)
+        (tend/ok (tend/set manifest :spore (value result)))
+        result)))
+
 (defun tend/parse-entry (item manifest)
   (let ((key (first item)))
     (cond
@@ -273,6 +338,8 @@
       ((= key 'dependency) (tend/parse-dependency item manifest))
       ((= key 'command) (tend/parse-command item manifest))
       ((= key 'component) (tend/parse-component item manifest))
+      ((= key 'image) (tend/parse-image item manifest))
+      ((= key 'spore) (tend/parse-spore item manifest))
       (else (tend/err (str "unknown tend key " key))))))
 
 (defun tend/parse-entries (entries manifest)
@@ -306,7 +373,9 @@
                       (list :benches nil)
                       (list :dependencies nil)
                       (list :commands nil)
-                      (list :components nil)))))))))
+                      (list :components nil)
+                      (list :image nil)
+                      (list :spore nil)))))))))
 
 (defun tend/emit-option (key values)
   (if (nil? values)
@@ -405,10 +474,40 @@
       (str (tend/emit-component (first components))
            (tend/emit-components (rest components)))))
 
+
+(defun tend/emit-image (image)
+  (if (nil? image)
+      ""
+      (str "  (image\n"
+           "    (entry " (tend/quote (field image :entry)) ")\n"
+           (if (nil? (field image :prelude))
+               ""
+               (str "    (prelude " (tend/quote (field image :prelude)) ")\n"))
+           (if (nil? (field image :compiler))
+               ""
+               (str "    (compiler " (tend/quote (field image :compiler)) ")\n"))
+           "  )\n")))
+
+(defun tend/emit-spore (spore)
+  (if (nil? spore)
+      ""
+      (str "  (spore\n"
+           "    (id " (tend/quote (field spore :id)) ")\n"
+           (if (nil? (field spore :name))
+               ""
+               (str "    (name " (tend/quote (field spore :name)) ")\n"))
+           "    (version " (tend/quote (field spore :version)) ")\n"
+           (if (nil? (field spore :exports))
+               ""
+               (str "    (exports" (tend/string-list (field spore :exports)) ")\n"))
+           "  )\n")))
+
 (defun tend/emit (manifest)
   (str "(tend\n"
        "  (version " (field manifest :version) ")\n"
        "  (members" (tend/string-list (field manifest :members)) ")\n"
+       (tend/emit-image (field manifest :image))
+       (tend/emit-spore (field manifest :spore))
        (tend/emit-tests (field manifest :tests))
        (tend/emit-benches (field manifest :benches))
        (tend/emit-dependencies (field manifest :dependencies))

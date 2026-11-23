@@ -21,3 +21,13 @@
     (and
       (= (field response :action) :host)
       (= (field response :op) "flush"))))
+
+(defun test/image-snapshot-host-action ()
+  (let ((response (image/handle-json "{\"op\":\"snapshot\",\"session\":\"s1\",\"path\":\"x.json\"}" nil)))
+    (and (= (field response :action) :host)
+         (= (field response :op) "snapshot"))))
+
+(defun test/image-restore-host-action ()
+  (let ((response (image/handle-json "{\"op\":\"restore\",\"session\":\"s1\",\"path\":\"x.json\"}" nil)))
+    (and (= (field response :action) :host)
+         (= (field response :op) "restore"))))

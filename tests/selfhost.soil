@@ -61,3 +61,14 @@
       (string-contains? wat "i64.const 1")
       (string-contains? wat "drop")
       (string-contains? wat "i64.const 2"))))
+
+(defun test/selfhost-numeric-primitives ()
+  (let ((wat (compiler/compile-source "(defun ops (a b) (% (bit-and a b) (bit-or a b)))")))
+    (and (string-contains? wat "i64.rem_s")
+         (string-contains? wat "i64.and")
+         (string-contains? wat "i64.or"))))
+
+(defun test/selfhost-constant-nth ()
+  (let ((wat (compiler/compile-source "(defun pick () (nth 1 (list 10 20 30)))")))
+    (and (string-contains? wat "i64.const 20")
+         (not (string-contains? wat "call $nth")))))

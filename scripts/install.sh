@@ -150,7 +150,7 @@ set -- --prelude "$SHARE/core/prelude.soil" --call main \
   "$SHARE/std/bindings/wasi-cli.generated.soil" \
   "$SHARE/std/wasi/stdio.soil" "$SHARE/std/wasi/fs.soil" \
   "$SHARE/tools/tend/manifest.soil" "$SHARE/tools/tend/dispatch.soil" \
-  "$SHARE/tools/tend/run.soil" "$SHARE/tools/tend/main.soil"
+  "$SHARE/tools/tend/run.soil" "$SHARE/tools/tend/init.soil" "$SHARE/tools/tend/main.soil"
 while IFS= read -r arg; do set -- "$@" --arg "$arg"; done < "$tmp"
 exec wasmtime run --dir . --dir "$SHARE" "$WASM" "$@"
 TEND

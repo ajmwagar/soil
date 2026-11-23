@@ -1,0 +1,19 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; A tiny SSR page rendered from one live image.
+
+(defun page/title ()
+  "Live Soil")
+
+(defun page/accent ()
+  "#6f8cff")
+
+(defun page/render ()
+  (str "<!doctype html>\n"
+       "<html><head><meta charset=\"utf-8\">\n"
+       "<title>" (page/title) "</title>\n"
+       "<style>body{font:16px system-ui;max-width:42rem;margin:4rem auto;padding:0 1rem}"
+       "h1{color:" (page/accent) "}</style></head><body>\n"
+       "<h1>" (page/title) "</h1>\n"
+       "<p>This page was rendered by a live Soil image.</p>\n"
+       "<p>Edit <code>page/title</code> or <code>page/accent</code> in the REPL and render again.</p>\n"
+       "</body></html>\n"))
