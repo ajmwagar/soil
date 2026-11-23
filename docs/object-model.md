@@ -63,7 +63,8 @@ scripts/test-selfhost-objects.sh
 
 ## Still ahead
 
-- Byte-accurate strings: one i64 per character is fine for names, too wasteful
-  for compiler output; needs `i32.load8_u`/`i32.store8` in the binary emitter.
+- Byte-accurate *text*: one i64 per character is fine for names; `rt/bytes-*`
+  buffers are byte-accurate and the binary emitter now has
+  `i32.load8_u`/`i32.store8`/`i32.add`. Moving text onto bytes is the next step.
 - Symbols as a distinct type in the reader (today a literal is a string).
 - Hash tables for large environments; the assoc list is O(n).

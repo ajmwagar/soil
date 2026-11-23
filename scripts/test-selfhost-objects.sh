@@ -38,5 +38,10 @@ check rt/test-symbol-length 4
 check rt/test-env-lookup 42
 check rt/test-env-shadow 43
 check rt/test-env-missing 0
+check rt/test-bytes-kind 3
+check rt/test-bytes-capacity 4
+check rt/test-bytes-push-length 2
+check rt/test-bytes-get 66
+check rt/test-bytes-set-get 122
 
 printf 'selfhost-objects: ok\n'

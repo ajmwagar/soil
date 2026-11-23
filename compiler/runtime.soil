@@ -19,6 +19,7 @@
 (defconst rt/kind-cons 0)
 (defconst rt/kind-string 1)
 (defconst rt/kind-symbol 2)
+(defconst rt/kind-bytes 3)
 
 (defun rt/alloc (bytes)
   (let ((ptr (global.get 0)))
@@ -85,6 +86,41 @@
       0))
 
 (defun rt/string-equal? (a b) (rt/text-equal? a b))
+
+;;; byte buffers ------------------------------------------------------------
+;;;   +0 kind=3, +8 length, +16 capacity, +24 data (u8 each)
+;;; These need i32.load8_u / i32.store8 in the binary emitter, which is why the
+;;; text layout above stays one i64 per character until byte buffers arrived.
+
+(defun rt/bytes-new (capacity)
+  (let ((ptr (rt/alloc (+ 24 capacity))))
+    (begin
+      (i64.store (i32.wrap_i64 ptr) rt/kind-bytes)
+      (i64.store (i32.wrap_i64 (+ ptr 8)) 0)
+      (i64.store (i32.wrap_i64 (+ ptr 16)) capacity)
+      ptr)))
+
+(defun rt/bytes-length (bytes)
+  (i64.load (i32.wrap_i64 (+ bytes 8))))
+
+(defun rt/bytes-capacity (bytes)
+  (i64.load (i32.wrap_i64 (+ bytes 16))))
+
+(defun rt/bytes-get (bytes index)
+  (i64.extend_i32_u
+    (i32.load8_u (i32.wrap_i64 (+ (+ bytes 24) index)))))
+
+(defun rt/bytes-set (bytes index value)
+  (begin
+    (i32.store8 (i32.wrap_i64 (+ (+ bytes 24) index)) (i32.wrap_i64 value))
+    bytes))
+
+(defun rt/bytes-push (bytes value)
+  (let ((length (rt/bytes-length bytes)))
+    (begin
+      (rt/bytes-set bytes length value)
+      (i64.store (i32.wrap_i64 (+ bytes 8)) (+ length 1))
+      bytes)))
 
 ;;; environment ------------------------------------------------------------
 ;;; An environment is an association list of (name . value) pairs.

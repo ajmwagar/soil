@@ -51,3 +51,29 @@
 
 (defun rt/test-env-missing ()
   (rt/env-lookup (rt/env-bind (rt/env-new) "x" 41) "z"))
+
+(defun rt/test-bytes-kind ()
+  (rt/kind (rt/bytes-new 4)))
+
+(defun rt/test-bytes-capacity ()
+  (rt/bytes-capacity (rt/bytes-new 4)))
+
+(defun rt/test-bytes-push-length ()
+  (let ((bytes (rt/bytes-new 4)))
+    (begin
+      (rt/bytes-push bytes 65)
+      (rt/bytes-push bytes 66)
+      (rt/bytes-length bytes))))
+
+(defun rt/test-bytes-get ()
+  (let ((bytes (rt/bytes-new 4)))
+    (begin
+      (rt/bytes-push bytes 65)
+      (rt/bytes-push bytes 66)
+      (rt/bytes-get bytes 1))))
+
+(defun rt/test-bytes-set-get ()
+  (let ((bytes (rt/bytes-new 2)))
+    (begin
+      (rt/bytes-set bytes 1 122)
+      (rt/bytes-get bytes 1))))

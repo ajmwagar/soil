@@ -889,6 +889,19 @@
 (defun wasm/int (value)
   (append (list 66) (wasm/sleb value)))
 
+;;; i32 values and byte/word memory access, for byte-accurate buffers.
+(defun wasm/i32-int (value)
+  (append (list 65) (wasm/sleb value)))
+
+(defun wasm/i32-load (align offset)
+  (append (list 40) (append (wasm/uleb align) (wasm/uleb offset))))
+
+(defun wasm/i32-load8 (align offset)
+  (append (list 45) (append (wasm/uleb align) (wasm/uleb offset))))
+
+(defun wasm/i32-store8 (align offset)
+  (append (list 58) (append (wasm/uleb align) (wasm/uleb offset))))
+
 (defun wasm/count (value)
   (if (nil? value) 0 (length value)))
 
@@ -1038,7 +1051,9 @@
 (defun wasm/void? (expr)
   (and (not (atom expr))
        (let ((head (wasm/head expr)))
-         (or (= head "i64.store") (= head "global.set")))))
+         (or (= head "i64.store")
+             (= head "i32.store8")
+             (= head "global.set")))))
 
 (defun wasm/emit-body (body env consts names locals out)
   (if (nil? body)
@@ -1181,6 +1196,25 @@
             (wasm/emit
               (list 'rt/field (nth 1 expr) (wasm/key-text (nth 2 expr)))
               env consts names locals))
+          ((= head "i32.const")
+            (list (wasm/i32-int (nth 1 expr)) locals))
+          ((= head "i32.load")
+            (let ((address (wasm/emit (nth 1 expr) env consts names locals)))
+              (list (wasm/cat (list (first address) (wasm/i32-load 2 0)))
+                    (nth 1 address))))
+          ((= head "i32.load8_u")
+            (let ((address (wasm/emit (nth 1 expr) env consts names locals)))
+              (list (wasm/cat (list (first address) (wasm/i32-load8 0 0)))
+                    (nth 1 address))))
+          ((= head "i32.store8")
+            (let ((address (wasm/emit (nth 1 expr) env consts names locals)))
+              (let ((value (wasm/emit (nth 2 expr) env consts names (nth 1 address))))
+                (list (wasm/cat (list (first address) (first value) (wasm/i32-store8 0 0)))
+                      (nth 1 value)))))
+          ((= head "i32.add")
+            (let ((left (wasm/emit (nth 1 expr) env consts names locals)))
+              (let ((right (wasm/emit (nth 2 expr) env consts names (nth 1 left))))
+                (list (wasm/cat (list (first left) (first right) (list 106))) (nth 1 right)))))
           ((= head "i64.load")
             (let ((address (wasm/emit (nth 1 expr) env consts names locals)))
               (list (wasm/cat (list (first address) (wasm/i64-load) (list 3 0)))
