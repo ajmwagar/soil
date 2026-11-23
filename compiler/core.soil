@@ -321,47 +321,72 @@
            "    i32.store8\n"
            (abi/emit-bytes (+ offset 1) (rest bytes)))))
 
-(defun abi/emit-field (ftype value records offset ctx)
-  (let ((kind (str ftype)))
-    (cond
-      ((= kind "bool")
-        (list (str "    local.get $base\n"
-                   "    i32.const " (if value 1 0) "\n"
-                   "    i32.store8 offset=" offset "\n")
-              ctx))
-      ((= kind "f32")
-        (list (str "    local.get $base\n"
-                   "    f32.const " (str value) "\n"
-                   "    f32.store offset=" offset "\n")
-              ctx))
-      ((= kind "string")
-        (let ((data (abi/data-offset ctx)))
-          (list (str "    local.get $base\n"
-                     "    i32.const " data "\n"
-                     "    i32.store offset=" offset "\n"
-                     "    local.get $base\n"
-                     "    i32.const " (length (str value)) "\n"
-                     "    i32.store offset=" (+ offset 4) "\n"
-                     (abi/emit-bytes data (string->bytes (str value))))
-                (abi/next-ctx ctx))))
-      (else
-        (let ((record (abi/find-record kind records)))
-          (if (nil? record)
-              (list "" ctx)
-              (abi/emit-fields (drop 2 record) (rest value) records offset ctx)))))))
+(defun abi/param-index (name params)
+  (cond
+    ((nil? params) nil)
+    ((= (str (first (first params))) name) 0)
+    (else
+      (let ((rest (abi/param-index name (rest params))))
+        (if (nil? rest) nil (+ 1 rest))))))
 
-(defun abi/emit-fields (fields values records offset ctx)
+;;; A field value is either a literal or a parameter symbol. Parameters arrive
+;;; already lowered into our memory, so a string parameter is copied as the
+;;; (ptr, len) pair the host handed us rather than re-encoded.
+(defun abi/emit-field (ftype value records offset ctx params)
+  (let ((kind (str ftype)))
+    (let ((index (if (symbol? value) (abi/param-index (str value) params) nil)))
+      (cond
+        ((= kind "bool")
+          (list (str "    local.get $base\n"
+                     (if (nil? index)
+                         (str "    i32.const " (if value 1 0) "\n")
+                         (str "    local.get $p" index "\n"))
+                     "    i32.store8 offset=" offset "\n")
+                ctx))
+        ((= kind "f32")
+          (list (str "    local.get $base\n"
+                     (if (nil? index)
+                         (str "    f32.const " (str value) "\n")
+                         (str "    local.get $p" index "\n"))
+                     "    f32.store offset=" offset "\n")
+                ctx))
+        ((= kind "string")
+          (if (nil? index)
+              (let ((data (abi/data-offset ctx)))
+                (list (str "    local.get $base\n"
+                           "    i32.const " data "\n"
+                           "    i32.store offset=" offset "\n"
+                           "    local.get $base\n"
+                           "    i32.const " (length (str value)) "\n"
+                           "    i32.store offset=" (+ offset 4) "\n"
+                           (abi/emit-bytes data (string->bytes (str value))))
+                      (abi/next-ctx ctx)))
+              (list (str "    local.get $base\n"
+                         "    local.get $p" index "_ptr\n"
+                         "    i32.store offset=" offset "\n"
+                         "    local.get $base\n"
+                         "    local.get $p" index "_len\n"
+                         "    i32.store offset=" (+ offset 4) "\n")
+                    ctx)))
+        (else
+          (let ((record (abi/find-record kind records)))
+            (if (nil? record)
+                (list "" ctx)
+                (abi/emit-fields (drop 2 record) (rest value) records offset ctx params))))))))
+
+(defun abi/emit-fields (fields values records offset ctx params)
   (if (nil? fields)
       (list "" ctx)
       (let ((field (first fields)))
         (let ((ftype (nth 1 field)))
           (let ((offset (abi/align-up offset (abi/align ftype records))))
-            (let ((here (abi/emit-field ftype (first values) records offset ctx)))
+            (let ((here (abi/emit-field ftype (first values) records offset ctx params)))
               (let ((next (abi/emit-fields (rest fields)
                                            (rest values)
                                            records
                                            (+ offset (abi/size ftype records))
-                                           (nth 1 here))))
+                                           (nth 1 here)
+                                           params)))
                 (list (str (first here) (first next)) (nth 1 next)))))))))
 
 ;;; Emit one element: base = ptr + index * stride, then its fields.
@@ -371,7 +396,8 @@
                                    (rest value)
                                    records
                                    0
-                                   (list index 0))))
+                                   (list index 0)
+                                   nil)))
       (str "    local.get $ptr\n"
            "    i32.const " (* index stride) "\n"
            "    i32.add\n"
@@ -384,46 +410,115 @@
       (str (abi/emit-element record (first values) index records)
            (abi/emit-elements record (rest values) records (+ index 1)))))
 
+;;; Flatten a parameter list to core params: string is (ptr, len).
+(defun abi/emit-param (param index)
+  (let ((ftype (str (nth 1 param))))
+    (cond
+      ((= ftype "string")
+        (str " (param $p" index "_ptr i32) (param $p" index "_len i32)"))
+      ((= ftype "f32")
+        (str " (param $p" index " f32)"))
+      ((= ftype "u64")
+        (str " (param $p" index " i64)"))
+      (else
+        (str " (param $p" index " i32)")))))
+
+(defun abi/emit-params (params index)
+  (if (nil? params)
+      ""
+      (str (abi/emit-param (first params) index)
+           (abi/emit-params (rest params) (+ index 1)))))
+
+(defun abi/count-params (params)
+  (if (nil? params) 0 (+ 1 (abi/count-params (rest params)))))
+
 (defun abi/count-values (values)
   (if (nil? values) 0 (+ 1 (abi/count-values (rest values)))))
 
-;;; (defun-export NAME -> (list RECORD) (list (RECORD field...)...))
+;;; (defun-export NAME (PARAM TYPE)... -> TYPE body)
+;;;
+;;; TYPE is `(list RECORD)` or a RECORD. Results flatten to more than one core
+;;; value, so the export takes no result and returns a pointer to a return area
+;;; the guest allocated; parameters flatten into core params (string is a
+;;; (ptr, len) pair).
+(defun abi/parse-export (items params)
+  (cond
+    ((nil? items) (list (reverse params) nil nil))
+    ((= (str (first items)) "->")
+      ;; The tail is `-> TYPE BODY`, and BODY is one form.
+      (list (reverse params) (nth 1 items) (nth 2 items)))
+    (else (abi/parse-export (rest items) (cons (first items) params)))))
+
 (defun compiler/defun-export (form records prefix)
   (let ((name (str (nth 1 form))))
-    (let ((type (nth 3 form)))
-      (let ((record-name (str (nth 1 type))))
-        (let ((record (abi/find-record record-name records)))
-          (if (nil? record)
-              ""
-              (let ((values (rest (nth 4 form))))
-                (let ((n (abi/count-values values)))
-                  (let ((stride (abi/record-size record records)))
-                    (str "  (func (export \"" prefix name "\") (result i32)"
-                         " (local $area i32) (local $ptr i32) (local $base i32)\n"
-                         ;; Results flatten to (ptr, len): more than one core
-                         ;; value, so the guest returns a pointer to a return
-                         ;; area holding them.
-                         "    i32.const 0\n"
-                         "    i32.const 0\n"
-                         "    i32.const 4\n"
-                         "    i32.const 8\n"
-                         "    call $cabi_realloc\n"
-                         "    local.set $area\n"
-                         "    i32.const 0\n"
-                         "    i32.const 0\n"
-                         "    i32.const " (abi/align record-name records) "\n"
-                         "    i32.const " (* n stride) "\n"
-                         "    call $cabi_realloc\n"
-                         "    local.set $ptr\n"
-                         "    local.get $area\n"
-                         "    local.get $ptr\n"
-                         "    i32.store\n"
-                         "    local.get $area\n"
-                         "    i32.const " n "\n"
-                         "    i32.store offset=4\n"
-                         (abi/emit-elements record values records 0)
-                         "    local.get $area\n"
-                         "  )\n"))))))))))
+    (let ((parsed (abi/parse-export (drop 2 form) nil)))
+      (let ((params (first parsed)))
+        (let ((type (nth 1 parsed)))
+          (let ((body (nth 2 parsed)))
+            (if (and (not (atom type)) (= (str (first type)) "list"))
+                (compiler/export-list name params type body records prefix)
+                (compiler/export-record name params (str type) body records prefix))))))))
+
+(defun compiler/export-list (name params type body records prefix)
+  (let ((record-name (str (nth 1 type))))
+    (let ((record (abi/find-record record-name records)))
+      (if (nil? record)
+          ""
+          (let ((values (rest body)))
+            (let ((n (abi/count-values values)))
+              (let ((stride (abi/record-size record records)))
+                (str "  (func (export \"" prefix name "\")"
+                     (abi/emit-params params 0)
+                     " (result i32)"
+                     " (local $area i32) (local $ptr i32) (local $base i32)\n"
+                     "    i32.const 0\n"
+                     "    i32.const 0\n"
+                     "    i32.const 4\n"
+                     "    i32.const 8\n"
+                     "    call $cabi_realloc\n"
+                     "    local.set $area\n"
+                     "    i32.const 0\n"
+                     "    i32.const 0\n"
+                     "    i32.const " (abi/align record-name records) "\n"
+                     "    i32.const " (* n stride) "\n"
+                     "    call $cabi_realloc\n"
+                     "    local.set $ptr\n"
+                     "    local.get $area\n"
+                     "    local.get $ptr\n"
+                     "    i32.store\n"
+                     "    local.get $area\n"
+                     "    i32.const " n "\n"
+                     "    i32.store offset=4\n"
+                     (abi/emit-elements record values records 0)
+                     "    local.get $area\n"
+                     "  )\n"))))))))
+
+(defun compiler/export-record (name params record-name body records prefix)
+  (let ((record (abi/find-record record-name records)))
+    (if (nil? record)
+        ""
+        (let ((size (abi/record-size record records)))
+          (let ((fields (abi/emit-fields (drop 2 record)
+                                         (rest body)
+                                         records
+                                         0
+                                         (list 0 0)
+                                         params)))
+            (str "  (func (export \"" prefix name "\")"
+                 (abi/emit-params params 0)
+                 " (result i32)"
+                 " (local $area i32) (local $base i32)\n"
+                 "    i32.const 0\n"
+                 "    i32.const 0\n"
+                 "    i32.const " (abi/align record-name records) "\n"
+                 "    i32.const " size "\n"
+                 "    call $cabi_realloc\n"
+                 "    local.set $area\n"
+                 "    local.get $area\n"
+                 "    local.set $base\n"
+                 (first fields)
+                 "    local.get $area\n"
+                 "  )\n"))))))
 
 (defun compiler/forms (forms records prefix texts)
   (if (nil? forms)

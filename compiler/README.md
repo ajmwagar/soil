@@ -369,10 +369,28 @@ scripts/test-component-export-records.sh
 The gate runs the component, so it checks the layout, not just that the encoder
 accepted the signature.
 
-Limits of this slice: element values are literals (no parameters, no data read
-at runtime), string data lives in a static area at 64 KiB, and there is no
-post-return. Variants, resources and functions that take records are still
-ahead.
+### Parameters
+
+Parameters flatten into core params — a `string` is a `(ptr, len)` pair and the
+host lowers it into the guest's memory, so a record can reference it directly
+instead of copying:
+
+```soil
+(record target (id string) (on bool))
+
+(defun-export set-light (id string) (on bool) -> target
+  (target id on))
+```
+
+```sh
+wasmtime run --invoke 'set-light("hall", true)' lights.wasm
+# {id: "hall", on: true}
+```
+
+Limits of this slice: values are literals or direct parameters — nothing that is
+read at runtime yet. String *literals* live in a static area at 64 KiB; the
+record/list a function returns is `cabi_realloc`ed. No post-return. `option`,
+`result`, variants and resources are still ahead.
 
 ## Selfhost compile
 

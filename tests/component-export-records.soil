@@ -21,6 +21,10 @@
   (x f32)
   (y f32))
 
+(record target
+  (id string)
+  (on bool))
+
 (record light-state
   (id string)
   (name string)
@@ -33,5 +37,15 @@
     (light-state "hall" "Hall" #t 0.5 (colour 0.3 0.4))
     (light-state "desk" "Desk" #f 0.0 (colour 0.1 0.2))))
 
+;;; Parameters flatten into core params: the string is a (ptr, len) pair and the
+;;; host lowers it into our memory, so the record can reference it directly.
+(defun-export set-light (id string) (on bool) -> target
+  (target id on))
+
 (export lights
   -> (list light-state))
+
+(export set-light
+  (id string)
+  (on bool)
+  -> target)
