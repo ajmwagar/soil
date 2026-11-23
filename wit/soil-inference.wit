@@ -51,7 +51,28 @@ interface inference {
     model: string,
   }
 
+  record tool-call-delta {
+    id: option<string>,
+    name: option<string>,
+    arguments: string,
+  }
+
+  variant completion-event {
+    text-delta(string),
+    reasoning-delta(string),
+    tool-call-delta(tool-call-delta),
+    usage(usage),
+    finish(option<string>),
+    error(string),
+  }
+
+  resource completion-stream {
+    next: func(timeout-ms: u32) -> result<option<completion-event>, error>;
+    cancel: func() -> result<_, error>;
+  }
+
   complete: func(request: request) -> result<response, error>;
+  open-stream: func(request: request) -> result<completion-stream, error>;
   state: func() -> result<inference-state, error>;
 }
 

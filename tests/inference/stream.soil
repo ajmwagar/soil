@@ -1,0 +1,27 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+
+(defun test/sse-text-delta ()
+  (let ((events (ooda/parse-sse
+                  "data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n\n")))
+    (and (= (length events) 1)
+         (= (field (first events) :text) "hel")
+         (= (field (first events) :kind) "text-delta"))))
+
+(defun test/sse-finish ()
+  (let ((events (ooda/parse-sse "data: [DONE]\n\n")))
+    (and (= (length events) 1)
+         (= (field (first events) :kind) "finish"))))
+
+(defun test/sse-usage ()
+  (let ((events (ooda/parse-sse
+                  "data: {\"choices\":[{\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\n")))
+    (and (= (length events) 1)
+         (= (field (field (first events) :usage) :total-tokens) 4)
+         (= (field (first events) :reason) "stop"))))
+
+(defun test/sse-chunks ()
+  (let ((events (ooda/parse-sse-chunks
+                  (list "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n"
+                        "\n"))))
+    (and (= (length events) 1)
+         (= (field (first events) :text) "a"))))

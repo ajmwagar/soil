@@ -37,6 +37,7 @@ STD=(
   std/loam/edit.soil
   std/inference/ooda.soil
   std/inference/ooda-provider.soil
+  std/inference/ooda-stream.soil
 )
 FIXTURES=(
   boot/boot.soil
@@ -71,6 +72,7 @@ TESTS=(
   tests/edit-lsp.soil
   tests/inference/ooda.soil
   tests/inference/provider.soil
+  tests/inference/stream.soil
   tests/vitals.soil
 )
 

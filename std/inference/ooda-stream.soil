@@ -1,0 +1,106 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; OODA / OpenAI-compatible SSE events as semantic completion events.
+;
+; The host supplies bytes. This module only owns SSE framing and JSON mapping.
+
+(defun sse/strip-cr (text)
+  (string-replace text "\r" ""))
+
+(defun sse/lines (chars line lines)
+  (cond
+    ((nil? chars)
+      (reverse (if (= line "") lines (cons line lines))))
+    ((= (first chars) "\n")
+      (sse/lines (rest chars) "" (cons (sse/strip-cr line) lines)))
+    (else
+      (sse/lines (rest chars)
+        (str line (first chars))
+        lines))))
+
+(defun sse/events (lines current events)
+  (cond
+    ((nil? lines)
+      (reverse (if (nil? current) events (cons (reverse current) events))))
+    ((= (first lines) "")
+      (if (nil? current)
+          (sse/events (rest lines) nil events)
+          (sse/events (rest lines) nil (cons (reverse current) events))))
+    (else
+      (sse/events (rest lines) (cons (first lines) current) events))))
+
+(defun sse/data-line? (line)
+  (string-starts-with? line "data:"))
+
+(defun sse/drop-space (chars)
+  (if (and (not (nil? chars)) (= (first chars) " "))
+      (rest chars)
+      chars))
+
+(defun sse/data-line (line)
+  (string-join
+    (sse/drop-space (drop 5 (string-chars line)))
+    ""))
+
+(defun sse/data-lines (lines out)
+  (cond
+    ((nil? lines) (reverse out))
+    ((sse/data-line? (first lines))
+      (sse/data-lines (rest lines) (cons (sse/data-line (first lines)) out)))
+    (else (sse/data-lines (rest lines) out))))
+
+(defun sse/event-data (lines)
+  (string-join (sse/data-lines lines nil) "\n"))
+
+(defun ooda/trim (text)
+  (string-join (sse/drop-space (string-chars text)) ""))
+
+(defun ooda/usage (usage)
+  (if (nil? usage)
+      nil
+      (list
+        (list :prompt-tokens (field usage :prompt_tokens))
+        (list :completion-tokens (field usage :completion_tokens))
+        (list :total-tokens (field usage :total_tokens)))))
+
+(defun ooda/tool-delta (call)
+  (list
+    (list :id (field call :id))
+    (list :name (field (field call :function) :name))
+    (list :arguments (field (field call :function) :arguments))))
+
+(defun ooda/event-from-data (data)
+  (if (= (ooda/trim data) "[DONE]")
+      (list (list :kind "finish") (list :reason nil))
+      (let ((body (json-decode data)))
+        (let ((choices (field body :choices)))
+          (if (nil? choices)
+              (list (list :kind "usage") (list :usage (ooda/usage (field body :usage))))
+              (let ((choice (first choices)))
+                (let ((delta (field choice :delta)))
+                  (cond
+                    ((not (nil? (field delta :content)))
+                      (list (list :kind "text-delta") (list :text (field delta :content))))
+                    ((not (nil? (field delta :reasoning)))
+                      (list (list :kind "reasoning-delta") (list :text (field delta :reasoning))))
+                    ((not (nil? (field delta :tool_calls)))
+                      (list (list :kind "tool-call-delta")
+                            (list :tool (ooda/tool-delta (first (field delta :tool_calls))))))
+                    ((not (nil? (field choice :finish_reason)))
+                      (list (list :kind "finish")
+                            (list :reason (field choice :finish_reason))
+                            (list :usage (ooda/usage (field body :usage)))))
+                    (else
+                      (list (list :kind "usage")
+                            (list :usage (ooda/usage (field body :usage)))))))))))))
+
+(defun ooda/parse-sse (text)
+  (let ((events (sse/events (sse/lines (string-chars text) "" nil) nil nil)))
+    (map (lambda (event)
+           (let ((data (sse/event-data event)))
+             (if (= data "")
+                 nil
+                 (ooda/event-from-data data))))
+      events)))
+
+(defun ooda/parse-sse-chunks (chunks)
+  (ooda/parse-sse (string-join chunks "")))
