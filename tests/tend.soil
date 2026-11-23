@@ -169,3 +169,11 @@
   (let ((plan (tend/init-plan "workspace" "unused")))
     (and (= (field plan :root) ".")
          (= (field plan :dirs) (list "spores" "patches")))))
+
+(defun test/tend-image-manifest ()
+  (let ((result (tend/parse
+                  "(tend (version 1) (members \"src/*\") (image (entry \"src/main.soil\") (prelude \"core/prelude.soil\")) (spore (id \"dev.test.app\") (name \"app\") (version \"0.1.0\") (exports \"acme:app/api@0.1.0\")))")))
+    (and (ok? result)
+         (= (field (field (value result) :image) :entry) "src/main.soil")
+         (= (field (field (value result) :spore) :id) "dev.test.app")
+         (= (field (field (value result) :spore) :exports) (list "acme:app/api@0.1.0")))))
