@@ -1,20 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Boot every Soil REPL on the page from the wasm evaluator and core prelude.
-import init, { Session } from "./repl/soil_repl_wasm.js";
-
+// Boot every Soil REPL on the page. Each panel owns a worker so a slow edit
+// can be terminated without blocking the page.
 const STORAGE_SOURCE = "soil-repl-source";
 const STORAGE_HISTORY = "soil-repl-history";
 const HISTORY_LIMIT = 20;
+const EVAL_TIMEOUT_MS = 3000;
 
 const panels = Array.from(document.querySelectorAll(".repl"));
 if (panels.length) {
   const preludeUrl = new URL("./repl/prelude.soil", import.meta.url);
-  const wasmUrl = new URL("./repl/soil_repl_wasm_bg.wasm", import.meta.url);
+  const workerUrl = new URL("./repl-worker.js", import.meta.url);
   const prelude = fetch(preludeUrl).then((response) => {
     if (!response.ok) throw new Error("could not load prelude");
     return response.text();
   });
-  const wasm = init(wasmUrl);
 
   const tokens = /(;[^\n]*)|("(?:\\.|[^"\\])*")|(:[^\s()";]+)|(#t|#f|\bnil\b)|(-?\b\d+(?:\.\d+)?\b)|(\b(?:defun|defmacro|defspore|let|if|cond|and|or|not|quote|lambda|fn|do|begin|match)\b)|([()])|([^\s()";]+)/g;
 
@@ -94,6 +93,11 @@ if (panels.length) {
     }
   }
 
+  function errorText(error) {
+    if (error && error.message) return error.message;
+    return String(error);
+  }
+
   function setup(panel, index) {
     const panelId = panel.dataset.replId || `panel-${index}`;
     const sourceKey = `${STORAGE_SOURCE}:${panelId}`;
@@ -108,7 +112,11 @@ if (panels.length) {
     const liveToggle = panel.querySelector(".repl-live-toggle");
     const past = readHistory(historyKey);
     let historyIndex = past.length;
-    let session = null;
+    let worker = null;
+    let ready = false;
+    let booting = false;
+    let pendingRun = false;
+    let timeout = null;
     let timer = null;
 
     function setStatus(text, error = false) {
@@ -134,22 +142,96 @@ if (panels.length) {
       }
     }
 
+    function stopWorker(message) {
+      if (timeout) clearTimeout(timeout);
+      timeout = null;
+      if (worker) worker.terminate();
+      worker = null;
+      ready = false;
+      booting = false;
+      pendingRun = false;
+      if (message) {
+        output.textContent = message;
+        output.classList.add("is-error");
+        setStatus("stopped", true);
+      }
+    }
+
+    function finish(result) {
+      if (timeout) clearTimeout(timeout);
+      timeout = null;
+      output.textContent = result;
+      const error = result.startsWith("error:");
+      output.classList.toggle("is-error", error);
+      setStatus(error ? "error" : "ran", error);
+    }
+
     function run() {
-      if (!session) return;
       const source = input.value;
       if (!source.trim()) {
         output.textContent = "";
         output.classList.remove("is-error");
         return;
       }
-      const result = session.eval(source);
-      output.textContent = result;
-      const error = result.startsWith("error:");
-      output.classList.toggle("is-error", error);
-      setStatus(error ? "error" : "ran", error);
+      if (!worker) {
+        pendingRun = true;
+        boot();
+        return;
+      }
+      if (!ready) {
+        pendingRun = true;
+        return;
+      }
+      if (timeout) clearTimeout(timeout);
+      setStatus("running…");
+      worker.postMessage({ type: "eval", source });
+      timeout = setTimeout(() => {
+        stopWorker(`stopped after ${EVAL_TIMEOUT_MS / 1000}s — try a smaller input`);
+      }, EVAL_TIMEOUT_MS);
       past.push(source);
       historyIndex = past.length;
       writeStorage(historyKey, JSON.stringify(past.slice(-HISTORY_LIMIT)));
+    }
+
+    function boot() {
+      if (worker || booting) return;
+      booting = true;
+      ready = false;
+      setStatus("loading…");
+      const next = new Worker(workerUrl, { type: "module" });
+      worker = next;
+      next.onmessage = (event) => {
+        if (worker !== next) return;
+        const message = event.data;
+        if (message.type === "ready") {
+          booting = false;
+          ready = true;
+          setStatus("ready");
+          if (pendingRun) {
+            pendingRun = false;
+            run();
+          } else if (liveToggle.checked) {
+            run();
+          }
+        } else if (message.type === "result") {
+          booting = false;
+          ready = true;
+          finish(message.result);
+        } else if (message.type === "error") {
+          stopWorker(`wasm failed: ${message.error}`);
+        }
+      };
+      next.onerror = (event) => {
+        if (worker !== next) return;
+        stopWorker(`worker failed: ${errorText(event)}`);
+      };
+      prelude
+        .then((text) => {
+          if (worker === next) next.postMessage({ type: "init", prelude: text });
+        })
+        .catch((error) => {
+          if (worker === next) stopWorker(`prelude failed: ${errorText(error)}`);
+        });
     }
 
     function schedule() {
@@ -218,24 +300,13 @@ if (panels.length) {
       input.value = button.dataset.try || "";
       panel.scrollIntoView({ behavior: "smooth", block: "center" });
       input.dispatchEvent(new Event("input"));
-      if (session) run();
-      else setTimeout(run, 800);
+      run();
     });
 
     paint();
     if (shared !== null) panel.scrollIntoView({ block: "center" });
-    Promise.all([prelude, wasm])
-      .then(([preludeText]) => {
-        session = new Session(preludeText);
-        setStatus("ready");
-        if (liveToggle.checked) run();
-      })
-      .catch((error) => {
-        setStatus("wasm failed to load", true);
-        output.textContent = String(error && error.message ? error.message : error);
-        output.classList.add("is-error");
-      });
+    boot();
   }
 
-  for (const [index, panel] of Array.from(panels).entries()) setup(panel, index);
+  for (const [index, panel] of panels.entries()) setup(panel, index);
 }
