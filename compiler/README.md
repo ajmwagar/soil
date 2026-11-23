@@ -370,6 +370,32 @@ wasmtime run --invoke 'set-light("hall", true)' lights.wasm
 # {id: "hall", on: true}
 ```
 
+### `option<T>`
+
+`option<T>` is a variant: a `u32` discriminant, then the payload at
+`align_up(4, align(T))`. `light-state` above uses it for colour, because a bulb
+may report no colour at all and "no colour" must not be encoded as an empty
+string or a zero point.
+
+```soil
+(record light-state
+  (id string) (name string) (on bool) (brightness f32)
+  (colour (option colour)))
+
+(defun-export lights -> (list light-state)
+  (list
+    (light-state "hall" "Hall" #t 0.5 (some (colour 0.3 0.4)))
+    (light-state "desk" "Desk" #f 0.0 (none))))
+```
+
+```text
+[{id: "hall", ..., colour: some({x: 0.3, y: 0.4})},
+ {id: "desk", ..., brightness: 0}]
+```
+
+(wastime omits a `none` field when printing; the lift is `none`, not a missing
+field.)
+
 Limits of this slice: values are literals or direct parameters — nothing that is
 read at runtime yet. String *literals* live in a static area at 64 KiB; the
 record/list a function returns is `cabi_realloc`ed. No post-return. `option`,

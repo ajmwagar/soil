@@ -34,8 +34,12 @@ printf '%s\n' "$RESULT"
 printf '%s' "$RESULT" | grep -F 'id: "hall"' >/dev/null
 printf '%s' "$RESULT" | grep -F 'on: true' >/dev/null
 printf '%s' "$RESULT" | grep -F 'brightness: 0.5' >/dev/null
-printf '%s' "$RESULT" | grep -F 'x: 0.3' >/dev/null
-printf '%s' "$RESULT" | grep -F 'id: "desk"' >/dev/null
+# option<colour>: present for the hall bulb, absent for the desk bulb. wasmtime
+# omits a `none` field when printing, so the desk record must end after its last
+# present field rather than carry an empty colour.
+printf '%s' "$RESULT" | grep -F 'colour: some({x: 0.3, y: 0.4})' >/dev/null
+printf '%s' "$RESULT" | grep -F 'brightness: 0}' >/dev/null
+grep -F 'colour: option<colour>,' "$OUT.wit" >/dev/null
 
 # Parameters: a string (ptr, len) and a bool, returning a record.
 TARGET=$(wasmtime run --invoke 'set-light("hall", true)' "$OUT.wasm")

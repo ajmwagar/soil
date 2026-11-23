@@ -30,12 +30,14 @@
   (name string)
   (on bool)
   (brightness f32)
-  (colour colour))
+  ;; A bulb may report no colour at all, so the field is optional rather than
+  ;; an empty string or a zero point.
+  (colour (option colour)))
 
 (defun-export lights -> (list light-state)
   (list
-    (light-state "hall" "Hall" #t 0.5 (colour 0.3 0.4))
-    (light-state "desk" "Desk" #f 0.0 (colour 0.1 0.2))))
+    (light-state "hall" "Hall" #t 0.5 (some (colour 0.3 0.4)))
+    (light-state "desk" "Desk" #f 0.0 (none))))
 
 ;;; Parameters flatten into core params: the string is a (ptr, len) pair and the
 ;;; host lowers it into our memory, so the record can reference it directly.
