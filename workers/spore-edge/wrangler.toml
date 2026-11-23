@@ -1,0 +1,10 @@
+name = "spore-edge"
+main = "src/index.js"
+compatibility_date = "2026-09-17"
+
+# jco emits the component as core wasm modules. Let Wrangler compile them at
+# deploy time; build.mjs rewrites jco's loader to import the precompiled modules.
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = true
