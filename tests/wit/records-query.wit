@@ -1,0 +1,40 @@
+// Canonical ABI probe: a host call with strings, lists, records and an option
+// cursor as parameters.
+//
+// The shape mirrors soil:records/query, whose spec is
+//   record query-spec {
+//     collection: string,
+//     prefix: string,
+//     filters: list<filter>,
+//     fields: list<string>,
+//     cursor: option<string>,
+//     limit: u32,
+//   }
+// with filter = { field: string, op: string, value: string }.
+//
+// This world keeps the result a single u32 so the slice is about lowering the
+// parameters only. The page return-area is the next slice.
+package test:records-query@0.1.0;
+
+interface records {
+  record filter {
+    field: string,
+    op: string,
+    value: string,
+  }
+
+  record query-spec {
+    collection: string,
+    prefix: string,
+    filters: list<filter>,
+    fields: list<string>,
+    cursor: option<string>,
+    limit: u32,
+  }
+
+  query: func(spec: query-spec) -> u32;
+}
+
+world probe {
+  import records;
+}
