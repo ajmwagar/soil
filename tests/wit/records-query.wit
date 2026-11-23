@@ -12,8 +12,8 @@
 //   }
 // with filter = { field: string, op: string, value: string }.
 //
-// This world keeps the result a single u32 so the slice is about lowering the
-// parameters only. The page return-area is the next slice.
+// The result is the real soil:records page: an indirect return area containing
+// result<page, error>, where page = list<entry> + option<string> next.
 package test:records-query@0.1.0;
 
 interface records {
@@ -32,7 +32,37 @@ interface records {
     limit: u32,
   }
 
-  query: func(spec: query-spec) -> u32;
+  enum error {
+    denied,
+    not-found,
+    over-budget,
+    invalid,
+    stale,
+    io,
+    unsupported,
+  }
+
+  record key {
+    collection: string,
+    id: string,
+  }
+
+  record entry {
+    key: key,
+    schema: string,
+    revision: u64,
+    updated-at-ms: u64,
+    origin: string,
+    deleted: bool,
+    body: list<u8>,
+  }
+
+  record page {
+    entries: list<entry>,
+    next: option<string>,
+  }
+
+  query: func(spec: query-spec) -> result<page, error>;
 }
 
 world probe {
