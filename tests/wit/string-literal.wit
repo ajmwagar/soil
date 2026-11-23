@@ -1,0 +1,6 @@
+package test:strings@0.1.0;
+
+world probe {
+  export ptr: func() -> u32;
+  export len: func() -> u32;
+}
