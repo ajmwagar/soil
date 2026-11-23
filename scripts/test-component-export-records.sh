@@ -37,4 +37,10 @@ printf '%s' "$RESULT" | grep -F 'brightness: 0.5' >/dev/null
 printf '%s' "$RESULT" | grep -F 'x: 0.3' >/dev/null
 printf '%s' "$RESULT" | grep -F 'id: "desk"' >/dev/null
 
-printf 'component-export-records: ok (list<record> exported from Soil)\n'
+# Parameters: a string (ptr, len) and a bool, returning a record.
+TARGET=$(wasmtime run --invoke 'set-light("hall", true)' "$OUT.wasm")
+printf '%s\n' "$TARGET"
+printf '%s' "$TARGET" | grep -F 'id: "hall"' >/dev/null
+printf '%s' "$TARGET" | grep -F 'on: true' >/dev/null
+
+printf 'component-export-records: ok (list<record> out, parameters in)\n'
