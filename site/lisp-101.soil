@@ -1,0 +1,279 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Lisp 101: a book-style introduction to reading Soil.
+;
+; Copy lives in site/book-copy.soil. Example programs are generated from
+; examples/lisp/*.soil into site/lisp-code.soil. This file owns structure,
+; the book layout, and the interactive REPL panels.
+
+(defun book-code-for (slug items)
+  (if (nil? items)
+      ""
+      (if (= (field (first items) :slug) slug)
+          (field (first items) :code)
+          (book-code-for slug (rest items)))))
+
+(defun book-p (text)
+  (el "p" nil (list (txt text))))
+
+(defun book-note (text)
+  (el "p" (list (attr :class "book-note")) (list (txt text))))
+
+(defun book-toc-item (href label)
+  (el "li" nil
+    (list (el "a" (list (attr :href href)) (list (txt label))))))
+
+(defun book-toc ()
+  (el "aside" (list (attr :class "book-toc") (attr :aria-label "Contents"))
+    (list
+      (el "p" (list (attr :class "toc-label")) (list (txt (book-copy :book :toc-label))))
+      (el "ol" nil
+        (list
+          (book-toc-item "#origins" (book-copy :book :toc-origins))
+          (book-toc-item "#forms" (book-copy :book :toc-forms))
+          (book-toc-item "#atoms" (book-copy :book :toc-atoms))
+          (book-toc-item "#defun" (book-copy :book :toc-defun))
+          (book-toc-item "#lists" (book-copy :book :toc-lists))
+          (book-toc-item "#recursion" (book-copy :book :toc-recursion))
+          (book-toc-item "#classics" (book-copy :book :toc-classics))
+          (book-toc-item "#next" (book-copy :book :toc-next)))))))
+
+(defun book-chapter (id number title lede children)
+  (el "section" (list (attr :class "chapter") (attr :id id))
+    (list
+      (el "div" (list (attr :class "chapter-head"))
+        (list
+          (el "span" (list (attr :class "chapter-number")) (list (txt number)))
+          (el "h2" nil (list (txt title)))))
+      (el "p" (list (attr :class "chapter-lede")) (list (txt lede)))
+      children)))
+
+(defun book-repl (id title note code rows)
+  (el "aside"
+    (list
+      (attr :class "repl book-repl")
+      (attr :data-repl-id id)
+      (attr :aria-label title))
+    (list
+      (el "div" (list (attr :class "repl-head"))
+        (list
+          (el "h3" nil (list (txt title)))
+          (el "span" (list (attr :class "repl-badge")) (list (txt "wasm")))))
+      (el "p" (list (attr :class "repl-note")) (list (txt note)))
+      (el "div" (list (attr :class "repl-editor"))
+        (list
+          (el "pre" (list (attr :class "repl-highlight") (attr :aria-hidden "true"))
+            (list (el "code" nil nil)))
+          (el "textarea"
+            (list
+              (attr :class "repl-input")
+              (attr :spellcheck "false")
+              (attr :autocomplete "off")
+              (attr :rows rows))
+            (list (txt code)))))
+      (el "div" (list (attr :class "repl-actions"))
+        (list
+          (el "button" (list (attr :class "repl-run") (attr :type "button"))
+            (list (txt "Run")))
+          (el "button" (list (attr :class "repl-share") (attr :type "button"))
+            (list (txt "Share")))
+          (el "label" (list (attr :class "repl-live"))
+            (list
+              (el "input" (list (attr :type "checkbox") (attr :class "repl-live-toggle") (attr :checked "checked")) nil)
+              (el "span" nil (list (txt "Live")))))
+          (el "span" (list (attr :class "repl-hint"))
+            (list (txt "⌘/Ctrl + Enter")))
+          (el "span" (list (attr :class "repl-status"))
+            (list (txt "loading…")))))
+      (el "pre" (list (attr :class "repl-output") (attr :aria-live "polite"))
+        (list (txt ""))))))
+
+(defun book-footer ()
+  (el "footer" (list (attr :class "footer"))
+    (list
+      (el "div" (list (attr :class "footer-grid"))
+        (list
+          (el "div" (list (attr :class "footer-col"))
+            (list
+              (el "h3" nil (list (txt "Read")))
+              (a "lisp-101.html" "" (list (txt (copy :nav :book))))
+              (a "demos.html" "" (list (txt (copy :nav :demos))))
+              (a "getting-started.html" "" (list (txt (copy :nav :start))))))
+          (el "div" (list (attr :class "footer-col"))
+            (list
+              (el "h3" nil (list (txt "Reference")))
+              (a "docs/" "" (list (txt (copy :nav :api))))
+              (a "/#language" "" (list (txt (copy :nav :language))))
+              (a "/#examples" "" (list (txt (copy :nav :examples))))))
+          (el "div" (list (attr :class "footer-col"))
+            (list
+              (el "h3" nil (list (txt "Source")))
+              (a "https://github.com/ajmwagar/soil" "" (list (txt (copy :footer :github-label))))
+              (a "https://github.com/ajmwagar/soil/tree/master/examples/lisp" "" (list (txt "Lisp examples")))))
+          (el "div" (list (attr :class "footer-col"))
+            (list
+              (el "h3" nil (list (txt (copy :footer :sponsor-label))))
+              (a "https://fpl.dev/" "" (list (txt (copy :footer :sponsor))))))))
+      (el "div" (list (attr :class "footer-bottom"))
+        (list
+          (el "div" nil (list (txt (copy :footer :left))))
+          (el "div" nil (list (txt (copy :footer :license))))
+          (a "#top" "" (list (txt (copy :footer :back-to-top)))))))))
+
+(defun book-styles ()
+  (str
+    (styles)
+    ".book-shell { max-width: 1180px; margin: 0 auto; padding: clamp(32px, 6vw, 72px) 28px 96px; display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: clamp(28px, 5vw, 72px); }\n"
+    ".book-toc { position: sticky; top: 24px; align-self: start; min-width: 0; }\n"
+    ".toc-label { margin: 0 0 12px; color: var(--color-dim); font-family: var(--font-mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }\n"
+    ".book-toc ol { margin: 0; padding: 0; list-style: none; border-left: 1px solid var(--color-line); }\n"
+    ".book-toc li { margin: 0; }\n"
+    ".book-toc a { display: block; padding: 5px 0 5px 14px; color: var(--color-muted); text-decoration: none; font-size: 13px; line-height: 1.35; }\n"
+    ".book-toc a:hover { color: var(--color-accent); }\n"
+    ".book { min-width: 0; max-width: 760px; }\n"
+    ".book .kicker { margin: 0 0 14px; color: var(--color-accent); font-family: var(--font-mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; }\n"
+    ".book h1 { margin: 0 0 18px; font-family: var(--font-display); font-size: clamp(42px, 7vw, 76px); line-height: .98; letter-spacing: -.045em; overflow-wrap: anywhere; }\n"
+    ".book-lede { margin: 0 0 46px; color: var(--color-muted); font-family: var(--font-display); font-size: clamp(20px, 2.5vw, 27px); line-height: 1.35; letter-spacing: -.015em; max-width: 60ch; }\n"
+    ".chapter { padding: 42px 0 12px; border-top: 1px solid var(--color-line); }\n"
+    ".chapter-head { display: flex; gap: 16px; align-items: baseline; }\n"
+    ".chapter-number { color: var(--color-accent); font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; }\n"
+    ".chapter h2 { margin: 0; font-family: var(--font-display); font-size: clamp(30px, 4vw, 44px); line-height: 1.05; letter-spacing: -.03em; }\n"
+    ".chapter-lede { margin: 14px 0 20px; color: var(--color-muted); font-size: 18px; line-height: 1.55; max-width: 62ch; }\n"
+    ".book p { max-width: 62ch; }\n"
+    ".book .code { margin: 18px 0; }\n"
+    ".book-note { margin: 20px 0; padding: 14px 16px; border-left: 2px solid var(--color-accent); background: var(--color-panel); color: var(--color-muted); font-size: 14px; }\n"
+    ".book-repl { margin: 24px 0 30px; }\n"
+    ".book-repl .repl-head h3 { margin: 0; font-family: var(--font-display); font-size: 22px; letter-spacing: -.02em; }\n"
+    ".book-repl .repl-highlight, .book-repl .repl-input { min-height: 150px; }\n"
+    ".book .repl-output { max-height: 420px; }\n"
+    ".classic { margin: 34px 0 46px; }\n"
+    ".classic h3, .demo h2 { margin: 0 0 8px; font-family: var(--font-display); font-size: clamp(24px, 3vw, 32px); letter-spacing: -.025em; }\n"
+    ".classic p, .demo p { max-width: 62ch; }\n"
+    ".classic-try { margin: 10px 0 0; color: var(--color-dim); font-family: var(--font-mono); font-size: 12px; }\n"
+    ".classic-link { display: inline-block; margin-top: 10px; color: var(--color-accent); font-family: var(--font-mono); font-size: 12px; text-decoration: none; }\n"
+    ".classic-link:hover { text-decoration: underline; }\n"
+    ".book .next { margin-top: 56px; padding-top: 28px; border-top: 1px solid var(--color-line); }\n"
+    ".book .next h2 { margin: 0 0 12px; font-family: var(--font-display); font-size: 30px; letter-spacing: -.02em; }\n"
+    ".book .next .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }\n"
+    "@media (max-width: 900px) { .book-shell { grid-template-columns: minmax(0, 1fr); padding-top: 28px; } .book-toc { position: static; } .book-toc ol { display: flex; flex-wrap: wrap; gap: 2px 12px; border-left: 0; } .book-toc a { padding: 3px 0; } .book { max-width: none; } }\n"))
+
+(defun book-view ()
+  (el "div" (list (attr :class "site book-site") (attr :id "top"))
+    (list
+      (nav)
+      (el "div" (list (attr :class "book-shell"))
+        (list
+          (book-toc)
+          (el "main" (list (attr :class "book"))
+            (list
+              (el "p" (list (attr :class "kicker")) (list (txt (book-copy :book :eyebrow))))
+              (el "h1" nil (list (txt (book-copy :book :title))))
+              (el "p" (list (attr :class "book-lede")) (list (txt (book-copy :book :lede))))
+
+              (book-chapter "origins" "01" (book-copy :book :origins-title) (book-copy :book :origins-lede)
+                (list
+                  (book-p (book-copy :book :origins-p1))
+                  (book-p (book-copy :book :origins-p2))
+                  (book-p (book-copy :book :origins-p3))
+                  (book-note (book-copy :book :origins-note))))
+
+              (book-chapter "forms" "02" (book-copy :book :forms-title) (book-copy :book :forms-lede)
+                (list
+                  (book-p (book-copy :book :forms-p1))
+                  (book-p (book-copy :book :forms-p2))
+                  (code-block "(+ 2 (* 3 4))\n\n(if (< 3 5) \"yes\" \"no\")")
+                  (book-p (book-copy :book :forms-p3))
+                  (book-repl "forms" "Read a form" "The outer list is the expression. Evaluate it, then change it." "(+ 2 (* 3 4))\n\n(if (< 3 5)\n    \"yes\"\n    \"no\")" 7)
+                  (book-note (book-copy :book :forms-note))))
+
+              (book-chapter "atoms" "03" (book-copy :book :atoms-title) (book-copy :book :atoms-lede)
+                (list
+                  (book-p (book-copy :book :atoms-p1))
+                  (book-p (book-copy :book :atoms-p2))
+                  (code-block "(list 42 \"hello\" #t #f nil :name)\n\n'name")
+                  (book-repl "atoms" "Atoms and names" "Numbers, strings, booleans, nil, keywords, and quoted symbols." "(list 42 \"hello\" #t #f nil :name)\n\n'name" 7)
+                  (book-p (book-copy :book :atoms-p3))
+                  (book-note (book-copy :book :atoms-note))))
+
+              (book-chapter "defun" "04" (book-copy :book :defun-title) (book-copy :book :defun-lede)
+                (list
+                  (book-p (book-copy :book :defun-p1))
+                  (code-block "(defun square (x)\n  (* x x))\n\n(square 9)")
+                  (book-repl "defun" "Name a transformation" "Define a function, then call it." "(defun square (x)\n  (* x x))\n\n(square 9)" 8)
+                  (book-p (book-copy :book :defun-p2))
+                  (code-block "(let ((x 2) (y 3))\n  (+ (* x x) (* y y)))")
+                  (book-p (book-copy :book :defun-p3))
+                  (book-repl "conditionals" "Choose a branch" "if and cond decide which forms run." "(if (< 3 5)\n    \"yes\"\n    \"no\")\n\n(cond\n  ((= 1 2) \"one\")\n  ((= 1 1) \"two\")\n  (else \"other\"))" 9)
+                  (book-note (book-copy :book :defun-note))))
+
+              (book-chapter "lists" "05" (book-copy :book :thinking-title) (book-copy :book :thinking-lede)
+                (list
+                  (book-p (book-copy :book :thinking-p1))
+                  (code-block "(defun square (x) (* x x))\n\n(map 'square (range 1 6))")
+                  (book-repl "lists" "Walk a list" "first, rest, cons, map, filter, and reduce are the verbs." "(defun square (x)\n  (* x x))\n\n(defun small? (n)\n  (< n 4))\n\n(list\n  (map 'square (range 1 6))\n  (filter 'small? (range 1 6)))" 10)
+                  (book-p (book-copy :book :thinking-p2))
+                  (book-p (book-copy :book :thinking-p3))
+                  (book-note (book-copy :book :thinking-note))))
+
+              (book-chapter "recursion" "06" (book-copy :book :recursion-title) (book-copy :book :recursion-lede)
+                (list
+                  (book-p (book-copy :book :recursion-p1))
+                  (code-block "(defun count-down (n)\n  (if (= n 0)\n      0\n      (+ 1 (count-down (- n 1)))))")
+                  (book-repl "recursion" "A loop made of calls" "Base case first, then one step and a smaller call." "(defun count-down (n)\n  (if (= n 0)\n      0\n      (+ 1 (count-down (- n 1)))))\n\n(count-down 10)" 9)
+                  (book-p (book-copy :book :recursion-p2))
+                  (book-p (book-copy :book :recursion-p3))
+                  (book-note (book-copy :book :recursion-note))))
+
+              (el "section" (list (attr :class "chapter") (attr :id "classics"))
+                (list
+                  (el "div" (list (attr :class "chapter-head"))
+                    (list
+                      (el "span" (list (attr :class "chapter-number")) (list (txt "07")))
+                      (el "h2" nil (list (txt (book-copy :book :classics-title))))))
+                  (el "p" (list (attr :class "chapter-lede")) (list (txt (book-copy :book :classics-lede))))
+
+                  (el "section" (list (attr :class "classic") (attr :id "fibonacci"))
+                    (list
+                      (el "h3" nil (list (txt (book-copy :book :fib-title))))
+                      (book-p (book-copy :book :fib-body))
+                      (book-repl "fibonacci" "Fibonacci" (book-copy :book :fib-try) (book-code-for "fibonacci" lisp-code) 14)
+                      (el "a" (list (attr :class "classic-link") (attr :href "demos.html#fibonacci")) (list (txt "Open the larger demo →")))))
+
+                  (el "section" (list (attr :class "classic") (attr :id "sieve"))
+                    (list
+                      (el "h3" nil (list (txt (book-copy :book :sieve-title))))
+                      (book-p (book-copy :book :sieve-body))
+                      (book-repl "sieve" "Prime sieve" (book-copy :book :sieve-try) (book-code-for "sieve" lisp-code) 20)
+                      (el "a" (list (attr :class "classic-link") (attr :href "demos.html#sieve")) (list (txt "Open the larger demo →")))))
+
+                  (el "section" (list (attr :class "classic") (attr :id "hanoi"))
+                    (list
+                      (el "h3" nil (list (txt (book-copy :book :hanoi-title))))
+                      (book-p (book-copy :book :hanoi-body))
+                      (book-repl "hanoi" "Towers of Hanoi" (book-copy :book :hanoi-try) (book-code-for "hanoi" lisp-code) 12)
+                      (el "a" (list (attr :class "classic-link") (attr :href "demos.html#hanoi")) (list (txt "Open the larger demo →")))))
+
+                  (el "section" (list (attr :class "classic") (attr :id "life"))
+                    (list
+                      (el "h3" nil (list (txt (book-copy :book :life-title))))
+                      (book-p (book-copy :book :life-body))
+                      (book-repl "life" "Game of Life" (book-copy :book :life-try) (book-code-for "life" lisp-code) 24)
+                      (el "a" (list (attr :class "classic-link") (attr :href "demos.html#life")) (list (txt "Open the larger demo →")))))))
+
+              (el "section" (list (attr :class "next") (attr :id "next"))
+                (list
+                  (el "h2" nil (list (txt (book-copy :book :next-title))))
+                  (book-p (book-copy :book :next-body))
+                  (el "div" (list (attr :class "actions"))
+                    (list
+                      (a "demos.html" "btn primary" (list (txt (book-copy :book :next-demos-label))))
+                      (a "docs/" "btn" (list (txt (book-copy :book :next-docs-label))))
+                      (a "https://github.com/ajmwagar/soil" "btn" (list (txt (book-copy :book :next-source-label))))))))))))
+      (book-footer)
+      (el "script" (list (attr :type "module") (attr :src "repl.js")) nil))))
+
+(defun main ()
+  (println
+    (render-page
+      (book-copy :book :title)
+      (book-styles)
+      (book-view))))

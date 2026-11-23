@@ -23,11 +23,12 @@ let timer = null;
 let building = false;
 let pending = false;
 
-const watchDirs = ["site", "core", "std", "examples/ui"]
+const watchDirs = ["site", "core", "std", "examples/ui", "examples/lisp"]
   .map((dir) => path.join(root, dir))
   .filter((dir) => fs.existsSync(dir));
 const generated = new Set([
   path.join(root, "site", "examples-code.soil"),
+  path.join(root, "site", "lisp-code.soil"),
 ]);
 const docsFiles = new Set([
   path.join(root, "site", "docs-copy.soil"),

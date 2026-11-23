@@ -15,10 +15,12 @@
           (el "nav" (list (attr :class "nav-links"))
             (list
               (a "getting-started.html" "" (list (txt (copy :nav :start))))
-              (a "#language" "" (list (txt (copy :nav :language))))
-              (a "#library" "" (list (txt (copy :nav :core))))
-              (a "#loam" "" (list (txt (copy :nav :loam))))
-              (a "#examples" "" (list (txt (copy :nav :examples))))
+              (a "lisp-101.html" "" (list (txt (copy :nav :book))))
+              (a "demos.html" "" (list (txt (copy :nav :demos))))
+              (a "/#language" "" (list (txt (copy :nav :language))))
+              (a "/#library" "" (list (txt (copy :nav :core))))
+              (a "/#loam" "" (list (txt (copy :nav :loam))))
+              (a "/#examples" "" (list (txt (copy :nav :examples))))
               (a "docs/" "" (list (txt (copy :nav :api))))
           (a "https://github.com/ajmwagar/soil" "nav-source"
             (list (txt (copy :nav :github)))))))))))
@@ -82,7 +84,7 @@
               (list (txt (example-code-for slug example-code))))))))))
 
 (defun repl-panel (title code)
-  (el "aside" (list (attr :class "repl repl-compact") (attr :aria-labelledby "try-repl-title"))
+  (el "aside" (list (attr :class "repl repl-compact") (attr :data-repl-id "try") (attr :aria-labelledby "try-repl-title"))
     (list
       (el "div" (list (attr :class "repl-head"))
         (list

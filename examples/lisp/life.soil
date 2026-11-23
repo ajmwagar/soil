@@ -1,0 +1,80 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Conway's Game of Life: a board is a list of rows.
+; Each generation returns a new board; nothing is mutated.
+
+(defun bit (ch)
+  (if (= ch "O") 1 0))
+
+(defun row (pattern)
+  (map 'bit (string-chars pattern)))
+
+(defun glider ()
+  (list
+    (row "........")
+    (row "..O.....")
+    (row "...O....")
+    (row ".OOO....")
+    (row "........")
+    (row "........")
+    (row "........")
+    (row "........")))
+
+(defun offsets ()
+  (list (list -1 -1) (list -1 0) (list -1 1)
+        (list 0 -1)             (list 0 1)
+        (list 1 -1)  (list 1 0) (list 1 1)))
+
+(defun in-bounds? (board r c)
+  (and (>= r 0)
+       (>= c 0)
+       (< r (length board))
+       (< c (length (first board)))))
+
+(defun live? (board r c)
+  (and (in-bounds? board r c)
+       (= (nth c (nth r board)) 1)))
+
+(defun neighbor-sum (board r c offsets)
+  (if (nil? offsets)
+      0
+      (+ (if (live? board
+                    (+ r (first (first offsets)))
+                    (+ c (nth 1 (first offsets))))
+             1 0)
+         (neighbor-sum board r c (rest offsets)))))
+
+(defun next-cell (alive n)
+  (if alive
+      (if (or (= n 2) (= n 3)) 1 0)
+      (if (= n 3) 1 0)))
+
+(defun next-row (board r c)
+  (if (>= c (length (first board)))
+      nil
+      (cons
+        (next-cell (live? board r c)
+                   (neighbor-sum board r c (offsets)))
+        (next-row board r (+ c 1)))))
+
+(defun next-board (board r)
+  (if (>= r (length board))
+      nil
+      (cons (next-row board r 0) (next-board board (+ r 1)))))
+
+(defun cell-char (cell)
+  (if (= cell 1) "█" "·"))
+
+(defun row-string (row)
+  (string-join (map 'cell-char row) ""))
+
+(defun board-string (board)
+  (string-join (map 'row-string board) "\n"))
+
+(defun generations (board n)
+  (if (= n 0)
+      (board-string board)
+      (str (board-string board) "\n\n"
+           (generations (next-board board 0) (- n 1)))))
+
+; Try 1, 4, or 8 generations. The glider should walk down and right.
+(generations (glider) 4)

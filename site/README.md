@@ -4,9 +4,14 @@ Design brief: [`DESIGN.md`](DESIGN.md).
 
 The Soil landing page and getting-started guide, written as `.soil` views.
 
-All wording lives in `site/copy.soil`. `site/soil-lang.soil` owns the landing
-structure and CSS; `site/getting-started.soil` owns the guide. The inline
-examples live in `examples/ui/`.
+All landing/guide wording lives in `site/copy.soil`. `site/soil-lang.soil`
+owns the shared landing structure and CSS; `site/getting-started.soil` owns the
+guide. The inline UI examples live in `examples/ui/`.
+
+The Lisp 101 book and interactive demos have their own copy in
+`site/book-copy.soil` and use `site/soil-lang.soil` for shared chrome. Their
+programs live in `examples/lisp/` and are generated into `site/lisp-code.soil`
+by `site/gen-examples.py`.
 
 Build the static site with a compatible `soil-lang` binary from the bootstrap
 compiler or another host:
@@ -15,6 +20,8 @@ compiler or another host:
 SOIL_LANG=/path/to/soil-lang ./site/build.sh
 # site/dist/index.html
 # site/dist/getting-started.html
+# site/dist/lisp-101.html
+# site/dist/demos.html
 # site/dist/examples/*.html
 ```
 

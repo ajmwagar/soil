@@ -58,6 +58,28 @@ run_soil \
   site/getting-started.soil \
   > site/dist/getting-started.html
 
+run_soil \
+  core/prelude.soil \
+  core/ui.soil \
+  core/highlight.soil \
+  site/copy.soil \
+  site/book-copy.soil \
+  site/lisp-code.soil \
+  site/soil-lang.soil \
+  site/lisp-101.soil \
+  > site/dist/lisp-101.html
+
+run_soil \
+  core/prelude.soil \
+  core/ui.soil \
+  core/highlight.soil \
+  site/copy.soil \
+  site/book-copy.soil \
+  site/lisp-code.soil \
+  site/soil-lang.soil \
+  site/demos.soil \
+  > site/dist/demos.html
+
 for slug in counter todo calculator tictactoe tabs form; do
   run_soil \
     core/prelude.soil \

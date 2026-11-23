@@ -74,25 +74,30 @@ if (panels.length) {
     }
   }
 
-  function readHistory() {
+  function readHistory(key) {
     try {
-      const value = JSON.parse(readStorage(STORAGE_HISTORY, "[]"));
+      const value = JSON.parse(readStorage(key, "[]"));
       return Array.isArray(value) ? value : [];
     } catch {
       return [];
     }
   }
 
-  function sharedSource() {
-    if (!location.hash.startsWith("#repl=")) return null;
+  function sharedSource(panelId) {
+    const prefix = `#repl-${panelId}=`;
+    const legacy = panels.length === 1 && location.hash.startsWith("#repl=");
+    if (!location.hash.startsWith(prefix) && !legacy) return null;
     try {
-      return decodeSource(location.hash.slice("#repl=".length));
+      return decodeSource(location.hash.slice(legacy ? "#repl=".length : prefix.length));
     } catch {
       return null;
     }
   }
 
-  function setup(panel) {
+  function setup(panel, index) {
+    const panelId = panel.dataset.replId || `panel-${index}`;
+    const sourceKey = `${STORAGE_SOURCE}:${panelId}`;
+    const historyKey = `${STORAGE_HISTORY}:${panelId}`;
     const input = panel.querySelector(".repl-input");
     const highlighted = panel.querySelector(".repl-highlight code");
     const highlightBox = panel.querySelector(".repl-highlight");
@@ -101,7 +106,7 @@ if (panels.length) {
     const runButton = panel.querySelector(".repl-run");
     const shareButton = panel.querySelector(".repl-share");
     const liveToggle = panel.querySelector(".repl-live-toggle");
-    const past = readHistory();
+    const past = readHistory(historyKey);
     let historyIndex = past.length;
     let session = null;
     let timer = null;
@@ -122,8 +127,9 @@ if (panels.length) {
     }
 
     function saveSource() {
-      writeStorage(STORAGE_SOURCE, input.value);
-      if (location.hash.startsWith("#repl=")) {
+      writeStorage(sourceKey, input.value);
+      const legacy = panels.length === 1 && location.hash.startsWith("#repl=");
+      if (location.hash.startsWith(`#repl-${panelId}=`) || legacy) {
         history.replaceState(null, "", `${location.pathname}${location.search}`);
       }
     }
@@ -143,7 +149,7 @@ if (panels.length) {
       setStatus(error ? "error" : "ran", error);
       past.push(source);
       historyIndex = past.length;
-      writeStorage(STORAGE_HISTORY, JSON.stringify(past.slice(-HISTORY_LIMIT)));
+      writeStorage(historyKey, JSON.stringify(past.slice(-HISTORY_LIMIT)));
     }
 
     function schedule() {
@@ -152,8 +158,8 @@ if (panels.length) {
       timer = setTimeout(run, 450);
     }
 
-    const shared = sharedSource();
-    const saved = readStorage(STORAGE_SOURCE, "");
+    const shared = sharedSource(panelId);
+    const saved = readStorage(sourceKey, "");
     if (shared !== null) input.value = shared;
     else if (saved) input.value = saved;
 
@@ -192,7 +198,7 @@ if (panels.length) {
     if (shareButton) {
       shareButton.addEventListener("click", async () => {
         const encoded = encodeSource(input.value);
-        history.replaceState(null, "", `#repl=${encoded}`);
+        history.replaceState(null, "", `${location.pathname}${location.search}#repl-${panelId}=${encoded}`);
         try {
           await navigator.clipboard.writeText(location.href);
           setStatus("link copied");
@@ -206,6 +212,7 @@ if (panels.length) {
     });
 
     document.addEventListener("click", (event) => {
+      if (panel !== panels[0]) return;
       const button = event.target instanceof Element ? event.target.closest(".doc-try") : null;
       if (!button) return;
       input.value = button.dataset.try || "";
@@ -230,5 +237,5 @@ if (panels.length) {
       });
   }
 
-  for (const panel of panels) setup(panel);
+  for (const [index, panel] of Array.from(panels).entries()) setup(panel, index);
 }

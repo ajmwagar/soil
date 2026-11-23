@@ -26,6 +26,8 @@
           (el "nav" (list (attr :class "nav-links"))
             (list
               (a "/" "" (list (txt (copy :guide :home-label))))
+              (a "lisp-101.html" "" (list (txt (copy :nav :book))))
+              (a "demos.html" "" (list (txt (copy :nav :demos))))
               (a "/#examples" "" (list (txt (copy :nav :examples))))
               (a "docs/" "" (list (txt (copy :nav :api))))
           (a "https://github.com/ajmwagar/soil" "nav-source"
@@ -38,6 +40,8 @@
       (el "div" (list (attr :class "footer-links"))
         (list
           (a "/" "" (list (txt (copy :guide :home-label))))
+          (a "lisp-101.html" "" (list (txt (copy :nav :book))))
+          (a "demos.html" "" (list (txt (copy :nav :demos))))
           (a "/#examples" "" (list (txt (copy :nav :examples))))
           (a "docs/" "" (list (txt (copy :nav :api))))))
       (el "div" nil (list (txt (copy :footer :license)))))))
