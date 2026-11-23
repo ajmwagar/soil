@@ -18,6 +18,7 @@ pub mod witgen;
 pub use core::{Expr, Function, Program, parse};
 pub use eval::{FakeHost, Host, HostChain, Runtime, value_to_json as to_json};
 pub use http_stream::HttpSession;
+pub use process_host::ProcessHost;
 pub use lisp::{Compiled as CompiledLisp, compile_source as compile_lisp};
 pub use native_host::NativeHost;
 pub use records_host::SoilRecordsHost;

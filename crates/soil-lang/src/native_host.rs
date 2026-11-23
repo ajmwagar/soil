@@ -10,7 +10,7 @@ use soil::vfs_host::vfs_mut::Host as VfsMutHostTrait;
 use soil::vfs_host::{VfsHost, vfs, vfs_mut};
 
 use crate::sexp::Value;
-use crate::{Host, HttpSession, SessionHost, SoilRecordsHost, SystemTimeHost};
+use crate::{Host, HttpSession, ProcessHost, SessionHost, SoilRecordsHost, SystemTimeHost};
 use soil_inference_host::Resource;
 use std::collections::HashMap;
 
@@ -24,6 +24,7 @@ pub struct NativeHost {
     http_streams: HashMap<i64, HttpSession>,
     next_http_stream: i64,
     session: Option<SessionHost>,
+    process: Option<ProcessHost>,
 }
 
 impl NativeHost {
@@ -42,6 +43,7 @@ impl NativeHost {
             http_streams: HashMap::new(),
             next_http_stream: 1,
             session: None,
+            process: None,
         })
     }
 
@@ -169,6 +171,11 @@ impl Host for NativeHost {
                     | "[method]session.write"
                     | "[method]session.close"
             ),
+            "wasi:clocks" => true,
+            "soil:process" => {
+                let result = self.process.is_some();
+                result
+            }
             "session" => self.session.is_some() && function == "exec",
             _ => false,
         }
@@ -180,6 +187,7 @@ impl Host for NativeHost {
         function: &str,
         args: &[Value],
     ) -> std::result::Result<Value, String> {
+        eprintln!("granted called: interface=[{}], function=[{}], process.is_some={}", interface, function, self.process.is_some());
         match interface {
             "soil:time" => self.time.call(interface, function, args),
             "soil:records" => self.records.call(interface, function, args),
@@ -187,6 +195,12 @@ impl Host for NativeHost {
             "soil:vfs-mut" => self.call_vfs_mut(function, args),
             "soil:inference" => self.call_inference(function, args),
             "soil:streams" => self.call_stream(function, args),
+            "wasi:clocks" => self.time.call(interface, function, args),
+            "soil:process" => {
+                eprintln!("call soil:process: process.is_some={}", self.process.is_some());
+                let host = self.process.as_mut().ok_or_else(|| "soil:process is not enabled".to_string())?;
+                host.call(interface, function, args)
+            }
             "session" => self
                 .session
                 .as_mut()
@@ -469,6 +483,12 @@ impl NativeHost {
     pub fn with_session(mut self, root: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
         self.session = Some(SessionHost::open(root)?);
         Ok(self)
+    }
+
+    pub fn with_process(mut self) -> Self {
+        self.process = Some(ProcessHost::new());
+        eprintln!("with_process called, process is_some={}", self.process.is_some());
+        self
     }
 
     pub fn with_inference(

@@ -83,19 +83,25 @@ impl SoilRecordsHost {
         cursor: Option<String>,
         limit: usize,
     ) -> std::result::Result<Value, String> {
-        let cursor = cursor.map(|cursor| Self::scoped(collection, &cursor));
+        let cursor = cursor;
         let records = self
             .store
             .scan_records(&self.book, cursor.as_deref(), 4096)
             .map_err(|error| error.to_string())?;
         let prefix = format!("{collection}:");
+        let total = records.len();
+        let next = if total >= 4096 {
+            records.last().map(|r| Self::unscoped(collection, &r.entity_id))
+        } else {
+            None
+        };
         let entries: Vec<_> = records
             .into_iter()
             .filter(|record| collection.is_empty() || record.entity_id.starts_with(&prefix))
             .take(limit)
             .map(|record| Self::entry_value(collection, record))
             .collect();
-        Ok(page_value(entries))
+        Ok(page_value(entries, next))
     }
 
     fn get_entry(&self, collection: &str, id: &str) -> std::result::Result<Option<Value>, String> {
@@ -249,10 +255,13 @@ fn pair(name: &str, value: Value) -> Value {
     Value::List(vec![Value::Keyword(name.to_string()), value])
 }
 
-fn page_value(entries: Vec<Value>) -> Value {
+fn page_value(entries: Vec<Value>, next: Option<String>) -> Value {
     Value::List(vec![
         pair("entries", Value::List(entries)),
-        pair("next", Value::Nil),
+        pair("next", match next {
+            Some(cursor) => Value::String(cursor),
+            None => Value::Nil,
+        }),
     ])
 }
 
