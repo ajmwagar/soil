@@ -149,10 +149,34 @@ set -- --prelude "$SHARE/core/prelude.soil" --call main \
   "$SHARE/std/bindings/wasi-io.generated.soil" \
   "$SHARE/std/bindings/wasi-cli.generated.soil" \
   "$SHARE/std/wasi/stdio.soil" "$SHARE/std/wasi/fs.soil" \
+  "$SHARE/compiler/core.soil" \
   "$SHARE/tools/tend/manifest.soil" "$SHARE/tools/tend/dispatch.soil" \
-  "$SHARE/tools/tend/run.soil" "$SHARE/tools/tend/init.soil" "$SHARE/tools/tend/main.soil"
+  "$SHARE/tools/tend/run.soil" "$SHARE/tools/tend/init.soil" \
+  "$SHARE/tools/tend/build.soil" "$SHARE/tools/tend/main.soil"
 while IFS= read -r arg; do set -- "$@" --arg "$arg"; done < "$tmp"
-exec wasmtime run --dir . --dir "$SHARE" "$WASM" "$@"
+
+# Soil emits the core module; the canonical ABI is wasm-tools' job, which the
+# sandbox cannot run (no process capability). The guest owns the result line;
+# this side only finishes the component, and clears stale artifacts first so a
+# refused build cannot be mistaken for a successful one.
+rm -f build/module.wat build/world.txt build/embed.wasm
+set +e
+wasmtime run --dir . --dir "$SHARE" "$WASM" "$@"
+STATUS=$?
+set -e
+[ "$STATUS" -eq 0 ] || exit "$STATUS"
+[ -f build/module.wat ] || exit 0
+WORLD=$(cat build/world.txt 2>/dev/null || true)
+if [ -z "$WORLD" ]; then
+  printf '(err "build produced a module with no world")\n' >&2
+  exit 1
+fi
+if ! command -v wasm-tools >/dev/null 2>&1; then
+  printf '(err "wasm-tools not found: build/module.wat left for a host that has it")\n' >&2
+  exit 1
+fi
+wasm-tools component embed wit --world "$WORLD" build/module.wat -o build/embed.wasm
+wasm-tools component new build/embed.wasm -o module.wasm
 TEND
 chmod +x "$DEST/bin/tend"
 

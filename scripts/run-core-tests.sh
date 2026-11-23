@@ -136,4 +136,16 @@ for test_file in "${TESTS[@]}"; do
 done
 
 printf '\n%d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
+
+# The Spore build path is a shell gate, not a Soil test: it needs wasm-tools to
+# componentize. Skipped (not failed) when the tool is absent.
+if command -v wasm-tools >/dev/null 2>&1; then
+  if ! SOIL_WASM="$WASM" "$ROOT/scripts/test-tend-build.sh"; then
+    failed=$((failed + 1))
+  fi
+else
+  echo "SKIP test-tend-build: wasm-tools not installed"
+  skipped=$((skipped + 1))
+fi
+
 [ "$failed" -eq 0 ]

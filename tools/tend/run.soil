@@ -25,7 +25,11 @@
     (if (not (ok? dispatch))
         dispatch
         (let ((command (value dispatch)))
-          (if (= (field command :kind) "project")
-              (tend/run-project command)
+          (cond
+            ((= (field command :kind) "project")
+              (tend/run-project command))
+            ((= (field command :name) "build")
+              (tend/build (field command :args)))
+            (else
               (list 'err (str "builtin command execution is not wired yet: "
-                              (field command :name))))))))
+                              (field command :name)))))))))
