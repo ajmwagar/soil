@@ -26,3 +26,14 @@ Then send:
 ```
 
 The first call returns `1`; the second returns `2` without restarting the image.
+
+## SSR page
+
+```json
+{"op":"load","session":"app","path":"examples/live-image/page.soil"}
+{"op":"eval","session":"app","source":"(page/render)"}
+{"op":"eval","session":"app","source":"(defun page/title () \"Live Soil v2\")"}
+{"op":"eval","session":"app","source":"(page/render)"}
+```
+
+The HTML changes while the image stays alive.
