@@ -12,3 +12,6 @@
 
 (defun fs/list (path)
   (host-call "wasi:filesystem" "list" (list path)))
+
+(defun fs/mkdir (path)
+  (host-call "wasi:filesystem" "mkdir" (list path)))

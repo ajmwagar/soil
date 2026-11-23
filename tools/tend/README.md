@@ -43,3 +43,15 @@ in each implementation file:
 ```
 
 `tend/wit-plan` returns the mapping as data for the compiler or build step.
+
+## Init
+
+```sh
+tend init spore my-app
+tend init library my-lib
+tend init plugin my-plugin
+tend init workspace my-spores
+```
+
+`init` refuses to overwrite an existing file. It writes the manifest, source
+stub, test stub, and README for the selected package kind.

@@ -4,7 +4,7 @@
 ;   soil-wasm ... --call main tools/tend/main.soil --arg fmt
 
 (defun tend/usage ()
-  "usage: tend <command> [args...]")
+  "usage: tend <command> [args...]\n       tend init <spore|library|plugin|workspace> <name>")
 
 (defun tend/manifest-path ()
   (let ((path (getenv "TEND_MANIFEST")))
@@ -14,11 +14,13 @@
   (let ((args (argv)))
     (if (nil? args)
         (println (tend/usage))
-        (let ((manifest (fs/read (tend/manifest-path))))
+        (if (= (first args) "init")
+            (println (str (tend/init (rest args))))
+            (let ((manifest (fs/read (tend/manifest-path))))
           (if (ok? manifest)
               (let ((result (tend/run-command
                               (value manifest)
                               (first args)
                               (rest args))))
                 (if (nil? result) nil (println (str result))))
-              (println (str manifest)))))))
+              (println (str manifest))))))))

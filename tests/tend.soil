@@ -151,3 +151,21 @@
                (= (field (first (field (value plan) :interfaces)) :name)
                   "acme:counter/math")))
         #f)))
+
+(defun test/tend-init-plan ()
+  (let ((plan (tend/init-plan "spore" "demo")))
+    (and (= (field plan :kind) "spore")
+         (= (field plan :root) "demo")
+         (= (length (field plan :files)) 5)
+         (= (field (first (field plan :files)) :path) "demo/tend.soil"))))
+
+(defun test/tend-init-library-plan ()
+  (let ((plan (tend/init-plan "library" "demo-lib")))
+    (and (= (field plan :root) "demo-lib")
+         (= (field (first (field plan :files)) :path) "demo-lib/tend.soil")
+         (string-contains? (field (first (field plan :files)) :text) "lib/*.soil"))))
+
+(defun test/tend-init-workspace-plan ()
+  (let ((plan (tend/init-plan "workspace" "unused")))
+    (and (= (field plan :root) ".")
+         (= (field plan :dirs) (list "spores" "patches")))))
