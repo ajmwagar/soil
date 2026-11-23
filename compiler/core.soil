@@ -19,11 +19,11 @@
       (str " (param $" (first params) " i64)"
            (compiler/params (rest params)))))
 
-(defun compiler/call-args (args)
+(defun compiler/call-args (args texts)
   (if (nil? args)
       ""
-      (str (compiler/expr (first args))
-           (compiler/call-args (rest args)))))
+      (str (compiler/expr (first args) texts)
+           (compiler/call-args (rest args) texts))))
 
 (defun compiler/binary-op (head)
   (cond
@@ -46,50 +46,104 @@
     ((= head "or") "i64.or")
     (else nil)))
 
-(defun compiler/expr (expr)
+(defun compiler/string-member? (text texts)
+  (cond
+    ((nil? texts) #f)
+    ((= text (first texts)) #t)
+    (else (compiler/string-member? text (rest texts)))))
+
+(defun compiler/strings-in (form texts)
+  (cond
+    ((string? form)
+      (if (compiler/string-member? form texts) texts (cons form texts)))
+    ((atom form) texts)
+    ((and (not (atom form))
+          (or (= (str (first form)) "quote")
+              (= (str (first form)) "import")
+              (= (str (first form)) "export")
+              (= (str (first form)) "package")
+              (= (str (first form)) "world")))
+      texts)
+    (else
+      (compiler/strings-in
+        (rest form)
+        (compiler/strings-in (first form) texts)))))
+
+(defun compiler/string-literals (forms)
+  (if (nil? forms)
+      nil
+      (compiler/strings-in (first forms)
+        (compiler/string-literals (rest forms)))))
+
+(defun compiler/string-len (text)
+  (length (string->bytes text)))
+
+(defun compiler/string-offset (text texts offset)
+  (cond
+    ((nil? texts) nil)
+    ((= text (first texts)) offset)
+    (else
+      (compiler/string-offset text (rest texts)
+        (+ offset (compiler/string-len (first texts)))))))
+
+(defun compiler/string-data (texts offset)
+  (if (nil? texts)
+      ""
+      (str "  (data (i32.const " offset ") " (json-encode (first texts)) ")\n"
+           (compiler/string-data (rest texts)
+             (+ offset (compiler/string-len (first texts)))))))
+
+(defun compiler/expr (expr texts)
   (cond
     ((symbol? expr)
       (str "    local.get $" expr "\n"))
+    ((string? expr)
+      (str "    i32.const " (compiler/string-offset expr texts 65536) "\n"))
     ((atom expr)
       (str "    i64.const " expr "\n"))
+    ((= (str (first expr)) "string-ptr")
+      (str "    i32.const "
+           (compiler/string-offset (nth 1 expr) texts 65536) "\n"))
+    ((= (str (first expr)) "string-len")
+      (str "    i32.const " (compiler/string-len (nth 1 expr)) "\n"))
     ((= (str (first expr)) "begin")
-      (compiler/body-drop (rest expr)))
+      (compiler/body-drop (rest expr) texts))
     ((= (str (first expr)) "if")
-      (str (compiler/expr (nth 1 expr))
+      (str (compiler/expr (nth 1 expr) texts)
            "    i32.wrap_i64\n"
            "    if (result i64)\n"
-           (compiler/expr (nth 2 expr))
+           (compiler/expr (nth 2 expr) texts)
            "    else\n"
-           (compiler/expr (nth 3 expr))
+           (compiler/expr (nth 3 expr) texts)
            "    end\n"))
     ((= (str (first expr)) "i32.const")
       (str "    i32.const " (nth 1 expr) "\n"))
     ((= (str (first expr)) "i32.load")
-      (str (compiler/expr (nth 1 expr)) "    i32.load\n"))
+      (str (compiler/expr (nth 1 expr) texts) "    i32.load\n"))
     ((= (str (first expr)) "i64.load")
-      (str (compiler/expr (nth 1 expr)) "    i64.load\n"))
+      (str (compiler/expr (nth 1 expr) texts) "    i64.load\n"))
     ((= (str (first expr)) "i32.add")
-      (str (compiler/expr (nth 1 expr)) (compiler/expr (nth 2 expr)) "    i32.add\n"))
+      (str (compiler/expr (nth 1 expr) texts) (compiler/expr (nth 2 expr) texts) "    i32.add\n"))
     ((= (str (first expr)) "i32.store")
-      (str (compiler/expr (nth 1 expr)) (compiler/expr (nth 2 expr)) "    i32.store\n"))
+      (str (compiler/expr (nth 1 expr) texts) (compiler/expr (nth 2 expr) texts) "    i32.store\n"))
     ((= (str (first expr)) "i32.store8")
-      (str (compiler/expr (nth 1 expr)) (compiler/expr (nth 2 expr)) "    i32.store8\n"))
+      (str (compiler/expr (nth 1 expr) texts) (compiler/expr (nth 2 expr) texts) "    i32.store8\n"))
     ((= (str (first expr)) "i32.store-at")
       (str "    local.get $base\n"
-           (compiler/expr (nth 2 expr))
+           (compiler/expr (nth 2 expr) texts)
            "    i32.store8 offset=" (nth 1 expr) "\n"))
     ((= (str (first expr)) "f32.store-at")
       (str "    local.get $base\n"
-           (compiler/expr (nth 2 expr))
+           (compiler/expr (nth 2 expr) texts)
            "    f32.store offset=" (nth 1 expr) "\n"))
     ((= (str (first expr)) "i32.const32")
       (str "    i32.const " (nth 1 expr) "\n"))
     ((= (str (first expr)) "f32.const")
       (str "    f32.const " (nth 1 expr) "\n"))
     ((= (str (first expr)) "i64.extend_i32_u")
-      (str (compiler/expr (nth 1 expr)) "    i64.extend_i32_u\n"))
+      (str (compiler/expr (nth 1 expr) texts) "    i64.extend_i32_u\n"))
     ((= (str (first expr)) "not")
-      (str (compiler/expr (nth 1 expr))
+      (str (compiler/expr (nth 1 expr) texts)
            "    i64.eqz\n"
            "    i64.extend_i32_u\n"))
     ((= (str (first expr)) "nth")
@@ -97,23 +151,23 @@
             (items (nth 2 expr)))
         (if (and (atom index) (not (symbol? index))
                  (not (atom items)) (= (str (first items)) "list"))
-            (compiler/expr (nth index (rest items)))
+            (compiler/expr (nth index (rest items)) texts)
             (let ((head (str (first expr))))
               (let ((op (compiler/binary-op head)))
                 (if (nil? op)
-                    (str (compiler/call-args (rest expr))
+                    (str (compiler/call-args (rest expr) texts)
                          "    call $" head "\n")
-                    (str (compiler/expr (nth 1 expr))
-                         (compiler/expr (nth 2 expr))
+                    (str (compiler/expr (nth 1 expr) texts)
+                         (compiler/expr (nth 2 expr) texts)
                          "    " op "\n")))))))
     (else
       (let ((head (str (first expr))))
         (let ((op (compiler/binary-op head)))
           (if (nil? op)
-              (str (compiler/call-args (rest expr))
+              (str (compiler/call-args (rest expr) texts)
                    "    call $" head "\n")
-              (str (compiler/expr (nth 1 expr))
-                   (compiler/expr (nth 2 expr))
+              (str (compiler/expr (nth 1 expr) texts)
+                   (compiler/expr (nth 2 expr) texts)
                    "    " op "\n")))))))
 
 (defun compiler/void? (expr)
@@ -124,27 +178,27 @@
              (= head "i32.store8")
              (= head "global.set")))))
 
-(defun compiler/body-drop (forms)
+(defun compiler/body-drop (forms texts)
   (if (nil? forms)
       ""
       (if (nil? (rest forms))
-          (compiler/expr (first forms))
-          (str (compiler/expr (first forms))
+          (compiler/expr (first forms) texts)
+          (str (compiler/expr (first forms) texts)
                (if (compiler/void? (first forms)) "" "    drop\n")
-               (compiler/body-drop (rest forms))))))
+               (compiler/body-drop (rest forms) texts)))))
 
-(defun compiler/body (forms)
+(defun compiler/body (forms texts)
   (if (nil? forms)
       ""
-      (str (compiler/expr (first forms))
-           (compiler/body (rest forms)))))
+      (str (compiler/expr (first forms) texts)
+           (compiler/body (rest forms) texts))))
 
-(defun compiler/defun (form)
+(defun compiler/defun (form texts)
   (let ((name (str (nth 1 form))))
     (str "  (func $" name " (export \"" name "\")"
          (compiler/params (nth 2 form))
          " (result i64)\n"
-         (compiler/body-drop (drop 3 form))
+         (compiler/body-drop (drop 3 form) texts)
          "  )\n")))
 
 (defun compiler/params-i32 (params)
@@ -153,20 +207,20 @@
       (str " (param $" (first params) " i32)"
            (compiler/params-i32 (rest params)))))
 
-(defun compiler/defun-i32 (form)
+(defun compiler/defun-i32 (form texts)
   (let ((name (str (nth 1 form))))
     (str "  (func $" name " (export \"" name "\")"
          (compiler/params-i32 (nth 2 form))
          " (result i32)\n"
-         (compiler/body-drop (drop 3 form))
+         (compiler/body-drop (drop 3 form) texts)
          "  )\n")))
 
-(defun compiler/defun-i32-void (form)
+(defun compiler/defun-i32-void (form texts)
   (let ((name (str (nth 1 form))))
     (str "  (func $" name " (export \"" name "\")"
          (compiler/params-i32 (nth 2 form))
          "\n"
-         (if (nil? (nth 3 form)) "" (compiler/expr (nth 3 form)))
+         (if (nil? (nth 3 form)) "" (compiler/expr (nth 3 form) texts))
          "  )\n")))
 
 
@@ -494,21 +548,21 @@
                  "    local.get $area\n"
                  "  )\n"))))))
 
-(defun compiler/forms (forms records prefix)
+(defun compiler/forms (forms records prefix texts)
   (if (nil? forms)
       ""
       (let ((form (first forms)))
         (str (cond
                ((and (not (atom form)) (= (str (first form)) "defun"))
-                 (compiler/defun form))
+                 (compiler/defun form texts))
                ((and (not (atom form)) (= (str (first form)) "defun-i32"))
-                 (compiler/defun-i32 form))
+                 (compiler/defun-i32 form texts))
                ((and (not (atom form)) (= (str (first form)) "defun-i32-void"))
-                 (compiler/defun-i32-void form))
+                 (compiler/defun-i32-void form texts))
                ((compiler/decl? form "defun-export")
                  (compiler/defun-export form records prefix))
                (else ""))
-             (compiler/forms (rest forms) records prefix)))))
+             (compiler/forms (rest forms) records prefix texts)))))
 
 
 ; ---------------------------------------------------------------------------
@@ -590,7 +644,8 @@
 
 (defun compiler/component-wat (source)
   (let ((forms (wasm/expand-forms (read source))))
-    (str "(module\n"
+    (let ((texts (compiler/string-literals forms)))
+      (str "(module\n"
          (compiler/imports forms)
          "  (memory (export \"cm32p2_memory\") 4)\n"
          "  (global $heap (mut i32) (i32.const 1024))\n"
@@ -612,8 +667,10 @@
          "    else\n"
          "      local.get $ret\n"
          "    end)\n"
-         (compiler/forms forms (compiler/records forms) (compiler/export-prefix forms))
-         ")\n")))
+         (compiler/forms forms (compiler/records forms)
+                         (compiler/export-prefix forms) texts)
+         (compiler/string-data texts 65536)
+         ")\n"))))
 
 
 ; ---------------------------------------------------------------------------
@@ -821,9 +878,11 @@
 
 (defun compiler/compile-source (source)
   (let ((forms (wasm/expand-forms (read source))))
-    (str "(module\n"
-         (compiler/forms forms (compiler/records forms) (compiler/export-prefix forms))
-         ")\n")))
+    (let ((texts (compiler/string-literals forms)))
+      (str "(module\n"
+           (compiler/forms forms (compiler/records forms)
+                           (compiler/export-prefix forms) texts)
+           ")\n"))))
 
 (defun compiler/compile-wat (source)
   (compiler/compile-source source))
