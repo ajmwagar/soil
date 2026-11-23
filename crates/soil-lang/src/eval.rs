@@ -9,7 +9,9 @@
 //! owns grants and dispatch.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 use crate::sexp::{Value, parse_all};
 use anyhow::{Context, Result, anyhow, bail};
@@ -97,12 +99,48 @@ impl Runtime {
         let path = path.as_ref();
         let source =
             std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-        self.load(&source)
+        self.load_source(path, &source)
             .with_context(|| format!("evaluate {}", path.display()))
+    }
+
+    /// Parse-cache keyed on path + mtime. A long-lived server re-loads the whole
+    /// harness for every connection; parsing dominated that cost.
+    fn cached_forms(path: &Path, source: &str) -> Result<Vec<Value>> {
+        static CACHE: OnceLock<Mutex<HashMap<PathBuf, (SystemTime, u64, Vec<Value>)>>> =
+            OnceLock::new();
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let key = path.to_path_buf();
+        let mtime = std::fs::metadata(path)
+            .and_then(|meta| meta.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let len = source.len() as u64;
+
+        if let Ok(guard) = cache.lock()
+            && let Some((cached_mtime, cached_len, forms)) = guard.get(&key)
+            && *cached_mtime == mtime
+            && *cached_len == len
+        {
+            return Ok(forms.clone());
+        }
+
+        let forms = parse_all(source)?;
+        if let Ok(mut guard) = cache.lock() {
+            guard.insert(key, (mtime, len, forms.clone()));
+        }
+        Ok(forms)
+    }
+
+    fn load_source(&mut self, path: &Path, source: &str) -> Result<Value> {
+        let forms = Self::cached_forms(path, source)?;
+        self.eval_forms(forms)
     }
 
     pub fn load(&mut self, source: &str) -> Result<Value> {
         let forms = parse_all(source)?;
+        self.eval_forms(forms)
+    }
+
+    fn eval_forms(&mut self, forms: Vec<Value>) -> Result<Value> {
         let mut last = Value::Nil;
 
         for form in forms {
