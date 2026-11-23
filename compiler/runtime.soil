@@ -1,34 +1,25 @@
 ; SPDX-License-Identifier: MIT OR Apache-2.0
-; Minimal Soil object runtime, compiled by the Soil compiler.
-; One page of linear memory; a mutable i64 heap pointer at global 0.
+; Object runtime smoke for the self-hosted compiler.
+;
+; Objects are i64 words in linear memory with a kind word:
+;
+;   cons      +0 kind=0, +8 car,  +16 cdr              (24 bytes)
+;   string    +0 kind=1, +8 length, +16 element 0 ...   (16 + 8n)
+;   symbol    +0 kind=2, +8 length, +16 element 0 ...   (16 + 8n)
+;
+; One i64 per character keeps the compiler free of byte loads for now; the
+; element is a character code, so equality is the same loop for strings and
+; symbols (rt/text-equal?).
 
 (memory 1)
 (global 16)
 
 (defconst rt/nil 0)
 
-(defun rt/cons (car cdr)
-  (let ((ptr (global.get 0)))
-    (begin
-      (i64.store (i32.wrap_i64 ptr) car)
-      (i64.store (i32.wrap_i64 (+ ptr 8)) cdr)
-      (global.set 0 (+ ptr 16))
-      ptr)))
-
-(defun rt/car (cell)
-  (i64.load (i32.wrap_i64 cell)))
-
-(defun rt/cdr (cell)
-  (i64.load (i32.wrap_i64 (+ cell 8))))
-
-; ---------------------------------------------------------------------------
-; Objects beyond cons cells.
-;
-; Values are still untagged i64s in this slice. A string/bytes object is:
-;   +0  length (i64)
-;   +8  element 0 (i64)
-;   ... element N-1
-; One i64 per element keeps the current compiler free of i64.load8/store8.
+(defconst rt/kind-cons 0)
+(defconst rt/kind-string 1)
+(defconst rt/kind-symbol 2)
+(defconst rt/kind-bytes 3)
 
 (defun rt/alloc (bytes)
   (let ((ptr (global.get 0)))
@@ -36,28 +27,149 @@
       (global.set 0 (+ ptr bytes))
       ptr)))
 
-(defun rt/string-new (length)
-  (let ((ptr (rt/alloc (+ 8 (* length 8)))))
+(defun rt/kind (object)
+  (i64.load (i32.wrap_i64 object)))
+
+;;; cons -------------------------------------------------------------------
+
+(defun rt/cons (car cdr)
+  (let ((ptr (rt/alloc 24)))
     (begin
-      (i64.store (i32.wrap_i64 ptr) length)
+      (i64.store (i32.wrap_i64 ptr) rt/kind-cons)
+      (i64.store (i32.wrap_i64 (+ ptr 8)) car)
+      (i64.store (i32.wrap_i64 (+ ptr 16)) cdr)
       ptr)))
 
-(defun rt/string-length (string)
-  (i64.load (i32.wrap_i64 string)))
+(defun rt/car (cell)
+  (i64.load (i32.wrap_i64 (+ cell 8))))
 
-(defun rt/string-get (string index)
-  (i64.load (i32.wrap_i64 (+ (+ string 8) (* index 8)))))
+(defun rt/cdr (cell)
+  (i64.load (i32.wrap_i64 (+ cell 16))))
 
-(defun rt/string-set (string index value)
-  (begin
-    (i64.store (i32.wrap_i64 (+ (+ string 8) (* index 8))) value)
-    string))
+;;; text -------------------------------------------------------------------
 
-(defun rt/test-string-length ()
-  (rt/string-length (rt/string-new 3)))
-
-(defun rt/test-string-set-get ()
-  (let ((string (rt/string-new 3)))
+(defun rt/text-new (kind length)
+  (let ((ptr (rt/alloc (+ 16 (* length 8)))))
     (begin
-      (rt/string-set string 0 65)
-      (rt/string-get string 0))))
+      (i64.store (i32.wrap_i64 ptr) kind)
+      (i64.store (i32.wrap_i64 (+ ptr 8)) length)
+      ptr)))
+
+(defun rt/string-new (length) (rt/text-new rt/kind-string length))
+(defun rt/symbol-new (length) (rt/text-new rt/kind-symbol length))
+
+(defun rt/string-length (text)
+  (i64.load (i32.wrap_i64 (+ text 8))))
+
+(defun rt/string-get (text index)
+  (i64.load (i32.wrap_i64 (+ (+ text 16) (* index 8)))))
+
+;;; The binary backend's string-literal sequence calls rt/string-new and
+;;; rt/string-set by name, so those two keep their names even though the layout
+;;; is now kind-tagged.
+(defun rt/string-set (text index value)
+  (begin
+    (i64.store (i32.wrap_i64 (+ (+ text 16) (* index 8))) value)
+    text))
+
+(defun rt/text-equal-loop (a b i n)
+  (if (>= i n)
+      1
+      (if (= (rt/string-get a i) (rt/string-get b i))
+          (rt/text-equal-loop a b (+ i 1) n)
+          0)))
+
+;;; Equality is by content, not identity, so a string can name a symbol.
+(defun rt/text-equal? (a b)
+  (if (= (rt/string-length a) (rt/string-length b))
+      (rt/text-equal-loop a b 0 (rt/string-length a))
+      0))
+
+(defun rt/string-equal? (a b) (rt/text-equal? a b))
+
+;;; byte buffers ------------------------------------------------------------
+;;;   +0 kind=3, +8 length, +16 capacity, +24 data (u8 each)
+;;; These need i32.load8_u / i32.store8 in the binary emitter, which is why the
+;;; text layout above stays one i64 per character until byte buffers arrived.
+
+(defun rt/bytes-new (capacity)
+  (let ((ptr (rt/alloc (+ 24 capacity))))
+    (begin
+      (i64.store (i32.wrap_i64 ptr) rt/kind-bytes)
+      (i64.store (i32.wrap_i64 (+ ptr 8)) 0)
+      (i64.store (i32.wrap_i64 (+ ptr 16)) capacity)
+      ptr)))
+
+(defun rt/bytes-length (bytes)
+  (i64.load (i32.wrap_i64 (+ bytes 8))))
+
+(defun rt/bytes-capacity (bytes)
+  (i64.load (i32.wrap_i64 (+ bytes 16))))
+
+(defun rt/bytes-get (bytes index)
+  (i64.extend_i32_u
+    (i32.load8_u (i32.wrap_i64 (+ (+ bytes 24) index)))))
+
+(defun rt/bytes-set (bytes index value)
+  (begin
+    (i32.store8 (i32.wrap_i64 (+ (+ bytes 24) index)) (i32.wrap_i64 value))
+    bytes))
+
+(defun rt/bytes-push (bytes value)
+  (let ((length (rt/bytes-length bytes)))
+    (begin
+      (rt/bytes-set bytes length value)
+      (i64.store (i32.wrap_i64 (+ bytes 8)) (+ length 1))
+      bytes)))
+
+;;; primitive floor ---------------------------------------------------------
+;;; The compiler lowers calls it does not define to calls by name, so compiling
+;;; the compiler needs these to exist in the target module. This is the first
+;;; slice of that floor; docs/self-hosting.md lists the rest.
+
+(defun rt/nil? (value)
+  (if (= value rt/nil) 1 0))
+
+(defun rt/first (pair)
+  (rt/car pair))
+
+(defun rt/rest (pair)
+  (rt/cdr pair))
+
+(defun rt/length (list)
+  (if (= list rt/nil)
+      0
+      (+ 1 (rt/length (rt/cdr list)))))
+
+(defun rt/append (left right)
+  (if (= left rt/nil)
+      right
+      (rt/cons (rt/car left) (rt/append (rt/cdr left) right))))
+
+(defun rt/reverse (list)
+  (if (= list rt/nil)
+      rt/nil
+      (rt/append (rt/reverse (rt/cdr list)) (rt/cons (rt/car list) rt/nil))))
+
+;;; environment ------------------------------------------------------------
+;;; An environment is an association list of (name . value) pairs.
+
+(defun rt/env-new () rt/nil)
+
+(defun rt/env-bind (env name value)
+  (rt/cons (rt/cons name value) env))
+
+(defun rt/env-lookup (env name)
+  (if (= env rt/nil)
+      0
+      (if (rt/text-equal? (rt/car (rt/car env)) name)
+          (rt/cdr (rt/car env))
+          (rt/env-lookup (rt/cdr env) name))))
+
+(defun rt/field (record key)
+  (if (= record 0)
+      0
+      (let ((pair (rt/car record)))
+        (if (rt/text-equal? (rt/car pair) key)
+            (rt/cdr pair)
+            (rt/field (rt/cdr record) key)))))

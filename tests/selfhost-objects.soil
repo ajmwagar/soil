@@ -1,62 +1,7 @@
 ; SPDX-License-Identifier: MIT OR Apache-2.0
-; Runtime + object smoke for soil-c --selfhost.
+; Object runtime probes. The runtime itself is compiler/runtime.soil; the gate
+; concatenates the two, so what is tested is what ships.
 
-(memory 1)
-(global 16)
-
-(defconst rt/nil 0)
-
-(defun rt/alloc (bytes)
-  (let ((ptr (global.get 0)))
-    (begin
-      (global.set 0 (+ ptr bytes))
-      ptr)))
-
-(defun rt/cons (car cdr)
-  (let ((ptr (global.get 0)))
-    (begin
-      (i64.store (i32.wrap_i64 ptr) car)
-      (i64.store (i32.wrap_i64 (+ ptr 8)) cdr)
-      (global.set 0 (+ ptr 16))
-      ptr)))
-
-(defun rt/car (cell) (i64.load (i32.wrap_i64 cell)))
-(defun rt/cdr (cell) (i64.load (i32.wrap_i64 (+ cell 8))))
-
-(defun rt/string-new (length)
-  (let ((ptr (rt/alloc (+ 8 (* length 8)))))
-    (begin
-      (i64.store (i32.wrap_i64 ptr) length)
-      ptr)))
-
-(defun rt/string-length (string) (i64.load (i32.wrap_i64 string)))
-(defun rt/string-get (string index)
-  (i64.load (i32.wrap_i64 (+ (+ string 8) (* index 8)))))
-
-(defun rt/string-set (string index value)
-  (begin
-    (i64.store (i32.wrap_i64 (+ (+ string 8) (* index 8))) value)
-    string))
-
-(defun rt/string-equal-loop (a b i n)
-  (if (>= i n)
-      1
-      (if (= (rt/string-get a i) (rt/string-get b i))
-          (rt/string-equal-loop a b (+ i 1) n)
-          0)))
-
-(defun rt/string-equal? (a b)
-  (if (= (rt/string-length a) (rt/string-length b))
-      (rt/string-equal-loop a b 0 (rt/string-length a))
-      0))
-
-(defun rt/field (record key)
-  (if (= record 0)
-      0
-      (let ((pair (rt/car record)))
-        (if (rt/string-equal? (rt/car pair) key)
-            (rt/cdr pair)
-            (rt/field (rt/cdr record) key)))))
 
 (defun rt/test-multi ()
   (+ 1 1)
@@ -72,7 +17,78 @@
   (rt/string-get "ABC" 1))
 
 (defun rt/test-string-eq ()
-  (rt/string-equal? "same" "same"))
+  (rt/text-equal? "same" "same"))
 
+(defun rt/test-cons-kind ()
+  (rt/kind (rt/cons 1 2)))
 
+(defun rt/test-string-kind ()
+  (rt/kind "x"))
 
+(defun rt/test-symbol-kind ()
+  (rt/kind (rt/symbol-new 3)))
+
+;;; A symbol compares equal to the string that spells it: the environment looks
+;;; names up by content, so interning is not required for lookup to be correct.
+(defun rt/test-symbol-equal ()
+  (let ((symbol (rt/symbol-new 3)))
+    (begin
+      (rt/string-set symbol 0 97)
+      (rt/string-set symbol 1 98)
+      (rt/string-set symbol 2 99)
+      (rt/text-equal? symbol "abc"))))
+
+(defun rt/test-symbol-length ()
+  (rt/string-length (rt/symbol-new 4)))
+
+(defun rt/test-env-lookup ()
+  (let ((env (rt/env-bind (rt/env-bind (rt/env-new) "x" 41) "y" 42)))
+    (rt/env-lookup env "y")))
+
+(defun rt/test-env-shadow ()
+  (let ((env (rt/env-bind (rt/env-bind (rt/env-new) "x" 41) "x" 43)))
+    (rt/env-lookup env "x")))
+
+(defun rt/test-env-missing ()
+  (rt/env-lookup (rt/env-bind (rt/env-new) "x" 41) "z"))
+
+(defun rt/test-bytes-kind ()
+  (rt/kind (rt/bytes-new 4)))
+
+(defun rt/test-bytes-capacity ()
+  (rt/bytes-capacity (rt/bytes-new 4)))
+
+(defun rt/test-bytes-push-length ()
+  (let ((bytes (rt/bytes-new 4)))
+    (begin
+      (rt/bytes-push bytes 65)
+      (rt/bytes-push bytes 66)
+      (rt/bytes-length bytes))))
+
+(defun rt/test-bytes-get ()
+  (let ((bytes (rt/bytes-new 4)))
+    (begin
+      (rt/bytes-push bytes 65)
+      (rt/bytes-push bytes 66)
+      (rt/bytes-get bytes 1))))
+
+(defun rt/test-bytes-set-get ()
+  (let ((bytes (rt/bytes-new 2)))
+    (begin
+      (rt/bytes-set bytes 1 122)
+      (rt/bytes-get bytes 1))))
+
+(defun rt/test-nil? ()
+  (rt/nil? rt/nil))
+
+(defun rt/test-length ()
+  (rt/length (list 10 20 30)))
+
+(defun rt/test-append-length ()
+  (rt/length (rt/append (list 1 2) (list 3 4 5))))
+
+(defun rt/test-reverse-first ()
+  (rt/car (rt/reverse (list 1 2 3))))
+
+(defun rt/test-first/rest ()
+  (+ (rt/first (list 7 8)) (rt/first (rt/rest (list 7 8)))))

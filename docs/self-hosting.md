@@ -94,6 +94,37 @@ A compiler that can compile itself needs:
 That is the first real expansion of the numeric core. Without it, the compiler
 can compile numeric functions but cannot be compiled itself.
 
+### Stage 3 — measured blocker
+
+Asking the compiler to compile itself today fails immediately:
+
+```text
+$ SOURCE=$(cat compiler/runtime.soil compiler/core.soil)
+$ ./scripts/soil-run.sh core/prelude.soil "$SOURCE" compiler/core.soil compiler/main.soil
+missing index nil?
+```
+
+The binary backend lowers a call it does not define to a call by name. Compiling
+the compiler in one module therefore needs every name the compiler itself calls,
+which is the "primitive floor" `boot/boot.soil` names — but now in Soil, in the
+target module.
+
+Enumerated statically from `compiler/core.soil` (defined = 155 functions; the
+scan has local-variable noise, the primitives below are the real set):
+
+```text
+nil?  first  rest  length  append  reverse  map  min  max  atom
+symbol?  keyword?  str  read  eval  macroexpand  println  json-encode
+string->bytes  string-chars  string-join
+```
+
+`compiler/runtime.soil` now has the first slice (`rt/nil?`, `rt/first`,
+`rt/rest`, `rt/length`, `rt/append`, `rt/reverse`, with probes). The hard end of
+the list is the meta-level: `read`, `eval`, `macroexpand` — the compiler expands
+macros at compile time by evaluating `defmacro` forms in its host, so a
+self-compiled compiler needs macro expansion *inside the compiled program*, plus
+a reader, plus `str`/`json-encode` for codegen text.
+
 ### Stage 3 — compile the compiler
 
 Use the Rust reference compiler to compile the Soil compiler to Wasm, then run
