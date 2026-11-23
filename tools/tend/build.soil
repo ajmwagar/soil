@@ -1,61 +1,248 @@
 ; SPDX-License-Identifier: MIT OR Apache-2.0
 ; `tend build`: lower a Spore's Soil sources to a core module.
 ;
-; The compiler runs in this interpreter, so the artifact is WAT. Componentizing
-; (WIT world + canonical ABI) needs `wasm-tools`, which the tend sandbox has no
-; process capability for: this writes build/module.wat and build/world.txt, and
-; the host wrapper finishes with `component embed` / `component new`.
+; Inputs come from the manifest: `(image (prelude ...) (load ...) (entry ...))`
+; fixes the build order, otherwise the `(members ...)` globs are expanded and
+; sorted. Artifacts are WAT because the compiler runs in this interpreter;
+; componentizing needs wasm-tools, which the sandbox cannot spawn, so the host
+; wrapper finishes with `component embed` / `component new`.
+
+; --- bytes ---
+
+(defun tend/bs (text)
+  (string->bytes text))
+
+(defun tend/char-at (bytes n)
+  (if (nil? bytes) nil
+      (if (= n 0) (first bytes)
+          (tend/char-at (rest bytes) (- n 1)))))
+
+(defun tend/take (bytes n)
+  (if (= n 0) nil
+      (cons (first bytes) (tend/take (rest bytes) (- n 1)))))
+
+(defun tend/drop (bytes n)
+  (if (or (nil? bytes) (= n 0)) bytes
+      (tend/drop (rest bytes) (- n 1))))
+
+(defun tend/text (bytes)
+  (if (nil? bytes) "" (bytes->string bytes)))
+
+(defun tend/prefix? (text prefix)
+  (= (tend/text (tend/take (tend/bs text) (length prefix))) prefix))
+
+(defun tend/suffix? (text suffix)
+  (let ((bytes (tend/bs text)))
+    (= (tend/text (tend/drop bytes (- (length bytes) (length suffix)))) suffix)))
+
+(defun tend/head? (bytes needle)
+  (cond
+    ((nil? needle) #t)
+    ((nil? bytes) #f)
+    ((= (first bytes) (first needle)) (tend/head? (rest bytes) (rest needle)))
+    (else #f)))
+
+(defun tend/find-from (bytes needle n)
+  (if (nil? bytes) nil
+      (if (tend/head? bytes needle) n
+          (tend/find-from (rest bytes) needle (+ n 1)))))
+
+(defun tend/find (text needle)
+  (tend/find-from (tend/bs text) (tend/bs needle) 0))
+
+(defun tend/contains? (text needle)
+  (not (nil? (tend/find text needle))))
+
+(defun tend/before (bytes n acc)
+  (if (= n 0) (reverse acc)
+      (tend/before (rest bytes) (- n 1) (cons (first bytes) acc))))
+
+(defun tend/cut (text n)
+  (list (tend/text (tend/before (tend/bs text) n nil))
+        (tend/text (tend/drop (tend/bs text) n))))
+
+(defun tend/last-slash (text)
+  (let ((found (tend/find text "/")))
+    (if (nil? found) nil
+        (let ((rest (tend/cut text (+ found 1))))
+          (let ((next (tend/last-slash (nth 1 rest))))
+            (if (nil? next) found (+ found 1 next)))))))
+
+; --- order ---
+
+(defun tend/cmp-bytes (a b)
+  (cond
+    ((and (nil? a) (nil? b)) 0)
+    ((nil? a) -1)
+    ((nil? b) 1)
+    ((< (first a) (first b)) -1)
+    ((< (first b) (first a)) 1)
+    (else (tend/cmp-bytes (rest a) (rest b)))))
+
+(defun tend/cmp (a b)
+  (tend/cmp-bytes (tend/bs a) (tend/bs b)))
+
+(defun tend/merge (left right acc)
+  (cond
+    ((nil? left) (append (reverse acc) right))
+    ((nil? right) (append (reverse acc) left))
+    ((<= (tend/cmp (first left) (first right)) 0)
+      (tend/merge (rest left) right (cons (first left) acc)))
+    (else
+      (tend/merge left (rest right) (cons (first right) acc)))))
+
+(defun tend/split (items left right)
+  (cond
+    ((nil? items) (list (reverse left) (reverse right)))
+    ((nil? (rest items)) (list (reverse (cons (first items) left)) (reverse right)))
+    (else
+      (tend/split (rest (rest items))
+                  (cons (first items) left)
+                  (cons (first (rest items)) right)))))
+
+(defun tend/sort (items)
+  (if (nil? items) nil
+      (if (nil? (rest items)) items
+          (let ((halves (tend/split items nil nil)))
+            (tend/merge (tend/sort (first halves))
+                        (tend/sort (first (rest halves)))
+                        nil)))))
+
+; --- manifest ---
 
 (defun tend/slurp (path)
   (let ((result (fs/read path)))
     (if (ok? result) (value result) nil)))
 
-(defun tend/drop-bytes (bytes n)
-  (if (or (nil? bytes) (= n 0)) bytes (tend/drop-bytes (rest bytes) (- n 1))))
+(defun tend/manifest ()
+  (let ((path (tend/manifest-path)))
+    (let ((source (tend/slurp path)))
+      (if (nil? source)
+          (list 'err (str "read " path))
+          (tend/parse source)))))
 
-(defun tend/tail (text n)
-  (let ((bytes (string->bytes text)))
-    (if (>= n (length bytes))
-        text
-        (bytes->string (tend/drop-bytes bytes (- (length bytes) n))))))
+(defun tend/image-inputs (image)
+  (append
+    (if (nil? (field image :prelude)) nil (list (field image :prelude)))
+    (append (or-empty (field image :loads))
+            (list (field image :entry)))))
 
-(defun tend/ends-with? (text suffix)
-  (= (tend/tail text (length suffix)) suffix))
+(defun tend/match-name? (name pat)
+  (let ((star (tend/find pat "*")))
+    (if (nil? star)
+        (= name pat)
+        (let ((head (tend/cut pat star)))
+          (let ((tail (tend/cut pat (+ star 1))))
+            (and (tend/prefix? name (nth 0 head))
+                 (tend/suffix? name (nth 1 tail))))))))
 
-(defun tend/soil-file? (entry)
-  (and (not (field entry :dir))
-       (tend/ends-with? (field entry :name) ".soil")))
-
-(defun tend/entry-paths (entries acc)
-  (if (nil? entries)
-      (reverse acc)
+(defun tend/match-entries (entries pat acc)
+  (if (nil? entries) (reverse acc)
       (let ((entry (first entries)))
-        (tend/entry-paths (rest entries)
-          (if (tend/soil-file? entry)
-              (cons (field entry :path) acc)
-              acc)))))
+        (if (field entry :dir)
+            (tend/match-entries (rest entries) pat acc)
+            (if (tend/match-name? (field entry :name) pat)
+                (tend/match-entries (rest entries) pat
+                                    (cons (field entry :path) acc))
+                (tend/match-entries (rest entries) pat acc))))))
+
+(defun tend/glob (pattern)
+  (let ((slash (tend/last-slash pattern)))
+    (let ((dir ".")
+          (pat pattern))
+      (if (nil? slash)
+          (tend/glob-in dir pat)
+          (let ((parts (tend/cut pattern slash)))
+            (tend/glob-in (nth 0 parts) (nth 1 (tend/cut pattern (+ slash 1)))))))))
+
+(defun tend/glob-in (dir pat)
+  (let ((listing (fs/list dir)))
+    (if (not (ok? listing))
+        (list 'err (str "read " dir ": " (value listing)))
+        (list 'ok (tend/match-entries (value listing) pat nil)))))
+
+(defun tend/glob-all (patterns acc)
+  (if (nil? patterns) (list 'ok acc)
+      (let ((one (tend/glob (first patterns))))
+        (if (not (ok? one))
+            one
+            (tend/glob-all (rest patterns) (append acc (value one)))))))
+
+(defun tend/inputs (manifest)
+  (let ((image (field manifest :image)))
+    (if (nil? image)
+        (tend/glob-all (field manifest :members) nil)
+        (list 'ok (tend/image-inputs image)))))
+
+; --- validation ---
+
+(defun tend/lower-code? (code)
+  (and (>= code 97) (<= code 122)))
+
+(defun tend/name-char? (code)
+  (or (tend/lower-code? code) (and (>= code 48) (<= code 57)) (= code 45)))
+
+(defun tend/ok-chars? (bytes kind)
+  (cond
+    ((nil? bytes) #t)
+    ((tend/char-ok? (first bytes) kind) (tend/ok-chars? (rest bytes) kind))
+    (else #f)))
+
+(defun tend/char-ok? (code kind)
+  (if (= kind "name")
+      (tend/name-char? code)
+      (tend/version-char? code)))
+
+(defun tend/name? (text)
+  (let ((bytes (tend/bs text)))
+    (and (not (nil? bytes))
+         (tend/lower-code? (first bytes))
+         (tend/ok-chars? bytes "name"))))
+
+(defun tend/version-char? (code)
+  (or (and (>= code 48) (<= code 57)) (= code 46)))
+
+(defun tend/version? (text)
+  (let ((bytes (tend/bs text)))
+    (and (not (nil? bytes))
+         (tend/ok-chars? bytes "version")
+         (tend/contains? text "."))))
+
+(defun tend/package-problem (package)
+  (if (nil? package)
+      "source has no (package \"ns:name@x.y.z\") directive"
+      (let ((colon (tend/find package ":")))
+        (let ((at (tend/find package "@")))
+          (cond
+            ((nil? colon) (str "invalid WIT package " package ": expected namespace:name@version"))
+            ((nil? at) (str "invalid WIT package " package ": expected @version"))
+            (else (tend/package-parts package colon at)))))))
+
+(defun tend/package-parts (package colon at)
+  (let ((ns (nth 0 (tend/cut package colon))))
+    (let ((rest (tend/cut package (+ colon 1))))
+      (let ((name (nth 0 (tend/cut (nth 1 rest) (- at (+ colon 1))))))
+        (let ((version (nth 1 (tend/cut package (+ at 1)))))
+          (cond
+            ((not (tend/name? ns)) (str "invalid WIT namespace " ns))
+            ((not (tend/name? name)) (str "invalid WIT package name " name))
+            ((not (tend/version? version)) (str "invalid WIT version " version))
+            (else nil)))))))
+
+(defun tend/world-problem (world)
+  (cond
+    ((nil? world) "source has no (world \"name\") directive: nothing to componentize")
+    ((not (tend/name? world)) (str "invalid WIT world " world))
+    (else nil)))
+
+; --- source ---
 
 (defun tend/concat (paths acc)
-  (if (nil? paths)
-      acc
+  (if (nil? paths) acc
       (let ((text (tend/slurp (first paths))))
         (tend/concat (rest paths)
                      (if (nil? text) acc (str acc text "\n"))))))
 
-(defun tend/spore-sources ()
-  (let ((listing (fs/list "src")))
-    (if (not (ok? listing))
-        (list 'err (str "read src: " (value listing)))
-        (let ((paths (tend/entry-paths (value listing) nil)))
-          (if (nil? paths)
-              (list 'err "src has no .soil files")
-              (let ((source (tend/concat paths "")))
-                (if (nil? source)
-                    (list 'err "a src file could not be read")
-                    (list 'ok (list (list :paths paths) (list :source source))))))))))
-
-; Structural walk: the compiler lowers flat WIT imports, not host-call, and not
-; resource types. Refuse by form rather than by grep so comments cannot lie.
 (defun tend/mentions? (form needle)
   (cond
     ((nil? form) #f)
@@ -71,32 +258,54 @@
       "source uses soil:inference streaming: resources are not lowered yet")
     (else nil)))
 
-(defun tend/world-of (forms)
+(defun tend/directive (forms name)
   (cond
     ((nil? forms) nil)
-    ((and (not (atom (first forms))) (= (str (first (first forms))) "world"))
+    ((and (not (atom (first forms))) (= (str (first (first forms))) name))
       (nth 1 (first forms)))
-    (else (tend/world-of (rest forms)))))
+    (else (tend/directive (rest forms) name))))
+
+; --- build ---
 
 (defun tend/build (args)
-  (let ((sources (tend/spore-sources)))
-    (if (not (ok? sources))
-        sources
-        (let ((paths (field (value sources) :paths))
-              (source (field (value sources) :source)))
-          (let ((forms (read source)))
-            (let ((blocked (tend/unsupported forms)))
-              (if (not (nil? blocked))
-                  (list 'err blocked)
-                  (begin
-                    (fs/mkdir "build")
-                    (let ((wat (compiler/component-wat source)))
-                      (fs/write "build/module.wat" wat)
-                      (let ((world (tend/world-of forms)))
-                        (fs/write "build/world.txt" (if (nil? world) "" (str world)))
-                        (list 'ok
-                          (list
-                            (list :sources paths)
-                            (list :wat "build/module.wat")
-                            (list :world world)
-                            (list :bytes (length wat))))))))))))))
+  (let ((manifest (tend/manifest)))
+    (if (not (ok? manifest)) manifest
+        (let ((inputs (tend/inputs (value manifest))))
+          (if (not (ok? inputs)) inputs
+              (let ((paths (tend/sort (value inputs))))
+                (if (nil? paths)
+                    (list 'err "manifest resolves no sources")
+                    (tend/build-paths paths))))))))
+
+(defun tend/build-paths (paths)
+  (let ((source (tend/concat paths "")))
+    (if (nil? source)
+        (list 'err "a source file could not be read")
+        (tend/lower-source paths source))))
+
+(defun tend/lower-source (paths source)
+  (let ((forms (read source)))
+    (let ((blocked (tend/unsupported forms)))
+      (let ((package (tend/directive forms "package")))
+        (let ((world (tend/directive forms "world")))
+          (let ((bad-package (tend/package-problem package)))
+            (let ((bad-world (tend/world-problem world)))
+              (cond
+                ((not (nil? blocked)) (list 'err blocked))
+                ((not (nil? bad-package)) (list 'err bad-package))
+                ((not (nil? bad-world)) (list 'err bad-world))
+                (else (tend/emit paths source package world))))))))))
+
+(defun tend/emit (paths source package world)
+  (begin
+    (fs/mkdir "build")
+    (let ((wat (compiler/component-wat source)))
+      (fs/write "build/module.wat" wat)
+      (fs/write "build/world.txt" (str world))
+      (list 'ok
+        (list
+          (list :sources paths)
+          (list :package package)
+          (list :world world)
+          (list :wat "build/module.wat")
+          (list :bytes (length wat)))))))

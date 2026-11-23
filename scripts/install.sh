@@ -156,24 +156,27 @@ set -- --prelude "$SHARE/core/prelude.soil" --call main \
 while IFS= read -r arg; do set -- "$@" --arg "$arg"; done < "$tmp"
 
 # Soil emits the core module; the canonical ABI is wasm-tools' job, which the
-# sandbox cannot run (no process capability). So: run the guest, then finish
-# the component here when the build produced a world.
+# sandbox cannot run (no process capability). The guest owns the result line;
+# this side only finishes the component, and clears stale artifacts first so a
+# refused build cannot be mistaken for a successful one.
+rm -f build/module.wat build/world.txt build/embed.wasm
 set +e
 wasmtime run --dir . --dir "$SHARE" "$WASM" "$@"
 STATUS=$?
 set -e
-if [ "$STATUS" -eq 0 ] && [ -f build/module.wat ] && [ -s build/world.txt ]; then
-  WORLD=$(cat build/world.txt)
-  if command -v wasm-tools >/dev/null 2>&1; then
-    wasm-tools component embed wit --world "$WORLD" build/module.wat -o build/embed.wasm
-    wasm-tools component new build/embed.wasm -o module.wasm
-    printf '(ok ((:module "module.wasm") (:world "%s")))\n' "$WORLD"
-  else
-    printf '(err "wasm-tools not found: build/module.wat left for a host that has it")\n'
-    STATUS=1
-  fi
+[ "$STATUS" -eq 0 ] || exit "$STATUS"
+[ -f build/module.wat ] || exit 0
+WORLD=$(cat build/world.txt 2>/dev/null || true)
+if [ -z "$WORLD" ]; then
+  printf '(err "build produced a module with no world")\n' >&2
+  exit 1
 fi
-exit "$STATUS"
+if ! command -v wasm-tools >/dev/null 2>&1; then
+  printf '(err "wasm-tools not found: build/module.wat left for a host that has it")\n' >&2
+  exit 1
+fi
+wasm-tools component embed wit --world "$WORLD" build/module.wat -o build/embed.wasm
+wasm-tools component new build/embed.wasm -o module.wasm
 TEND
 chmod +x "$DEST/bin/tend"
 

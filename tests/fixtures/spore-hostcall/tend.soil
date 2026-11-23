@@ -1,0 +1,5 @@
+(tend
+  (version 1)
+  (image
+    (entry "src/main.soil"))
+  (members "src/*.soil"))
