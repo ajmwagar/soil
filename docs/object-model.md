@@ -1,6 +1,6 @@
 # Object model for compiled Soil
 
-Status: **first Soil-native slice**, 2026-11-22.
+Status: **kind-tagged objects, symbols, and environment tables**, 2026-11-23.
 
 Soil owns the object model. Loam is the Rust/Wasm engine: it instantiates
 modules, provides memory limits and host capabilities, and runs the code. Loam
@@ -8,85 +8,62 @@ does not own strings, cons cells, or the allocator.
 
 ## Decision
 
-Use **linear memory plus tagged i64 values**, written in Soil and compiled by the
-Soil compiler.
+Linear memory plus i64 values, written in Soil and compiled by the Soil compiler.
 
 ```text
 value = i64
-  integer       immediate
-  object handle  tagged/linear-memory reference
+  integer        immediate
+  object handle  address in linear memory
 ```
 
-The first slice keeps the encoding simple: values are i64, object handles are
-memory addresses, and the runtime knows which positions expect an object. A tag
-bit comes before integers and objects are mixed freely.
-
-## First slice — done
-
-`compiler/runtime.soil` is compiled by `compiler/core.soil`
-into a Wasm module with:
+Object layout, with a kind word so a handle can be inspected instead of assumed:
 
 ```text
-memory 1
-global 0 = mutable i64 heap pointer, initialised to 16
+cons      +0 kind=0, +8 car,  +16 cdr          (24 bytes)
+string    +0 kind=1, +8 length, +16 element 0  (16 + 8n)
+symbol    +0 kind=2, +8 length, +16 element 0  (16 + 8n)
 ```
 
-It provides:
+One i64 per character keeps the binary emitter free of byte loads. A character
+is its code, so string and symbol comparison is the same loop (`rt/text-equal?`),
+and a symbol compares equal to the string that spells it — lookup does not
+require interning to be correct.
+
+## Environment
+
+An environment is an association list of `(name . value)` pairs:
 
 ```lisp
-(rt/cons car cdr)
-(rt/car cell)
-(rt/cdr cell)
+(rt/env-new)
+(rt/env-bind env name value)
+(rt/env-lookup env name)
 ```
 
-This is enough to prove:
+`env-bind` prepends, so the newest binding shadows older ones, which is the
+semantics a lexical environment needs.
 
-- the compiler emits a memory section
-- the compiler emits a mutable global section
-- the compiler emits `i64.load`, `i64.store`, `global.get`, and `global.set`
-- a Soil-written bump allocator works
-- a Soil-written object runtime runs under Loam/Wasmtime
+## Provenance
 
-The runtime is compiled with the existing `soil-lang` binary and run with
-Wasmtime; no Rust rebuild is needed for the runtime itself.
+`compiler/runtime.soil` is the runtime. `tests/selfhost-objects.soil` holds only
+probes, and `scripts/test-selfhost-objects.sh` concatenates the two before
+compiling, so the tested runtime is the shipped one.
 
-## Compiler additions
-
-The Soil compiler now emits:
-
-- memory section
-- global section
-- `i64.load` / `i64.store`
-- `global.get` / `global.set`
-- `i32.wrap_i64`
-- `i64.extend_i32_u`
-- `begin` blocks, which drop non-final expression values
-- void expressions such as stores and global sets
-
-The opcode helpers are written with Soil macros inside the compiler source. The
-runtime source deliberately avoids macros because the compiler does not expand
-macros on the forms it compiles yet.
-
-## Next object work
-
-1. Tag integers and object handles.
-2. Add string objects and byte buffers.
-3. Add symbol interning.
-4. Add list helpers (`length`, `append`, `reverse`, `nth`) in the runtime.
-5. Add `read` and `string->bytes` either in the runtime or as explicit Loam
-   capabilities.
-6. Compile the compiler against the runtime.
-7. Replace any remaining bootstrap host imports.
-8. Fixed-point check.
-
-## Guardrail
-
-Keep the boundary crisp:
+The gate runs with no Rust in the loop:
 
 ```text
-Loam   engine, memory limits, capabilities, WASI
-Soil   values, allocator, strings, lists, compiler
+soil-run.sh (bootstrapped soil-wasm.wasm) -> bytes-to-wasm.py -> wasmtime
 ```
 
-If an object operation is in Loam, it is a bootstrap exception, not the target
-design.
+```sh
+scripts/test-selfhost-objects.sh
+# ok rt/test-env-lookup = 42
+# ok rt/test-env-shadow = 43
+# selfhost-objects: ok
+```
+
+## Still ahead
+
+- Byte-accurate strings: one i64 per character is fine for names, too wasteful
+  for compiler output; needs `i32.load8_u`/`i32.store8` in the binary emitter.
+- Symbols as a distinct type in the reader (today a literal is a string).
+- Hash tables for large environments; the assoc list is O(n).
