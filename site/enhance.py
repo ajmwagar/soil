@@ -7,6 +7,9 @@ import re
 ROOT = pathlib.Path("site/dist")
 BASE = "https://soil-lang.org"
 IMAGE = f"{BASE}/og.png"
+IMAGE_WIDTH = 1200
+IMAGE_HEIGHT = 630
+IMAGE_ALT = "Soil — a Lisp for WebAssembly."
 
 
 def clean_text(fragment):
@@ -56,14 +59,21 @@ for file in sorted(ROOT.rglob("*.html")):
         f'<meta name="description" content="{html.escape(description, quote=True)}">',
         '<meta name="theme-color" content="#14120f">',
         '<meta property="og:type" content="website">',
+        '<meta property="og:site_name" content="Soil">',
         f'<meta property="og:title" content="{html.escape(title, quote=True)}">',
         f'<meta property="og:description" content="{html.escape(description, quote=True)}">',
         f'<meta property="og:url" content="{html.escape(canonical, quote=True)}">',
         f'<meta property="og:image" content="{IMAGE}">',
+        f'<meta property="og:image:secure_url" content="{IMAGE}">',
+        '<meta property="og:image:type" content="image/png">',
+        f'<meta property="og:image:width" content="{IMAGE_WIDTH}">',
+        f'<meta property="og:image:height" content="{IMAGE_HEIGHT}">',
+        f'<meta property="og:image:alt" content="{html.escape(IMAGE_ALT, quote=True)}">',
         '<meta name="twitter:card" content="summary_large_image">',
         f'<meta name="twitter:title" content="{html.escape(title, quote=True)}">',
         f'<meta name="twitter:description" content="{html.escape(description, quote=True)}">',
         f'<meta name="twitter:image" content="{IMAGE}">',
+        f'<meta name="twitter:image:alt" content="{html.escape(IMAGE_ALT, quote=True)}">',
     ])
     text = text.replace("</head>", tags + "\n</head>", 1)
     file.write_text(text)
