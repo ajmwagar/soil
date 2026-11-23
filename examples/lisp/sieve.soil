@@ -1,0 +1,29 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Sieve of Eratosthenes: mark multiples, then read the flags.
+
+(defun mod (a b)
+  (if (< a b) a (mod (- a b) b)))
+
+(defun mark (flags p i)
+  (if (>= i (length flags))
+      flags
+      (if (= (mod i p) 0)
+          (mark (list-set i #f flags) p (+ i 1))
+          (mark flags p (+ i 1)))))
+
+(defun sweep (flags p)
+  (if (>= p (length flags))
+      flags
+      (if (nth p flags)
+          (sweep (mark flags p (* p p)) (+ p 1))
+          (sweep flags (+ p 1)))))
+
+(defun gt-one? (i) (> i 1))
+(defun flag-on? (i flags) (nth i flags))
+
+(defun primes-up-to (n)
+  (let ((flags (map 'gt-one? (range 0 (+ n 1)))))
+    (filter-with 'flag-on? (sweep flags 2) (range 2 (+ n 1)))))
+
+; Try 100, 500, or a smaller limit and watch the list change.
+(primes-up-to 50)

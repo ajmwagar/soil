@@ -1,0 +1,13 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Towers of Hanoi: two recursive calls, one move between them.
+
+(defun hanoi (n from to via)
+  (if (= n 0)
+      nil
+      (append
+        (hanoi (- n 1) from via to)
+        (cons (str from " -> " to)
+              (hanoi (- n 1) via to from)))))
+
+; Try 3, 4, then 5. The number of moves doubles each time.
+(hanoi 3 "A" "C" "B")

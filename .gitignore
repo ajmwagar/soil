@@ -2,3 +2,4 @@ site/dist/
 site/examples-code.soil
 dist/
 .DS_Store
+site/lisp-code.soil

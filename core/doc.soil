@@ -358,7 +358,7 @@
       (list (txt (field page :title))))))
 
 (defun doc-repl-html ()
-  (el "aside" (list (attr :class "repl") (attr :aria-labelledby "repl-title"))
+  (el "aside" (list (attr :class "repl") (attr :data-repl-id "docs") (attr :aria-labelledby "repl-title"))
     (list
       (el "div" (list (attr :class "repl-head"))
         (list

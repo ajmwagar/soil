@@ -1,0 +1,10 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Fibonacci: the smallest useful recursive shape.
+
+(defun fib (n)
+  (if (< n 2)
+      n
+      (+ (fib (- n 1)) (fib (- n 2)))))
+
+; Try changing 12 to 20. The naive version grows quickly.
+(map 'fib (range 0 12))

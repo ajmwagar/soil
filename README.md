@@ -74,6 +74,7 @@ You can learn more about Soil at [https://soil-lang.org](https://soil-lang.org)
 - [`examples/core/ui_components.soil`](examples/core/ui_components.soil) — a page built from components
 - [`examples/ui/counter.soil`](examples/ui/counter.soil) — the smallest complete UI
 - [`examples/ui/`](examples/ui) — counter, todo, calculator, tic-tac-toe, tabs, form
+- [`examples/lisp/`](examples/lisp) — Fibonacci, prime sieve, Towers of Hanoi, Game of Life
 
 ## Running the output
 

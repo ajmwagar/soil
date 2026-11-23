@@ -20,6 +20,8 @@ def description_for(text, title):
         r'<p class="lede"[^>]*>(.*?)</p>',
         r'<p class="docs-lede"[^>]*>(.*?)</p>',
         r'<p class="body"[^>]*>(.*?)</p>',
+        r'<p class="book-lede"[^>]*>(.*?)</p>',
+        r'<p class="demo-lede"[^>]*>(.*?)</p>',
         r'<p class="statement"[^>]*>(.*?)</p>',
     ):
         match = re.search(pattern, text, re.S)

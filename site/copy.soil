@@ -13,6 +13,8 @@
     (list :nav
       (list
         (list :start "Get started")
+        (list :book "Lisp 101")
+        (list :demos "Demos")
         (list :language "Why")
         (list :core "Library")
         (list :loam "Runtime")
