@@ -7,6 +7,7 @@ pub mod eval;
 pub mod http_stream;
 pub mod lisp;
 pub mod native_host;
+pub mod process_host;
 pub mod records_host;
 pub mod session_host;
 pub mod sexp;
