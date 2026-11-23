@@ -18,6 +18,7 @@
   (requires
     ("soil:records/records@0.1.0" "issue, project, dependency, and event storage")
     ("soil:unibus/bus@0.1.0" "Marbles event publication")
+    ("soil:time/time@1.1.0" "leases and timestamps")
     ("wasi:cli" "command-line surface")
     ("wasi:clocks" "leases and timestamps")
     ("wasi:io" "stdio and streams")

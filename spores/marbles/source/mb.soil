@@ -32,7 +32,9 @@
               (cli-opt-value "id" "id" "Only this issue.")
               (cli-opt-value "limit" "n" "Truncate the answer."))
         nil)
-      (cli-command-entry "ready" "Open, unblocked, unclaimed, past grace." nil nil)
+      (cli-command-entry "ready" "Open, unblocked, unclaimed, past grace."
+        (list (cli-opt-value "limit" "n" "Maximum issues to return (default 32)."))
+        nil)
       (cli-command-entry "show" "Show one issue as a one-element array." nil
         (list (cli-arg "id" #t "Issue id.")))
       (cli-command-entry "history" "Show the audit trail for one issue." nil
@@ -333,10 +335,53 @@
 (defun open-issue? (issue)
   (not (issue-closed? issue)))
 
+(defun issue-filters (project id all)
+  (append
+    (if (nil? project) nil (list (records/filter "project" "eq" project)))
+    (append
+      (if (nil? id) nil (list (records/filter "id" "eq" id)))
+      (if all nil (list (records/filter "status" "eq" "open"))))))
+
+;;; Query just the issue page a read command needs. The previous path loaded
+;;; every live issue before applying --limit, so `mb list --limit 5` could OOM
+;;; on a fleet book. The host owns the filter, projection, and page size.
+(defun issue-page-result (project id all limit cursor)
+  (let ((limit (if (<= limit 0) 4096 limit)))
+    (let ((result (soil:records/query
+                    (records/spec "" "issue/" (issue-filters project id all)
+                      nil cursor limit))))
+      (if (not (ok? result))
+          (mb-fail (str "records query failed: " (field result :err)))
+          (value result)))))
+
+(defun issue-page (project id all limit)
+  (map 'entry-body
+    (field (issue-page-result project id all limit nil) :entries)))
+
+(defun ready-issue-fast? (issue now)
+  (and (= (field issue :status) "open")
+       (= (dependency-count (field issue :id)) 0)
+       (issue-available? issue now)
+       (not (issue-claimed? issue now))))
+
+;;; Walk open issues a page at a time and keep only ready ones. `ready` cannot
+;;; ask the records host for lease/dependency eligibility yet, but it can stop
+;;; materializing every open issue body before filtering.
+(defun ready-scan (project cursor now limit ready)
+  (let ((page (issue-page-result project nil #f 32 cursor)))
+    (let ((batch (filter-with 'ready-issue-fast? now
+                   (map 'entry-body (field page :entries)))))
+      (let ((ready (append ready batch)))
+        (let ((next (field page :next)))
+          (if (or (nil? next) (>= (length ready) limit))
+              (truncate limit ready)
+              (ready-scan project next now limit ready)))))))
+
 (defun list-project (project id all limit)
-  (let ((issues (issues-with-counts (issue-bodies-for project))))
+  (let ((issues (issue-page project id all limit)))
     (let ((visible (filter-with 'issue-id-option? id issues)))
-      (truncate limit (if all visible (filter 'open-issue? visible))))))
+      (issues-with-counts
+        (truncate limit (if all visible (filter 'open-issue? visible)))))))
 
 (defun issue-available? (issue now)
   (let ((available (field issue :available_at)))
@@ -353,10 +398,10 @@
        (issue-available? issue now)
        (not (issue-claimed? issue now))))
 
-(defun ready-project (project)
+(defun ready-project (project limit)
   (let ((now (now-seconds)))
     (issues-with-counts
-      (filter-with 'ready-issue? now (issue-bodies-for project)))))
+      (ready-scan project nil now (if (<= limit 0) 32 limit) nil))))
 
 ; ---------------------------------------------------------------------------
 ; Writes
@@ -881,9 +926,13 @@
         (list :folder (project-folder-of (field body :slug)))))
 
 (defun project-summaries ()
-  (map 'project-summary (all-entry-bodies "project/")))
+  ;; Query the project prefix with a projection. Scanning the whole collection
+  ;; here made every `mb projects`/`mb doctor` load every issue and event body
+  ;; into the interpreter, which is what exhausted the command's memory budget.
+  (map 'project-summary
+    (field-bodies "project/" (list "slug" "root" "prefix"))))
 
-(defun doctor-issues (issues projects problems deps)
+(defun doctor-issues (issues projects problems deps all-edges ids)
   (if (nil? issues)
       (list problems deps)
       (let ((issue (first issues)))
@@ -893,23 +942,24 @@
                               (append problems
                                 (list (str "issue " id " names missing project " project)))
                               problems)))
-            (let ((edges (filter-with 'edge-child? id (field-bodies "dependency/" (list "child" "parent")))))
+            (let ((edges (filter-with 'edge-child? id all-edges)))
               (let ((problems
                       (if (nil? edges) problems
-                          (doctor-edges id edges problems))))
+                          (doctor-edges id edges problems ids))))
                 (doctor-issues (rest issues) projects problems
-                  (+ deps (if (nil? edges) 0 (length edges)))))))))))
+                  (+ deps (if (nil? edges) 0 (length edges))) all-edges ids))))))))
 
 (defun edge-child? (edge child)
   (= (field edge :child) child))
 
-(defun doctor-edges (id edges problems)
+(defun doctor-edges (id edges problems ids)
   (if (nil? edges) problems
       (let ((parent (field (first edges) :parent)))
         (doctor-edges id (rest edges)
-          (if (nil? (body-of (entity "issue" parent)))
+          (if (not (member? parent ids))
               (append problems (list (str "issue " id " depends on missing " parent)))
-              problems)))))
+              problems)
+          ids))))
 
 (defun doctor-projects (projects ids problems)
   (if (nil? projects) problems
@@ -920,25 +970,53 @@
             problems))))
 
 (defun store-id ()
-  (let ((rows (all-entry-bodies "store_meta/")))
+  (let ((rows (field-bodies "store_meta/" (list "value"))))
     (if (nil? rows) nil (field (first rows) :value))))
 
-(defun doctor-command ()
-  (let ((issues (field-bodies "issue/" (list "id" "project")))
-        (projects (project-summaries)))
-    (let ((project-map (project-map-of projects)))
-      (let ((checked (doctor-issues issues project-map nil 0)))
+(defun doctor-page (cursor)
+  (let ((result (soil:records/query
+                  (records/spec "" "issue/" nil (list "id" "project") cursor 64))))
+    (if (not (ok? result))
+        (mb-fail (str "records query failed: " (field result :err)))
+        (value result))))
+
+(defun doctor-ids (cursor ids)
+  (let ((page (doctor-page cursor)))
+    (let ((ids (append ids (map 'entry-id (field page :entries))))
+          (next (field page :next)))
+      (if (nil? next) ids (doctor-ids next ids)))))
+
+(defun doctor-pages (cursor projects problems deps all-edges ids count)
+  (let ((page (doctor-page cursor)))
+    (let ((issues (map 'entry-body (field page :entries)))
+          (next (field page :next)))
+      (let ((checked (doctor-issues issues projects problems deps all-edges ids)))
         (let ((problems (first checked))
-              (deps (nth 1 checked)))
+              (deps (nth 1 checked))
+              (count (+ count (length issues))))
+          (if (nil? next)
+              (list problems deps count)
+              (doctor-pages next projects problems deps all-edges ids count)))))))
+
+(defun doctor-command ()
+  (let ((projects (project-summaries))
+        (all-edges (field-bodies "dependency/" (list "child" "parent"))))
+    (let ((project-map (project-map-of projects))
+          (ids (doctor-ids nil nil)))
+      (let ((checked (doctor-pages nil project-map nil 0 all-edges ids 0)))
+        (let ((problems (first checked))
+              (deps (nth 1 checked))
+              (issues (nth 2 checked)))
           (list
             (list :backend "soil:records")
             (list :store_id (store-id))
             (list :integrity (if (nil? problems) "ok" "problems"))
             (list :quick_check (if (nil? problems) "ok" "failed"))
             (list :projects (length (or-empty projects)))
-            (list :issues (length (or-empty issues)))
+            (list :issues issues)
             (list :dependencies deps)
-            (list :folders (length (or-empty (all-entry-bodies "folder/"))))
+            (list :folders (length (or-empty
+                              (field-bodies "folder/" (list "slug")))))
             (list :problems (or-empty problems))))))))
 
 (defun project-map-of (projects)
@@ -1104,8 +1182,13 @@
 
 (defun folder-view ()
   (list
-    (list :folders (or-empty (map 'folder-view-row (all-entry-bodies "folder/"))))
-    (list :projects (or-empty (map 'project-folder-view (all-entry-bodies "project_folder/"))))))
+    (list :folders (or-empty
+                    (map 'folder-view-row
+                      (field-bodies "folder/" (list "slug" "name" "parent")))))
+    (list :projects (or-empty
+                     (map 'project-folder-view
+                       (field-bodies "project_folder/"
+                         (list "project" "folder")))))))
 
 (defun folder-create (result now)
   (let ((name (first (cli-result-args result)))
@@ -1148,7 +1231,7 @@
     (if (nil? events) nil (map 'delete-entry events))))
 
 (defun drop-dependencies (mine)
-  (let ((edges (all-entry-bodies "dependency/")))
+  (let ((edges (field-bodies "dependency/" (list "child" "parent"))))
     (if (nil? edges) nil
         (drop-dependency-rows (map 'entry-of (map 'dependency-entry-id edges)) mine))))
 
@@ -1765,8 +1848,10 @@
       (let ((projects (project-summaries)))
         (let ((projects (if (nil? folder) projects
                             (filter-with 'project-in-folder? folder projects))))
-          (let ((folders (if (nil? folder) (all-entry-bodies "folder/")
-                             (filter-with 'folder-slug? folder (all-entry-bodies "folder/")))))
+          (let ((folders (if (nil? folder)
+                             (field-bodies "folder/" (list "slug" "name" "parent"))
+                             (filter-with 'folder-slug? folder
+                               (field-bodies "folder/" (list "slug" "name" "parent"))))))
             (let ((rollups (project-rollups projects all now days stale-days)))
               (let ((work (filter 'work-issue? all))
                     (ready (filter-with 'ready-work? now work))
@@ -1799,7 +1884,8 @@
       ((= path "mb list")
         (or-empty (list-project project (cli-result-option result "id")
           (cli-result-option result "all") (limit-option result))))
-      ((= path "mb ready") (or-empty (ready-project project)))
+      ((= path "mb ready")
+        (or-empty (ready-project project (limit-option result))))
       ((= path "mb show") (let ((id (first (cli-result-args result))))
                             (list (issue-with-counts (issue-body id)))))
       ((= path "mb history") (or-empty (history-issue (first (cli-result-args result)))))
