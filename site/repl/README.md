@@ -5,7 +5,9 @@ compiled for `wasm32-unknown-unknown` and wrapped with `wasm-bindgen`. It
 evaluates reader forms, `defun`, `let`, `cond`, arithmetic, lists, JSON, and
 the host-free prelude. `site/repl.js` boots it with `core/prelude.soil` inside
 a dedicated worker per panel (`site/repl-worker.js`). The page terminates a
-worker after three seconds so a slow edit cannot freeze the UI.
+worker after three seconds so a slow edit cannot freeze the UI. Game of Life
+output is also painted as an animated canvas by `site/repl-life.js`; the raw
+text stays available behind the Text button.
 
 It is an artifact, not a Rust checkout: this repository stays Soil source. The
 wrapper is the `Session::new(prelude)` / `Session::eval(source)` pair around
