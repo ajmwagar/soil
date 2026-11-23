@@ -104,3 +104,61 @@
 
 (defun ooda/parse-sse-chunks (chunks)
   (ooda/parse-sse (string-join chunks "")))
+
+; ---------------------------------------------------------------------------
+; Incremental SSE state
+;
+; State is (:buffer REMAINDER :lines EVENT-LINES).
+; `feed` emits only complete events; `finish` flushes a final unterminated event.
+
+(defun sse/split-complete (chars line lines)
+  (cond
+    ((nil? chars) (list (reverse lines) line))
+    ((= (first chars) "\n")
+      (sse/split-complete (rest chars) "" (cons (sse/strip-cr line) lines)))
+    (else
+      (sse/split-complete (rest chars) (str line (first chars)) lines))))
+
+(defun ooda/stream-new ()
+  (list (list :buffer "") (list :lines nil)))
+
+(defun ooda/stream-state-lines (state lines)
+  (assoc :lines lines state))
+
+(defun ooda/stream-state-buffer (state buffer)
+  (assoc :buffer buffer state))
+
+(defun ooda/stream-feed-lines (lines current events state)
+  (cond
+    ((nil? lines)
+      (list (or-empty (reverse events))
+            (ooda/stream-state-lines state (reverse current))))
+    ((= (first lines) "")
+      (if (nil? current)
+          (ooda/stream-feed-lines (rest lines) nil events state)
+          (let ((event (ooda/event-from-data
+                         (sse/event-data (reverse current)))))
+            (ooda/stream-feed-lines (rest lines) nil
+              (cons event events) state))))
+    (else
+      (ooda/stream-feed-lines (rest lines) (cons (first lines) current)
+        events state))))
+
+(defun ooda/stream-feed (state chunk)
+  (let ((combined (str (field state :buffer) chunk)))
+    (let ((split (sse/split-complete (string-chars combined) "" nil)))
+      (let ((lines (first split))
+            (remainder (nth 1 split)))
+        (let ((fed (ooda/stream-feed-lines lines
+                     (reverse (or-empty (field state :lines)))
+                     nil state)))
+          (list (first fed)
+                (ooda/stream-state-buffer (nth 1 fed) remainder)))))))
+
+(defun ooda/stream-finish (state)
+  (let ((lines (or-empty (field state :lines))))
+    (if (nil? lines)
+        (list (list) state)
+        (list
+          (list (ooda/event-from-data (sse/event-data lines)))
+          (ooda/stream-state-lines state nil)))))
