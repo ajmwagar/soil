@@ -264,31 +264,34 @@
           result))))
 
 
-(defun tend/image-with (entry prelude compiler)
+(defun tend/image-with (entry prelude compiler loads)
   (list
     (list :entry entry)
     (list :prelude prelude)
-    (list :compiler compiler)))
+    (list :compiler compiler)
+    (list :loads loads)))
 
-(defun tend/parse-image-opts (opts entry prelude compiler)
+(defun tend/parse-image-opts (opts entry prelude compiler loads)
   (if (nil? opts)
       (if (nil? entry)
           (tend/err "image needs an entry")
-          (tend/ok (tend/image-with entry prelude compiler)))
+          (tend/ok (tend/image-with entry prelude compiler loads)))
       (let ((opt (first opts)))
         (let ((key (first opt)))
           (cond
             ((= key 'entry)
-              (tend/parse-image-opts (rest opts) (nth 1 opt) prelude compiler))
+              (tend/parse-image-opts (rest opts) (nth 1 opt) prelude compiler loads))
             ((= key 'prelude)
-              (tend/parse-image-opts (rest opts) entry (nth 1 opt) compiler))
+              (tend/parse-image-opts (rest opts) entry (nth 1 opt) compiler loads))
             ((= key 'compiler)
-              (tend/parse-image-opts (rest opts) entry prelude (nth 1 opt)))
+              (tend/parse-image-opts (rest opts) entry prelude (nth 1 opt) loads))
+            ((= key 'load)
+              (tend/parse-image-opts (rest opts) entry prelude compiler (drop 1 opt)))
             (else
               (tend/err (str "unknown image option " key))))))))
 
 (defun tend/parse-image (item manifest)
-  (let ((result (tend/parse-image-opts (drop 1 item) nil nil nil)))
+  (let ((result (tend/parse-image-opts (drop 1 item) nil nil nil nil)))
     (if (ok? result)
         (tend/ok (tend/set manifest :image (value result)))
         result)))
@@ -486,6 +489,9 @@
            (if (nil? (field image :compiler))
                ""
                (str "    (compiler " (tend/quote (field image :compiler)) ")\n"))
+           (if (nil? (field image :loads))
+               ""
+               (str "    (load" (tend/string-list (field image :loads)) ")\n"))
            "  )\n")))
 
 (defun tend/emit-spore (spore)
