@@ -122,6 +122,35 @@
       (i64.store (i32.wrap_i64 (+ bytes 8)) (+ length 1))
       bytes)))
 
+;;; primitive floor ---------------------------------------------------------
+;;; The compiler lowers calls it does not define to calls by name, so compiling
+;;; the compiler needs these to exist in the target module. This is the first
+;;; slice of that floor; docs/self-hosting.md lists the rest.
+
+(defun rt/nil? (value)
+  (if (= value rt/nil) 1 0))
+
+(defun rt/first (pair)
+  (rt/car pair))
+
+(defun rt/rest (pair)
+  (rt/cdr pair))
+
+(defun rt/length (list)
+  (if (= list rt/nil)
+      0
+      (+ 1 (rt/length (rt/cdr list)))))
+
+(defun rt/append (left right)
+  (if (= left rt/nil)
+      right
+      (rt/cons (rt/car left) (rt/append (rt/cdr left) right))))
+
+(defun rt/reverse (list)
+  (if (= list rt/nil)
+      rt/nil
+      (rt/append (rt/reverse (rt/cdr list)) (rt/cons (rt/car list) rt/nil))))
+
 ;;; environment ------------------------------------------------------------
 ;;; An environment is an association list of (name . value) pairs.
 

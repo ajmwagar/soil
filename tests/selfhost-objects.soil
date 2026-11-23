@@ -77,3 +77,18 @@
     (begin
       (rt/bytes-set bytes 1 122)
       (rt/bytes-get bytes 1))))
+
+(defun rt/test-nil? ()
+  (rt/nil? rt/nil))
+
+(defun rt/test-length ()
+  (rt/length (list 10 20 30)))
+
+(defun rt/test-append-length ()
+  (rt/length (rt/append (list 1 2) (list 3 4 5))))
+
+(defun rt/test-reverse-first ()
+  (rt/car (rt/reverse (list 1 2 3))))
+
+(defun rt/test-first/rest ()
+  (+ (rt/first (list 7 8)) (rt/first (rt/rest (list 7 8)))))

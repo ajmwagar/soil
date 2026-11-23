@@ -43,5 +43,10 @@ check rt/test-bytes-capacity 4
 check rt/test-bytes-push-length 2
 check rt/test-bytes-get 66
 check rt/test-bytes-set-get 122
+check rt/test-nil? 1
+check rt/test-length 3
+check rt/test-append-length 5
+check rt/test-reverse-first 3
+check 'rt/test-first/rest' 15
 
 printf 'selfhost-objects: ok\n'
