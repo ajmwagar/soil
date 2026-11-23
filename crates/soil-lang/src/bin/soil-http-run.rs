@@ -26,6 +26,7 @@ struct Config {
     workspace: PathBuf,
     records: PathBuf,
     book: String,
+    assets: Option<PathBuf>,
     files: Vec<PathBuf>,
 }
 
@@ -44,6 +45,7 @@ fn main() -> Result<()> {
         workspace: home.join(".local/share/fungos/vfs"),
         records: home.join(".local/share/fungos/records"),
         book: "hue".into(),
+        assets: None,
         files: Vec::new(),
     };
     let mut args = std::env::args().skip(1);
@@ -65,12 +67,13 @@ fn main() -> Result<()> {
             }
             "--records-root" => config.records = PathBuf::from(next(&mut args, "--records-root")?),
             "--book" => config.book = next(&mut args, "--book")?,
+            "--assets" => config.assets = Some(PathBuf::from(next(&mut args, "--assets")?)),
             "-h" | "--help" => {
                 println!(
                     "usage: soil-http-run [--listen ADDR] [--bridge URL] [--call NAME] \
                      [--allow ORIGIN]... [--geode-socket PATH --geode-reference REF \
                      --geode-purpose PURPOSE] [--workspace-root DIR] [--records-root DIR] \
-                     [--book NAME] FILE..."
+                     [--book NAME] [--assets DIR] FILE..."
                 );
                 return Ok(());
             }
@@ -104,8 +107,15 @@ fn main() -> Result<()> {
     let mut runtime = Runtime::new(Box::new(host));
     let prelude = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib/prelude.soil");
     let ui = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib/ui.soil");
+    let bindings = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("bindings");
     runtime.load_file(&prelude).context("load prelude")?;
     runtime.load_file(&ui).context("load ui")?;
+    runtime
+        .load_file(bindings.join("soil-records.soil"))
+        .context("load soil:records")?;
+    runtime
+        .load_file(bindings.join("soil-time.soil"))
+        .context("load soil:time")?;
     for file in &config.files {
         runtime
             .load_file(file)
@@ -149,6 +159,19 @@ fn serve(mut stream: TcpStream, runtime: &mut Runtime, config: &Config) -> Resul
         return Ok(());
     };
     let method = request.method.to_ascii_uppercase();
+    if method == "GET" || method == "HEAD" {
+        if let Some((content_type, bytes)) = static_asset(config, &request.target) {
+            write_response(
+                &mut stream,
+                200,
+                "OK",
+                &content_type,
+                if method == "HEAD" { &[] } else { &bytes },
+                None,
+            )?;
+            return Ok(());
+        }
+    }
     let body = String::from_utf8_lossy(&request.body).to_string();
     let result = runtime
         .call(
@@ -172,15 +195,63 @@ fn serve(mut stream: TcpStream, runtime: &mut Runtime, config: &Config) -> Resul
         503 => "Service Unavailable",
         _ => "Internal Server Error",
     };
+    write_response(
+        &mut stream,
+        status,
+        reason,
+        &content_type,
+        body.as_bytes(),
+        if status == 303 { Some("/") } else { None },
+    )
+}
+
+fn write_response(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    content_type: &str,
+    body: &[u8],
+    location: Option<&str>,
+) -> Result<()> {
+    let location = location
+        .map(|location| format!("location: {location}\r\n"))
+        .unwrap_or_default();
     let head = format!(
-        "HTTP/1.1 {status} {reason}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\ncache-control: no-store\r\n{}connection: close\r\n\r\n",
-        body.as_bytes().len(),
-        if status == 303 { "location: /\r\n" } else { "" }
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\ncache-control: no-store\r\n{location}connection: close\r\n\r\n",
+        body.len(),
     );
     stream.write_all(head.as_bytes())?;
-    stream.write_all(body.as_bytes())?;
+    stream.write_all(body)?;
     stream.flush()?;
     Ok(())
+}
+
+fn static_asset(config: &Config, target: &str) -> Option<(String, Vec<u8>)> {
+    let root = config.assets.as_ref()?;
+    let path = target.split('?').next().unwrap_or("/");
+    let relative = path.trim_start_matches('/');
+    if relative.is_empty()
+        || relative.contains("..")
+        || relative.starts_with('.')
+        || relative.contains('\\')
+    {
+        return None;
+    }
+    let root = root.canonicalize().ok()?;
+    let file = root.join(relative).canonicalize().ok()?;
+    if !file.starts_with(&root) || !file.is_file() {
+        return None;
+    }
+    let content_type = match file.extension().and_then(|value| value.to_str()) {
+        Some("css") => "text/css; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("ico") => "image/x-icon",
+        _ => "application/octet-stream",
+    };
+    let bytes = std::fs::read(&file).ok()?;
+    Some((content_type.into(), bytes))
 }
 
 fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
