@@ -293,7 +293,44 @@ The export can appear before or after the `defun`. Rename with a string:
 ```
 
 Current type syntax: scalar names, `(list T)`, `(option T)`, `(result T E)`,
-and `(tuple T ...)`. Records, variants, resources, and imports are still ahead.
+`(tuple T ...)`, and named `record` declarations.
+
+Records cannot be declared in a WIT world, so a source that declares any emits
+them in an interface and the world exports that interface:
+
+```soil
+(package "fungos:hue@0.1.0")
+(world "hue")
+(interface "lights")
+
+(record colour (x f32) (y f32))
+(record light-state (id string) (on bool) (colour colour))
+
+(export lights -> (list light-state))
+```
+
+```wit
+package fungos:hue@0.1.0;
+
+interface lights {
+  record colour { x: f32, y: f32 }
+  record light-state { id: string, on: bool, colour: colour }
+  lights: func() -> list<light-state>;
+}
+
+world hue {
+  export lights;
+}
+```
+
+```sh
+scripts/test-wit-export-records.sh
+# wit-export-records: ok (interface + records + world export)
+```
+
+This proves the *contract*. The core-ABI half — lowering a `defun` that returns
+a `list<record>` into the component's canonical ABI, so `module.wasm` is Soil
+rather than a Rust adapter — is still ahead. Variants and resources likewise.
 
 ## Selfhost compile
 

@@ -1,0 +1,34 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; WIT export fixture with named types, the shape a Hue lights surface needs.
+;
+; Records cannot live in a world, so this emits an interface and the world
+; exports it. Loaded by scripts/test-wit-export-records.sh.
+
+(package "fungos:hue@0.1.0")
+(world "hue")
+(interface "lights")
+
+(record colour
+  (x f32)
+  (y f32))
+
+(record light-state
+  (id string)
+  (name string)
+  (on bool)
+  (brightness f32)
+  (colour colour))
+
+(defun lights ()
+  nil)
+
+(defun set-light (id on)
+  on)
+
+(export lights
+  -> (list light-state))
+
+(export set-light
+  (id string)
+  (on bool)
+  -> (result light-state string))

@@ -440,10 +440,47 @@
         ""
         (str " -> " (compiler/wit-type result)))))
 
+;;; A world exports a function with `export name: func(...)`; an interface
+;;; declares the same function as `name: func(...)`.
 (defun compiler/wit-export (entry)
   (str "  export " (field entry :name) ": func("
        (compiler/wit-params (field entry :params)) ")"
        (compiler/wit-result entry) ";\n"))
+
+(defun compiler/wit-method (entry)
+  (str "  " (field entry :name) ": func("
+       (compiler/wit-params (field entry :params)) ")"
+       (compiler/wit-result entry) ";\n"))
+
+(defun compiler/record? (form)
+  (compiler/decl? form "record"))
+
+(defun compiler/wit-field (field)
+  (str (first field) ": " (compiler/wit-type (nth 1 field))))
+
+(defun compiler/wit-fields (fields)
+  (if (nil? fields)
+      ""
+      (str "    " (compiler/wit-field (first fields)) ",\n"
+           (compiler/wit-fields (rest fields)))))
+
+(defun compiler/wit-record (form)
+  (str "  record " (str (nth 1 form)) " {\n"
+       (compiler/wit-fields (drop 2 form))
+       "  }\n\n"))
+
+(defun compiler/records (forms)
+  (cond
+    ((nil? forms) nil)
+    ((compiler/record? (first forms))
+      (cons (first forms) (compiler/records (rest forms))))
+    (else (compiler/records (rest forms)))))
+
+(defun compiler/wit-records (records)
+  (if (nil? records)
+      ""
+      (str (compiler/wit-record (first records))
+           (compiler/wit-records (rest records)))))
 
 (defun compiler/wit-exports (exports)
   (if (nil? exports)
@@ -451,13 +488,34 @@
       (str (compiler/wit-export (first exports))
            (compiler/wit-exports (rest exports)))))
 
+(defun compiler/wit-methods (exports)
+  (if (nil? exports)
+      ""
+      (str (compiler/wit-method (first exports))
+           (compiler/wit-methods (rest exports)))))
+
 ;;; Emit a WIT package/world from `export` declarations.
+;;;
+;;; Named types (`record`) cannot live in a world, so a source that declares any
+;;; emits them in an interface and the world exports that interface. The
+;;; interface name defaults to `api` and is set with `(interface "lights")`.
 (defun compiler/wit (source)
   (let ((forms (wasm/expand-forms (read source))))
-    (str "package " (compiler/decl forms "package" "soil:guest@0.1.0") ";\n\n"
-         "world " (compiler/decl forms "world" "guest") " {\n"
-         (compiler/wit-exports (compiler/exports forms))
-         "}\n")))
+    (let ((records (compiler/records forms)))
+      (if (nil? records)
+          (str "package " (compiler/decl forms "package" "soil:guest@0.1.0") ";\n\n"
+               "world " (compiler/decl forms "world" "guest") " {\n"
+               (compiler/wit-exports (compiler/exports forms))
+               "}\n")
+          (let ((interface (compiler/decl forms "interface" "api")))
+            (str "package " (compiler/decl forms "package" "soil:guest@0.1.0") ";\n\n"
+                 "interface " interface " {\n"
+                 (compiler/wit-records records)
+                 (compiler/wit-methods (compiler/exports forms))
+                 "}\n\n"
+                 "world " (compiler/decl forms "world" "guest") " {\n"
+                 "  export " interface ";\n"
+                 "}\n"))))))
 
 (defun compiler/compile-source (source)
   (let ((forms (wasm/expand-forms (read source))))
