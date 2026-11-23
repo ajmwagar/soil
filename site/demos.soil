@@ -120,7 +120,7 @@
                   (a "docs/" "btn" (list (txt (book-copy :demos :next-docs-label))))
                   (a "https://github.com/ajmwagar/soil/tree/master/examples/lisp" "btn" (list (txt (book-copy :demos :next-source-label))))))))))
       (demo-footer)
-      (el "script" (list (attr :type "module") (attr :src "repl.js")) nil))))
+      (el "script" (list (attr :type "module") (attr :src "repl.js?v=20261123")) nil))))
 
 (defun demo-footer ()
   (el "footer" (list (attr :class "footer"))

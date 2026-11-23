@@ -9,4 +9,4 @@
       (list
         (view #f)
         (el "script" (list (attr :src "site.js")) nil)
-        (el "script" (list (attr :type "module") (attr :src "repl.js")) nil)))))
+        (el "script" (list (attr :type "module") (attr :src "repl.js?v=20261123")) nil)))))
