@@ -79,6 +79,13 @@
               (a "https://github.com/ajmwagar/soil/tree/master/examples" "btn"
                 (list (txt (copy :guide :examples-repo-label))))))
 
+          (el "h2" nil (list (txt (copy :guide :loam-title))))
+          (el "p" (list (attr :class "body"))
+            (list (txt (copy :guide :loam-body))))
+          (code-block (copy :guide :loam-code))
+          (el "p" (list (attr :class "body"))
+            (list (txt (copy :guide :loam-note))))
+
           (el "section" (list (attr :class "next"))
             (list
               (el "h2" nil (list (txt (copy :guide :next-title))))
