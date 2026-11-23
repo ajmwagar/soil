@@ -187,7 +187,6 @@ impl Host for NativeHost {
         function: &str,
         args: &[Value],
     ) -> std::result::Result<Value, String> {
-        eprintln!("granted called: interface=[{}], function=[{}], process.is_some={}", interface, function, self.process.is_some());
         match interface {
             "soil:time" => self.time.call(interface, function, args),
             "soil:records" => self.records.call(interface, function, args),

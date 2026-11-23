@@ -38,6 +38,10 @@ pub struct InferenceProfile {
     pub credential: Option<String>,
     /// Environment variable containing the bearer token, when not using Geode.
     pub api_key_env: Option<String>,
+    /// File holding the bearer token, for hosts that cannot carry secrets in
+    /// their environment (a daemon started by launchd). `api_key_env` wins if
+    /// both are set.
+    pub api_key_file: Option<String>,
     /// Mycelium/Unibus service id, e.g. `umie/inference`.
     pub service: Option<String>,
     /// Host-granted `services.json` snapshot.
@@ -136,7 +140,14 @@ impl SoilConfig {
         };
         let api_key = profile
             .and_then(|profile| profile.api_key_env.as_deref())
-            .and_then(|name| std::env::var(name).ok());
+            .and_then(|name| std::env::var(name).ok())
+            .or_else(|| {
+                profile
+                    .and_then(|profile| profile.api_key_file.as_deref())
+                    .and_then(|path| fs::read_to_string(expand_contract(path)).ok())
+                    .map(|key| key.trim().to_string())
+                    .filter(|key| !key.is_empty())
+            });
         Ok(ResolvedOperator {
             provider: profile.and_then(|profile| profile.provider.clone()),
             operator_bin: self.operator.operator_bin.clone(),
