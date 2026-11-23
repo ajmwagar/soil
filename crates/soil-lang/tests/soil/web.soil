@@ -1,0 +1,24 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+(defun test/url-encode-ascii ()
+  (= (web/url-encode "a b&c=d/") "a%20b%26c%3Dd%2F"))
+
+(defun test/url-encode-unicode ()
+  (= (web/url-encode "café") "caf%C3%A9"))
+
+(defun test/url-roundtrip ()
+  (let ((text "Massive Attack — Mezzanine / 100%"))
+    (= text (web/url-decode (web/url-encode text)))))
+
+(defun test/url-decode-plus ()
+  (= (web/url-decode "two+words") "two words"))
+
+(defun test/form-decode-pairs ()
+  (let ((pairs (web/form-decode "a=1&b=two+words&c=x%3Dy")))
+    (and (= (length pairs) 3)
+         (= (first (nth 1 pairs)) "b")
+         (= (first (rest (nth 1 pairs))) "two words")
+         (= (first (rest (nth 2 pairs))) "x=y"))))
+
+(defun test/form-value ()
+  (and (= (web/form-value "a=1&b=2" "b") "2")
+       (= (web/form-value "a=1" "missing") "")))

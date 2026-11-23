@@ -1,0 +1,95 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; URL and form codecs.
+;
+; These are pure string/byte helpers: no capability, no transport, no policy.
+; HTTP request parsing and responses belong in a server library; this file only
+; owns the encoding rules every web Spore needs.
+
+;;; Hex value of one ASCII hex digit, or nil.
+(defun web/hex (character)
+  (cond
+    ((= character "0") 0) ((= character "1") 1) ((= character "2") 2)
+    ((= character "3") 3) ((= character "4") 4) ((= character "5") 5)
+    ((= character "6") 6) ((= character "7") 7) ((= character "8") 8)
+    ((= character "9") 9) ((= character "a") 10) ((= character "b") 11)
+    ((= character "c") 12) ((= character "d") 13) ((= character "e") 14)
+    ((= character "f") 15) ((= character "A") 10) ((= character "B") 11)
+    ((= character "C") 12) ((= character "D") 13) ((= character "E") 14)
+    ((= character "F") 15) (else nil)))
+
+(defun web/div16 (value)
+  (if (< value 16) 0 (+ 1 (web/div16 (- value 16)))))
+
+(defun web/mod16 (value)
+  (if (< value 16) value (web/mod16 (- value 16))))
+
+(defun web/hex-digit (value)
+  (nth value (list "0" "1" "2" "3" "4" "5" "6" "7" "8" "9" "A" "B" "C" "D" "E" "F")))
+
+;;; Encode one byte. RFC 3986 unreserved characters pass through; everything
+;;; else is `%XX`, uppercase hex.
+(defun web/url-byte (byte)
+  (if (or (and (>= byte 48) (<= byte 57))
+          (and (>= byte 65) (<= byte 90))
+          (and (>= byte 97) (<= byte 122))
+          (= byte 45) (= byte 46) (= byte 95) (= byte 126))
+      (bytes->string (list byte))
+      (str "%" (web/hex-digit (web/div16 byte))
+           (web/hex-digit (web/mod16 byte)))))
+
+;;; Percent-encode every byte of `text` outside the unreserved set.
+(defun web/url-encode (text)
+  (string-join (map 'web/url-byte (string->bytes text)) ""))
+
+(defun web/decode-bytes (characters out)
+  (if (nil? characters)
+      (reverse out)
+      (let ((character (first characters)))
+        (cond
+          ((= character "+") (web/decode-bytes (rest characters) (cons 32 out)))
+          ((and (= character "%")
+                (not (nil? (rest characters)))
+                (not (nil? (rest (rest characters)))))
+           (let ((high (web/hex (first (rest characters))))
+                 (low (web/hex (first (rest (rest characters))))))
+             (if (or (nil? high) (nil? low))
+                 (web/decode-bytes (rest characters)
+                   (cons (nth 0 (string->bytes character)) out))
+                 (web/decode-bytes (drop 3 characters)
+                   (cons (+ (* 16 high) low) out)))))
+          (else
+           (web/decode-bytes (rest characters)
+             (cons (nth 0 (string->bytes character)) out)))))))
+
+;;; Decode `%XX` escapes and `+` as a space, then interpret the bytes as UTF-8.
+(defun web/url-decode (text)
+  (bytes->string (web/decode-bytes (string-chars text) nil)))
+
+(defun web/form-pair (text)
+  (let ((parts (string-split text "=")))
+    (list
+      (web/url-decode (first parts))
+      (web/url-decode (if (nil? (rest parts)) "" (string-join (rest parts) "="))))))
+
+(defun web/nonempty? (text)
+  (> (length text) 0))
+
+;;; Decode an `application/x-www-form-urlencoded` body into `(key value)` pairs.
+;;; Order is preserved; repeated keys are kept as repeated pairs.
+(defun web/form-decode (text)
+  (if (= text "")
+      nil
+      (map 'web/form-pair
+        (filter 'web/nonempty? (string-split text "&")))))
+
+(defun web/form-value-scan (pairs key)
+  (if (nil? pairs)
+      ""
+      (let ((pair (first pairs)))
+        (if (= (first pair) key)
+            (first (rest pair))
+            (web/form-value-scan (rest pairs) key)))))
+
+;;; First value for `key`, or an empty string.
+(defun web/form-value (text key)
+  (web/form-value-scan (web/form-decode text) key))
