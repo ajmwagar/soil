@@ -4,15 +4,16 @@
 // or for a shared desktop. One control plane, one record per agent -- what it
 // is doing, what it needs from a person, and the few things a person may do.
 //
-// An adapter is a host concern (Operator, Pi, another harness): it translates
-// native session events into these records and answers back. A Spore sees
-// facts, never a harness protocol, a credential, a process handle or a path.
+// An adapter is a Spore that exports its own WIT (Theseus, ACP, another
+// harness): it translates native session events into these records and answers
+// back. A view sees facts, never a harness protocol, a credential, a process
+// handle or a path.
 //
 // The contract carries facts, not moods. Anything a view derives from them
 // (a creature's energy, a wall's ordering, a pulse's colour) belongs to the
 // view, so two views of the same agent cannot disagree about a fact the way two
 // copies of a derived field would.
-package soil:agents@0.1.0;
+package soil:agents@0.2.0;
 
 interface types {
   enum error {
@@ -85,6 +86,27 @@ interface types {
     ok,
     failed,
     blocked,
+  }
+
+  enum avatar-kind {
+    image,
+    animation,
+    glyph,
+  }
+
+  /// A view-resolvable icon. Never inline bytes and never a tracking URL.
+  record avatar {
+    kind: avatar-kind,
+    /// Stable handle resolved through soil:assets or a Spore asset table.
+    asset: option<string>,
+    /// MIME type of the asset when known.
+    mime: option<string>,
+    /// Short fallback: initials, a symbol name, or one grapheme.
+    glyph: option<string>,
+    /// Alt text, always present.
+    alt: string,
+    /// True for GIF/APNG/WebP animation.
+    animated: bool,
   }
 
   /// One thing that happened, at one station.
@@ -167,6 +189,12 @@ interface types {
     output-tokens: u64,
     /// Completed assistant turns in this session.
     turns: u32,
+    /// Tool calls observed in this session, including failed ones.
+    tool-calls: u64,
+    /// Tool calls that ended in an error or cancellation.
+    tool-errors: u64,
+    /// Measured wall time of model calls. Zero means unknown.
+    model-time-ms: u64,
   }
 
   record goal {
@@ -247,6 +275,9 @@ interface types {
     /// machine is this running on" has one answer per agent, and a guess reads
     /// as a fact once it is drawn.
     device: option<string>,
+    /// Optional harness-supplied icon. A view generates a deterministic
+    /// fallback when it is absent.
+    avatar: option<avatar>,
     phase: phase,
     /// What the agent is trying to accomplish now. Absent when the harness has
     /// no notion of a goal and the last user message is the only evidence.
@@ -271,6 +302,14 @@ interface types {
     text: option<string>,
   }
 
+  /// A flat view over the prompts in `agents()`, for a dashboard that does not
+  /// want to re-derive the queue. It is not a second store.
+  record escalation {
+    agent-id: string,
+    agent-title: string,
+    prompt: prompt,
+  }
+
   /// What the host opened this surface for.
   ///
   /// A window dedicated to one agent gets its id; a wall that shows everything
@@ -284,7 +323,7 @@ interface types {
 
 /// Read-only: what the agents are doing.
 interface observe {
-  use types.{agent, binding, device, error, scope, turn};
+  use types.{agent, binding, device, error, escalation, scope, turn};
 
   record page {
     /// Newest last.
@@ -297,6 +336,10 @@ interface observe {
   /// person first, then most recently active. A view may reorder; a surface
   /// that only has room for one row should not have to.
   agents: func() -> result<list<agent>, error>;
+
+  /// Every open prompt, flattened with the agent that owns it. This is a view
+  /// over `agents()`; it is not a second queue.
+  escalations: func() -> result<list<escalation>, error>;
 
   /// The devices this surface may place work on, in the host's own order.
   ///
@@ -327,18 +370,6 @@ interface observe {
   /// Spore asks again with `before` while the person scrolls back.
   transcript: func(id: string, before: option<u64>, limit: u32) -> result<page, error>;
 
-  variant change {
-    upserted(agent),
-    removed(string),
-  }
-
-  resource subscription {
-    next: func(timeout-ms: u32) -> result<option<change>, error>;
-  }
-
-  /// One subscription per surface. Changes that happened before it opened are
-  /// not replayed: `agents` is the snapshot, the subscription is the delta.
-  subscribe: func() -> result<subscription, error>;
 }
 
 /// Control: the three things a person may do to an agent.
@@ -363,12 +394,82 @@ interface control {
   interrupt: func(id: string) -> result<_, error>;
 }
 
+/// Read-only aggregate over the agents an adapter sees.
+interface metrics {
+  use types.{error};
+
+  record harness-metrics {
+    harness: string,
+    agents: u32,
+    input-tokens: u64,
+    output-tokens: u64,
+    tool-calls: u64,
+    tool-errors: u64,
+    tokens-per-second-milli: u64,
+    measured-agents: u32,
+  }
+
+  record report {
+    since-ms: u64,
+    until-ms: u64,
+    agents: u32,
+    active: u32,
+    needs-you: u32,
+    input-tokens: u64,
+    output-tokens: u64,
+    turns: u32,
+    tool-calls: u64,
+    tool-errors: u64,
+    /// sum(output-tokens) * 1000 / sum(model-time-ms)
+    tokens-per-second-milli: u64,
+    measured-agents: u32,
+    by-harness: list<harness-metrics>,
+  }
+
+  stats: func(since-ms: option<u64>, until-ms: option<u64>)
+    -> result<report, error>;
+}
+
+/// Spawning work. Deliberately separate from `control`: answering a prompt is
+/// not authority to start a process or a billable session.
+interface dispatch {
+  use types.{error};
+
+  record task {
+    text: string,
+    /// Adapter family: "theseus", "acp", "rakazo", "muse".
+    harness: string,
+    /// Device label, never a hostname guess.
+    environment: string,
+    title: option<string>,
+    model: option<string>,
+  }
+
+  record started {
+    agent-id: string,
+    conversation: string,
+  }
+
+  dispatch: func(task: task) -> result<started, error>;
+}
+
 world guest {
   import observe;
   import control;
+  import metrics;
+  import dispatch;
 }
 
 world agent-host {
   import observe;
   import control;
+  import metrics;
+  import dispatch;
+}
+
+world provider {
+  export observe;
+  export control;
+  export metrics;
+  export dispatch;
 }
