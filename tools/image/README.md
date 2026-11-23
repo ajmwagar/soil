@@ -21,4 +21,4 @@ This is one live interpreter per process. It supports:
 - list
 - ping
 
-It does not yet persist or flush to a VFS. That is the next image slice.
+Snapshot/restore writes canonical Soil `(image ...)` text and reloads tracked source entries. It does not yet persist to a VFS or snapshot eval-only definitions. That is the next image slice.

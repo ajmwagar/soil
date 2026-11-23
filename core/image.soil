@@ -77,6 +77,8 @@
            (= op "status")
            (= op "flush")
            (= op "flush_new")
+           (= op "snapshot")
+           (= op "restore")
            (= op "compile")
            (= op "call-compiled")
            (= op "reload"))
