@@ -158,6 +158,23 @@ This required:
 The binary emitter still targets the numeric core; the component target is the
 WAT path for now.
 
+### String literals
+
+Source strings are emitted as data segments. `string-ptr` and `string-len`
+produce the two halves of the canonical ABI string representation, so they can
+be passed to an imported function without hand-writing stores:
+
+```lisp
+(import "test:strings" "log" "log" (i32 i32) unit)
+
+(defun main ()
+  (log (string-ptr "hello") (string-len "hello")))
+```
+
+```sh
+scripts/test-component-string-literal.sh
+```
+
 ### Canonical ABI probes
 
 ```sh
