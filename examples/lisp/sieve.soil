@@ -22,8 +22,9 @@
 (defun flag-on? (i flags) (nth i flags))
 
 (defun primes-up-to (n)
-  (let ((flags (map 'gt-one? (range 0 (+ n 1)))))
-    (filter-with 'flag-on? (sweep flags 2) (range 2 (+ n 1)))))
+  (let ((limit (max 0 (min n 300))))
+    (let ((flags (map 'gt-one? (range 0 (+ limit 1)))))
+      (filter-with 'flag-on? (sweep flags 2) (range 2 (+ limit 1))))))
 
-; Try 100, 500, or a smaller limit and watch the list change.
+; Try 100, 300, or a smaller limit and watch the list change.
 (primes-up-to 50)

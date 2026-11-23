@@ -71,10 +71,11 @@
   (string-join (map 'row-string board) "\n"))
 
 (defun generations (board n)
-  (if (= n 0)
-      (board-string board)
-      (str (board-string board) "\n\n"
-           (generations (next-board board 0) (- n 1)))))
+  (let ((limit (max 0 (min n 100))))
+    (if (= limit 0)
+        (board-string board)
+        (str (board-string board) "\n\n"
+             (generations (next-board board 0) (- limit 1))))))
 
 ; Try 1, 4, or 8 generations. The glider should walk down and right.
 (generations (glider) 4)
