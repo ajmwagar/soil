@@ -140,7 +140,7 @@
       ;; An import whose canonical ABI result is empty leaves no value on the
       ;; stack, so `body-drop` must not emit `drop` after it. Wrapping the call
       ;; is explicit: the source states that the call is a statement.
-      (compiler/expr (nth 1 expr)))
+      (compiler/expr (nth 1 expr) texts))
     ((= (str (first expr)) "i32.const32")
       (str "    i32.const " (nth 1 expr) "\n"))
     ((= (str (first expr)) "f32.const")
