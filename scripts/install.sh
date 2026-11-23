@@ -149,10 +149,31 @@ set -- --prelude "$SHARE/core/prelude.soil" --call main \
   "$SHARE/std/bindings/wasi-io.generated.soil" \
   "$SHARE/std/bindings/wasi-cli.generated.soil" \
   "$SHARE/std/wasi/stdio.soil" "$SHARE/std/wasi/fs.soil" \
+  "$SHARE/compiler/core.soil" \
   "$SHARE/tools/tend/manifest.soil" "$SHARE/tools/tend/dispatch.soil" \
-  "$SHARE/tools/tend/run.soil" "$SHARE/tools/tend/init.soil" "$SHARE/tools/tend/main.soil"
+  "$SHARE/tools/tend/run.soil" "$SHARE/tools/tend/init.soil" \
+  "$SHARE/tools/tend/build.soil" "$SHARE/tools/tend/main.soil"
 while IFS= read -r arg; do set -- "$@" --arg "$arg"; done < "$tmp"
-exec wasmtime run --dir . --dir "$SHARE" "$WASM" "$@"
+
+# Soil emits the core module; the canonical ABI is wasm-tools' job, which the
+# sandbox cannot run (no process capability). So: run the guest, then finish
+# the component here when the build produced a world.
+set +e
+wasmtime run --dir . --dir "$SHARE" "$WASM" "$@"
+STATUS=$?
+set -e
+if [ "$STATUS" -eq 0 ] && [ -f build/module.wat ] && [ -s build/world.txt ]; then
+  WORLD=$(cat build/world.txt)
+  if command -v wasm-tools >/dev/null 2>&1; then
+    wasm-tools component embed wit --world "$WORLD" build/module.wat -o build/embed.wasm
+    wasm-tools component new build/embed.wasm -o module.wasm
+    printf '(ok ((:module "module.wasm") (:world "%s")))\n' "$WORLD"
+  else
+    printf '(err "wasm-tools not found: build/module.wat left for a host that has it")\n'
+    STATUS=1
+  fi
+fi
+exit "$STATUS"
 TEND
 chmod +x "$DEST/bin/tend"
 

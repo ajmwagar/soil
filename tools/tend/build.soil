@@ -1,0 +1,102 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; `tend build`: lower a Spore's Soil sources to a core module.
+;
+; The compiler runs in this interpreter, so the artifact is WAT. Componentizing
+; (WIT world + canonical ABI) needs `wasm-tools`, which the tend sandbox has no
+; process capability for: this writes build/module.wat and build/world.txt, and
+; the host wrapper finishes with `component embed` / `component new`.
+
+(defun tend/slurp (path)
+  (let ((result (fs/read path)))
+    (if (ok? result) (value result) nil)))
+
+(defun tend/drop-bytes (bytes n)
+  (if (or (nil? bytes) (= n 0)) bytes (tend/drop-bytes (rest bytes) (- n 1))))
+
+(defun tend/tail (text n)
+  (let ((bytes (string->bytes text)))
+    (if (>= n (length bytes))
+        text
+        (bytes->string (tend/drop-bytes bytes (- (length bytes) n))))))
+
+(defun tend/ends-with? (text suffix)
+  (= (tend/tail text (length suffix)) suffix))
+
+(defun tend/soil-file? (entry)
+  (and (not (field entry :dir))
+       (tend/ends-with? (field entry :name) ".soil")))
+
+(defun tend/entry-paths (entries acc)
+  (if (nil? entries)
+      (reverse acc)
+      (let ((entry (first entries)))
+        (tend/entry-paths (rest entries)
+          (if (tend/soil-file? entry)
+              (cons (field entry :path) acc)
+              acc)))))
+
+(defun tend/concat (paths acc)
+  (if (nil? paths)
+      acc
+      (let ((text (tend/slurp (first paths))))
+        (tend/concat (rest paths)
+                     (if (nil? text) acc (str acc text "\n"))))))
+
+(defun tend/spore-sources ()
+  (let ((listing (fs/list "src")))
+    (if (not (ok? listing))
+        (list 'err (str "read src: " (value listing)))
+        (let ((paths (tend/entry-paths (value listing) nil)))
+          (if (nil? paths)
+              (list 'err "src has no .soil files")
+              (let ((source (tend/concat paths "")))
+                (if (nil? source)
+                    (list 'err "a src file could not be read")
+                    (list 'ok (list (list :paths paths) (list :source source))))))))))
+
+; Structural walk: the compiler lowers flat WIT imports, not host-call, and not
+; resource types. Refuse by form rather than by grep so comments cannot lie.
+(defun tend/mentions? (form needle)
+  (cond
+    ((nil? form) #f)
+    ((atom form) (= (str form) needle))
+    ((tend/mentions? (first form) needle) #t)
+    (else (tend/mentions? (rest form) needle))))
+
+(defun tend/unsupported (forms)
+  (cond
+    ((tend/mentions? forms "host-call")
+      "source uses host-call: host-call -> typed WIT imports is not lowered yet")
+    ((tend/mentions? forms "open-stream")
+      "source uses soil:inference streaming: resources are not lowered yet")
+    (else nil)))
+
+(defun tend/world-of (forms)
+  (cond
+    ((nil? forms) nil)
+    ((and (not (atom (first forms))) (= (str (first (first forms))) "world"))
+      (nth 1 (first forms)))
+    (else (tend/world-of (rest forms)))))
+
+(defun tend/build (args)
+  (let ((sources (tend/spore-sources)))
+    (if (not (ok? sources))
+        sources
+        (let ((paths (field (value sources) :paths))
+              (source (field (value sources) :source)))
+          (let ((forms (read source)))
+            (let ((blocked (tend/unsupported forms)))
+              (if (not (nil? blocked))
+                  (list 'err blocked)
+                  (begin
+                    (fs/mkdir "build")
+                    (let ((wat (compiler/component-wat source)))
+                      (fs/write "build/module.wat" wat)
+                      (let ((world (tend/world-of forms)))
+                        (fs/write "build/world.txt" (if (nil? world) "" (str world)))
+                        (list 'ok
+                          (list
+                            (list :sources paths)
+                            (list :wat "build/module.wat")
+                            (list :world world)
+                            (list :bytes (length wat))))))))))))))
