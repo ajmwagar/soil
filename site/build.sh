@@ -34,6 +34,7 @@ mkdir -p site/dist/repl
 cp site/repl/soil_repl_wasm.js site/repl/soil_repl_wasm_bg.wasm site/dist/repl/
 cat core/prelude.soil core/url.soil core/json.soil core/date.soil core/ui.soil core/highlight.soil > site/dist/repl/prelude.soil
 cp site/repl.js site/dist/repl.js
+cp site/repl-life.js site/dist/repl-life.js
 cp site/repl-worker.js site/dist/repl-worker.js
 cp site/docs.js site/dist/docs.js
 cp site/strata.svg site/dist/strata.svg

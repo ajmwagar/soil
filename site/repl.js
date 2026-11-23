@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Boot every Soil REPL on the page. Each panel owns a worker so a slow edit
 // can be terminated without blocking the page.
+import { mountLifeCanvas } from "./repl-life.js";
+
 const STORAGE_SOURCE = "soil-repl-source";
 const STORAGE_HISTORY = "soil-repl-history";
 const HISTORY_LIMIT = 20;
@@ -118,6 +120,7 @@ if (panels.length) {
     let pendingRun = false;
     let timeout = null;
     let timer = null;
+    let visual = null;
 
     function setStatus(text, error = false) {
       status.textContent = text;
@@ -142,6 +145,12 @@ if (panels.length) {
       }
     }
 
+    function clearVisual() {
+      if (!visual) return;
+      visual.destroy();
+      visual = null;
+    }
+
     function stopWorker(message) {
       if (timeout) clearTimeout(timeout);
       timeout = null;
@@ -150,6 +159,7 @@ if (panels.length) {
       ready = false;
       booting = false;
       pendingRun = false;
+      clearVisual();
       if (message) {
         output.textContent = message;
         output.classList.add("is-error");
@@ -160,15 +170,26 @@ if (panels.length) {
     function finish(result) {
       if (timeout) clearTimeout(timeout);
       timeout = null;
+      clearVisual();
       output.textContent = result;
       const error = result.startsWith("error:");
       output.classList.toggle("is-error", error);
       setStatus(error ? "error" : "ran", error);
+      if (!error && panel.dataset.replId === "life") {
+        try {
+          visual = mountLifeCanvas(panel, output, result);
+        } catch {
+          visual = null;
+          output.hidden = false;
+          output.removeAttribute("aria-hidden");
+        }
+      }
     }
 
     function run() {
       const source = input.value;
       if (!source.trim()) {
+        clearVisual();
         output.textContent = "";
         output.classList.remove("is-error");
         return;
