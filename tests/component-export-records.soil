@@ -1,0 +1,37 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Canonical ABI export: `lights: func() -> list<light-state>`.
+;
+; light-state = { id: string, name: string, on: bool, brightness: f32,
+;                 colour: { x: f32, y: f32 } }
+;
+; Memory layout (align 4, stride 32):
+;
+;    0  id       (ptr, len)
+;    8  name     (ptr, len)
+;   16  on       (u8)
+;   20  brightness (f32)
+;   24  colour.x (f32)
+;   28  colour.y (f32)
+
+(package "fungos:hue@0.1.0")
+(world "hue")
+(interface "lights")
+
+(record colour
+  (x f32)
+  (y f32))
+
+(record light-state
+  (id string)
+  (name string)
+  (on bool)
+  (brightness f32)
+  (colour colour))
+
+(defun-export lights -> (list light-state)
+  (list
+    (light-state "hall" "Hall" #t 0.5 (colour 0.3 0.4))
+    (light-state "desk" "Desk" #f 0.0 (colour 0.1 0.2))))
+
+(export lights
+  -> (list light-state))
