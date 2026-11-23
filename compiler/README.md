@@ -328,9 +328,51 @@ scripts/test-wit-export-records.sh
 # wit-export-records: ok (interface + records + world export)
 ```
 
-This proves the *contract*. The core-ABI half — lowering a `defun` that returns
-a `list<record>` into the component's canonical ABI, so `module.wasm` is Soil
-rather than a Rust adapter — is still ahead. Variants and resources likewise.
+This proves the *contract*.
+
+## Canonical ABI export: `list<record>`
+
+`defun-export` lowers a record-list literal to the core function the component
+model expects. A `list<record>` result flattens to `(ptr, len)` — two core
+values — so the guest allocates a return area, writes the pair there and returns
+its pointer:
+
+```soil
+(defun-export lights -> (list light-state)
+  (list
+    (light-state "hall" "Hall" #t 0.5 (colour 0.3 0.4))
+    (light-state "desk" "Desk" #f 0.0 (colour 0.1 0.2))))
+```
+
+For the `light-state` above, the element stride is 32 and the field offsets are
+the canonical ones:
+
+```text
+ 0  id          (ptr, len)
+ 8  name        (ptr, len)
+16  on          (u8)
+20  brightness  (f32)
+24  colour.x    (f32)
+28  colour.y    (f32)
+```
+
+The export is named for the interface it belongs to —
+`fungos:hue/lights@0.1.0#lights` — because that is the core export name the
+component encoder looks up.
+
+```sh
+scripts/test-component-export-records.sh
+# [{id: "hall", name: "Hall", on: true, brightness: 0.5, colour: {x: 0.3, y: 0.4}}, ...]
+# component-export-records: ok (list<record> exported from Soil)
+```
+
+The gate runs the component, so it checks the layout, not just that the encoder
+accepted the signature.
+
+Limits of this slice: element values are literals (no parameters, no data read
+at runtime), string data lives in a static area at 64 KiB, and there is no
+post-return. Variants, resources and functions that take records are still
+ahead.
 
 ## Selfhost compile
 

@@ -128,6 +128,18 @@
       (str (compiler/expr (nth 1 expr) texts) (compiler/expr (nth 2 expr) texts) "    i32.store\n"))
     ((= (str (first expr)) "i32.store8")
       (str (compiler/expr (nth 1 expr) texts) (compiler/expr (nth 2 expr) texts) "    i32.store8\n"))
+    ((= (str (first expr)) "i32.store-at")
+      (str "    local.get $base\n"
+           (compiler/expr (nth 2 expr) texts)
+           "    i32.store8 offset=" (nth 1 expr) "\n"))
+    ((= (str (first expr)) "f32.store-at")
+      (str "    local.get $base\n"
+           (compiler/expr (nth 2 expr) texts)
+           "    f32.store offset=" (nth 1 expr) "\n"))
+    ((= (str (first expr)) "i32.const32")
+      (str "    i32.const " (nth 1 expr) "\n"))
+    ((= (str (first expr)) "f32.const")
+      (str "    f32.const " (nth 1 expr) "\n"))
     ((= (str (first expr)) "i64.extend_i32_u")
       (str (compiler/expr (nth 1 expr) texts) "    i64.extend_i32_u\n"))
     ((= (str (first expr)) "not")
@@ -211,7 +223,209 @@
          (if (nil? (nth 3 form)) "" (compiler/expr (nth 3 form) texts))
          "  )\n")))
 
-(defun compiler/forms (forms texts)
+
+; ---------------------------------------------------------------------------
+; Canonical ABI lowering for an export that returns a list of records.
+;
+; `defun-export` takes a record list literal and emits the core function the
+; component model expects: results flatten to (ptr, len), which is more than one
+; core value, so the caller passes a return-area pointer as the only parameter
+; and the function returns nothing.
+;
+; Only the shapes a lights surface needs are lowered: string, bool, f32 and
+; nested records of those. Anything else falls back to a 4-byte slot rather than
+; silently emitting a wrong layout.
+
+(defun abi/scalar-size (name)
+  (cond
+    ((= name "bool") 1)
+    ((= name "u8") 1)
+    ((= name "u16") 2)
+    ((= name "f32") 4)
+    ((= name "u32") 4)
+    ((= name "s32") 4)
+    ((= name "u64") 8)
+    ((= name "s64") 8)
+    ((= name "f64") 8)
+    (else 0)))
+
+(defun abi/find-record (name records)
+  (cond
+    ((nil? records) nil)
+    ((= (str (nth 1 (first records))) name) (first records))
+    (else (abi/find-record name (rest records)))))
+
+;;; `/` is float division in the interpreter, so alignment needs an integer
+;;; divide or offsets come out fractional (and silently truncated into wrong
+;;; field positions).
+(defun abi/div (n d)
+  (if (< n d) 0 (+ 1 (abi/div (- n d) d))))
+
+(defun abi/align-up (n align)
+  (* align (abi/div (+ n (- align 1)) align)))
+
+(defun abi/align (type records)
+  (let ((scalar (abi/scalar-size (str type))))
+    (if (> scalar 0)
+        (min scalar 4)
+        (if (= (str type) "string")
+            4
+            (if (not (atom type))
+                4
+                (let ((record (abi/find-record (str type) records)))
+                  (if (nil? record)
+                      4
+                      (nth 1 (abi/layout (drop 2 record) records 0 1)))))))))
+
+(defun abi/size (type records)
+  (let ((scalar (abi/scalar-size (str type))))
+    (if (> scalar 0)
+        scalar
+        (if (= (str type) "string")
+            8
+            (if (not (atom type))
+                8
+                (let ((record (abi/find-record (str type) records)))
+                  (if (nil? record)
+                      4
+                      (abi/record-size record records))))))))
+
+(defun abi/layout (fields records offset align)
+  (if (nil? fields)
+      (list offset align)
+      (let ((field (first fields)))
+        (let ((ftype (nth 1 field)))
+          (let ((offset (abi/align-up offset (abi/align ftype records))))
+            (abi/layout (rest fields)
+                        records
+                        (+ offset (abi/size ftype records))
+                        (max align (abi/align ftype records))))))))
+
+(defun abi/record-size (record records)
+  (let ((layout (abi/layout (drop 2 record) records 0 1)))
+    (abi/align-up (first layout) (nth 1 layout))))
+
+;;; String data is written at a fixed static offset per element and string, so
+;;; codegen needs no allocator for it. `ctx` is (element-index string-index).
+(defun abi/data-offset (ctx)
+  (+ 65536 (+ (* (first ctx) 1024) (* (nth 1 ctx) 64))))
+
+(defun abi/next-ctx (ctx)
+  (list (first ctx) (+ (nth 1 ctx) 1)))
+
+(defun abi/emit-bytes (offset bytes)
+  (if (nil? bytes)
+      ""
+      (str "    i32.const " offset "\n"
+           "    i32.const " (first bytes) "\n"
+           "    i32.store8\n"
+           (abi/emit-bytes (+ offset 1) (rest bytes)))))
+
+(defun abi/emit-field (ftype value records offset ctx)
+  (let ((kind (str ftype)))
+    (cond
+      ((= kind "bool")
+        (list (str "    local.get $base\n"
+                   "    i32.const " (if value 1 0) "\n"
+                   "    i32.store8 offset=" offset "\n")
+              ctx))
+      ((= kind "f32")
+        (list (str "    local.get $base\n"
+                   "    f32.const " (str value) "\n"
+                   "    f32.store offset=" offset "\n")
+              ctx))
+      ((= kind "string")
+        (let ((data (abi/data-offset ctx)))
+          (list (str "    local.get $base\n"
+                     "    i32.const " data "\n"
+                     "    i32.store offset=" offset "\n"
+                     "    local.get $base\n"
+                     "    i32.const " (length (str value)) "\n"
+                     "    i32.store offset=" (+ offset 4) "\n"
+                     (abi/emit-bytes data (string->bytes (str value))))
+                (abi/next-ctx ctx))))
+      (else
+        (let ((record (abi/find-record kind records)))
+          (if (nil? record)
+              (list "" ctx)
+              (abi/emit-fields (drop 2 record) (rest value) records offset ctx)))))))
+
+(defun abi/emit-fields (fields values records offset ctx)
+  (if (nil? fields)
+      (list "" ctx)
+      (let ((field (first fields)))
+        (let ((ftype (nth 1 field)))
+          (let ((offset (abi/align-up offset (abi/align ftype records))))
+            (let ((here (abi/emit-field ftype (first values) records offset ctx)))
+              (let ((next (abi/emit-fields (rest fields)
+                                           (rest values)
+                                           records
+                                           (+ offset (abi/size ftype records))
+                                           (nth 1 here))))
+                (list (str (first here) (first next)) (nth 1 next)))))))))
+
+;;; Emit one element: base = ptr + index * stride, then its fields.
+(defun abi/emit-element (record value index records)
+  (let ((stride (abi/record-size record records)))
+    (let ((fields (abi/emit-fields (drop 2 record)
+                                   (rest value)
+                                   records
+                                   0
+                                   (list index 0))))
+      (str "    local.get $ptr\n"
+           "    i32.const " (* index stride) "\n"
+           "    i32.add\n"
+           "    local.set $base\n"
+           (first fields)))))
+
+(defun abi/emit-elements (record values records index)
+  (if (nil? values)
+      ""
+      (str (abi/emit-element record (first values) index records)
+           (abi/emit-elements record (rest values) records (+ index 1)))))
+
+(defun abi/count-values (values)
+  (if (nil? values) 0 (+ 1 (abi/count-values (rest values)))))
+
+;;; (defun-export NAME -> (list RECORD) (list (RECORD field...)...))
+(defun compiler/defun-export (form records prefix)
+  (let ((name (str (nth 1 form))))
+    (let ((type (nth 3 form)))
+      (let ((record-name (str (nth 1 type))))
+        (let ((record (abi/find-record record-name records)))
+          (if (nil? record)
+              ""
+              (let ((values (rest (nth 4 form))))
+                (let ((n (abi/count-values values)))
+                  (let ((stride (abi/record-size record records)))
+                    (str "  (func (export \"" prefix name "\") (result i32)"
+                         " (local $area i32) (local $ptr i32) (local $base i32)\n"
+                         ;; Results flatten to (ptr, len): more than one core
+                         ;; value, so the guest returns a pointer to a return
+                         ;; area holding them.
+                         "    i32.const 0\n"
+                         "    i32.const 0\n"
+                         "    i32.const 4\n"
+                         "    i32.const 8\n"
+                         "    call $cabi_realloc\n"
+                         "    local.set $area\n"
+                         "    i32.const 0\n"
+                         "    i32.const 0\n"
+                         "    i32.const " (abi/align record-name records) "\n"
+                         "    i32.const " (* n stride) "\n"
+                         "    call $cabi_realloc\n"
+                         "    local.set $ptr\n"
+                         "    local.get $area\n"
+                         "    local.get $ptr\n"
+                         "    i32.store\n"
+                         "    local.get $area\n"
+                         "    i32.const " n "\n"
+                         "    i32.store offset=4\n"
+                         (abi/emit-elements record values records 0)
+                         "    local.get $area\n"
+                         "  )\n"))))))))))
+
+(defun compiler/forms (forms records prefix texts)
   (if (nil? forms)
       ""
       (let ((form (first forms)))
@@ -222,8 +436,10 @@
                  (compiler/defun-i32 form texts))
                ((and (not (atom form)) (= (str (first form)) "defun-i32-void"))
                  (compiler/defun-i32-void form texts))
+               ((compiler/decl? form "defun-export")
+                 (compiler/defun-export form records prefix))
                (else ""))
-             (compiler/forms (rest forms) texts)))))
+             (compiler/forms (rest forms) records prefix texts)))))
 
 
 ; ---------------------------------------------------------------------------
@@ -308,9 +524,9 @@
     (let ((texts (compiler/string-literals forms)))
       (str "(module\n"
          (compiler/imports forms)
-         "  (memory (export \"cm32p2_memory\") 2)\n"
+         "  (memory (export \"cm32p2_memory\") 4)\n"
          "  (global $heap (mut i32) (i32.const 1024))\n"
-         "  (func (export \"cabi_realloc\") (param i32 i32 i32 i32) (result i32)\n"
+         "  (func $cabi_realloc (export \"cabi_realloc\") (param i32 i32 i32 i32) (result i32)\n"
          "    (local $ret i32)\n"
          "    global.get $heap\n"
          "    i32.const 7\n"
@@ -328,7 +544,8 @@
          "    else\n"
          "      local.get $ret\n"
          "    end)\n"
-         (compiler/forms forms texts)
+         (compiler/forms forms (compiler/records forms)
+                         (compiler/export-prefix forms) texts)
          (compiler/string-data texts 65536)
          ")\n"))))
 
@@ -349,6 +566,25 @@
 
 (defun compiler/decl? (form name)
   (and (not (atom form)) (= (str (first form)) name)))
+
+;;; Split "pkg:name@version" at the first `@`.
+(defun compiler/split-at (chars acc)
+  (if (nil? chars)
+      (list acc "")
+      (if (= (first chars) "@")
+          (list acc (string-join (rest chars) ""))
+          (compiler/split-at (rest chars) (str acc (first chars))))))
+
+;;; Core export name for an interface function:
+;;;   <package>/<interface>@<version>#<function>
+;;; World-level exports keep the plain name.
+(defun compiler/export-prefix (forms)
+  (if (nil? (compiler/records forms))
+      ""
+      (let ((parts (compiler/split-at (string-chars (compiler/decl forms "package" "soil:guest@0.1.0")) "")))
+        (str (first parts) "/"
+             (compiler/decl forms "interface" "api") "@"
+             (nth 1 parts) "#"))))
 
 (defun compiler/decl (forms name fallback)
   (if (nil? forms)
@@ -520,7 +756,10 @@
 (defun compiler/compile-source (source)
   (let ((forms (wasm/expand-forms (read source))))
     (let ((texts (compiler/string-literals forms)))
-      (str "(module\n" (compiler/forms forms texts) ")\n"))))
+      (str "(module\n"
+           (compiler/forms forms (compiler/records forms)
+                           (compiler/export-prefix forms) texts)
+           ")\n"))))
 
 (defun compiler/compile-wat (source)
   (compiler/compile-source source))
