@@ -1,0 +1,280 @@
+package root:component;
+
+world root {
+  import soil:records/records@0.1.0;
+  import wasi:io/poll@0.2.12;
+  import wasi:clocks/monotonic-clock@0.2.12;
+  import wasi:clocks/wall-clock@0.2.12;
+  import wasi:io/error@0.2.12;
+  import wasi:io/streams@0.2.12;
+  import wasi:cli/stdout@0.2.12;
+  import wasi:cli/stderr@0.2.12;
+  import wasi:cli/stdin@0.2.12;
+  import wasi:cli/environment@0.2.12;
+  import wasi:cli/exit@0.2.12;
+
+  export wasi:cli/run@0.2.0;
+}
+package soil:records@0.1.0 {
+  interface records {
+    record key {
+      collection: string,
+      id: string,
+    }
+
+    enum error {
+      denied,
+      not-found,
+      over-budget,
+      invalid,
+      stale,
+      io,
+      unsupported,
+    }
+
+    record packed-page {
+      entries: list<u8>,
+      next: option<string>,
+    }
+
+    record version {
+      revision: u64,
+      origin: string,
+    }
+
+    record entry {
+      key: key,
+      schema: string,
+      revision: u64,
+      updated-at-ms: u64,
+      origin: string,
+      deleted: bool,
+      body: list<u8>,
+    }
+
+    record cas-result {
+      applied: bool,
+      entry: entry,
+    }
+
+    record page {
+      entries: list<entry>,
+      next: option<string>,
+    }
+
+    record apply-result {
+      applied: u32,
+      skipped: u32,
+    }
+
+    enum filter-op {
+      eq,
+      prefix,
+      contains,
+      exists,
+      lt,
+      lte,
+      gt,
+      gte,
+    }
+
+    record filter {
+      field: string,
+      op: filter-op,
+      value: option<string>,
+    }
+
+    record query-spec {
+      collection: string,
+      prefix: option<string>,
+      filters: list<filter>,
+      fields: list<string>,
+      cursor: option<string>,
+      limit: u32,
+    }
+
+    record aggregate-spec {
+      collection: string,
+      prefix: option<string>,
+      filters: list<filter>,
+      group-by: list<string>,
+      bucket-field: option<string>,
+      bucket-seconds: u32,
+    }
+
+    record aggregate-group {
+      values: list<string>,
+      count: u64,
+    }
+
+    get: func(key: key) -> result<entry, error>;
+
+    scan: func(collection: string, cursor: option<string>, limit: u32) -> result<page, error>;
+
+    query: func(spec: query-spec) -> result<page, error>;
+
+    aggregate: func(collection: string, spec: aggregate-spec) -> result<list<aggregate-group>, error>;
+
+    scan-packed: func(collection: string, cursor: option<string>, limit: u32) -> result<packed-page, error>;
+
+    upsert: func(entry: entry) -> result<entry, error>;
+
+    compare-and-swap: func(key: key, expected: option<version>, entry: entry) -> result<cas-result, error>;
+
+    delete: func(key: key) -> result<_, error>;
+
+    changes: func(since: option<string>, limit: u32) -> result<page, error>;
+
+    apply: func(entries: list<entry>) -> result<apply-result, error>;
+  }
+}
+
+
+package soil:unibus@0.1.0 {
+  interface bus {
+    record frame {
+      kind: string,
+      producer: string,
+      issued-at-ms: u64,
+      body: list<u8>,
+    }
+
+    record page {
+      frames: list<frame>,
+      next: option<string>,
+    }
+
+    enum error {
+      denied,
+      invalid,
+      over-budget,
+      stale,
+      unavailable,
+    }
+
+    record receipt {
+      request-id: string,
+    }
+
+    poll: func(kinds: list<string>, cursor: option<string>, limit: u32) -> result<page, error>;
+
+    publish: func(kind: string, body: list<u8>, destination: option<string>, ttl-ms: u64) -> result<receipt, error>;
+  }
+}
+
+
+package wasi:io@0.2.12 {
+  interface poll {
+    resource pollable {
+      block: func();
+    }
+
+    poll: func(in: list<borrow<pollable>>) -> list<u32>;
+  }
+  interface error {
+    resource error;
+  }
+  interface streams {
+    use error.{error};
+    use poll.{pollable};
+
+    resource input-stream;
+
+    resource output-stream {
+      check-write: func() -> result<u64, stream-error>;
+      write: func(contents: list<u8>) -> result<_, stream-error>;
+      blocking-flush: func() -> result<_, stream-error>;
+      subscribe: func() -> pollable;
+    }
+
+    variant stream-error {
+      last-operation-failed(error),
+      closed,
+    }
+  }
+}
+
+
+package wasi:clocks@0.2.12 {
+  interface monotonic-clock {
+    use wasi:io/poll@0.2.12.{pollable};
+
+    type instant = u64;
+
+    type duration = u64;
+
+    now: func() -> instant;
+
+    subscribe-duration: func(when: duration) -> pollable;
+  }
+  interface wall-clock {
+    record datetime {
+      seconds: u64,
+      nanoseconds: u32,
+    }
+
+    now: func() -> datetime;
+  }
+}
+
+
+package wasi:cli@0.2.12 {
+  interface stdout {
+    use wasi:io/streams@0.2.12.{output-stream};
+
+    get-stdout: func() -> output-stream;
+  }
+  interface stderr {
+    use wasi:io/streams@0.2.12.{output-stream};
+
+    get-stderr: func() -> output-stream;
+  }
+  interface stdin {
+    use wasi:io/streams@0.2.12.{input-stream};
+
+    get-stdin: func() -> input-stream;
+  }
+  interface environment {
+    get-environment: func() -> list<tuple<string, string>>;
+
+    get-arguments: func() -> list<string>;
+  }
+  interface exit {
+    exit: func(status: result);
+  }
+  interface terminal-input {
+    resource terminal-input;
+  }
+  interface terminal-output {
+    resource terminal-output;
+  }
+  interface terminal-stdin {
+    use terminal-input.{terminal-input};
+
+    get-terminal-stdin: func() -> option<terminal-input>;
+  }
+  interface terminal-stdout {
+    use terminal-output.{terminal-output};
+
+    get-terminal-stdout: func() -> option<terminal-output>;
+  }
+  interface terminal-stderr {
+    use terminal-output.{terminal-output};
+
+    get-terminal-stderr: func() -> option<terminal-output>;
+  }
+}
+
+
+package wasi:random@0.2.12 {
+  interface insecure-seed {
+    insecure-seed: func() -> tuple<u64, u64>;
+  }
+}
+
+
+package wasi:cli@0.2.0 {
+  interface run {
+    run: func() -> result;
+  }
+}

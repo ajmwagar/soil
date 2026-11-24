@@ -1,0 +1,65 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; SSR entry: read identity records, render one HTML document.
+;
+;   phonebook render              -> directory
+;   phonebook render <handle>     -> profile
+;
+; A records store with data wins. An empty store falls back to the checked-in
+; fixtures so the page is useful before the first seed and on a host with no
+; records backend.
+
+(defun phonebook/load-collection (collection fallback)
+  (let ((result (soil:records/scan collection nil 512)))
+    (if (ok? result)
+        (let ((entries (field (value result) :entries)))
+          (if (or (nil? entries) (= (length entries) 0))
+              fallback
+              (map 'entry-body entries)))
+        fallback)))
+
+(defun phonebook/load-profiles ()
+  (phonebook/load-collection (phonebook/profiles-collection) (phonebook/fixture-profiles)))
+
+(defun phonebook/load-badges ()
+  (phonebook/load-collection (phonebook/badges-collection) (phonebook/fixture-badges)))
+
+(defun pb/not-found (handle)
+  (pb/div "pb pb-realm-meatspace"
+    (list
+      (pb/roster-nav 0 0)
+      (pb/section "pb-section"
+        (list
+          (pb/p "pb-eyebrow" (list (txt "NO SUCH SUBJECT")))
+          (el "h1" nil (list (txt (str "@" handle " is not in the directory"))))
+          (pb/p "pb-lede" (list (txt "The handle is not registered in meatspace or cyberspace. Check the spelling, or seed the record.")))
+          (pb/div "pb-hero-actions"
+            (list (pb/a "index.html" "pb-btn pb-btn-primary" (list (txt "Back to the directory")))))))
+      (pb/footer))))
+
+(defun phonebook/render-index ()
+  (let ((profiles (phonebook/load-profiles))
+        (badges (phonebook/load-badges)))
+    (render-page "Phonebook · meatspace / cyberspace"
+      (pb/styles)
+      (pb/index-page profiles badges))))
+
+(defun phonebook/render-profile (handle)
+  (let ((profiles (phonebook/load-profiles))
+        (badges (phonebook/load-badges)))
+    (let ((profile (phonebook/by-handle handle profiles)))
+      (if (nil? profile)
+          (render-page (str "Phonebook · " handle)
+            (pb/styles)
+            (pb/not-found handle))
+          (render-page (str (pb/name profile) " · Phonebook")
+            (pb/styles)
+            (pb/profile-page profile profiles badges))))))
+
+(defun phonebook/main ()
+  (let ((args (cli-args)))
+    (if (and (not (nil? args)) (> (length args) 0))
+        (println (phonebook/render-profile (last-of args)))
+        (println (phonebook/render-index)))))
+
+(defun main ()
+  (phonebook/main))

@@ -1,0 +1,62 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Host-free tests for the identity model and the realm switch.
+
+(defun test/theme-human ()
+  (= (phonebook/theme (first (phonebook/fixture-profiles))) "meatspace"))
+
+(defun test/theme-agent ()
+  (let ((profile (phonebook/by-handle "nightwatch" (phonebook/fixture-profiles))))
+    (= (phonebook/theme profile) "cyberspace")))
+
+(defun test/initials ()
+  (= (phonebook/initials "Avery Wagar") "AW"))
+
+(defun test/initials-single ()
+  (= (phonebook/initials "Scribe") "S"))
+
+(defun test/tenure-years ()
+  (= (phonebook/tenure-years "2021-04-05" "2026-11-24") 5))
+
+(defun test/tenure-before-anniversary ()
+  (= (phonebook/tenure-years "2021-04-05" "2026-04-04") 4))
+
+(defun test/tenure-label ()
+  (let ((profile (phonebook/by-handle "avery" (phonebook/fixture-profiles))))
+    (= (phonebook/tenure-label profile "2026-11-24") "5 years")))
+
+(defun test/badge-lookup ()
+  (let ((badge (phonebook/badge-by-id "award-ship-it" (phonebook/fixture-badges))))
+    (and (not (nil? badge)) (= (field badge :name) "Ship It"))))
+
+(defun test/badge-wall-count ()
+  (let ((profile (phonebook/by-handle "avery" (phonebook/fixture-profiles))))
+    (>= (phonebook/badge-count profile (phonebook/fixture-badges)) 5)))
+
+(defun test/agent-owner ()
+  (let ((profile (phonebook/by-handle "nightwatch" (phonebook/fixture-profiles))))
+    (= (field profile :owner) "avery")))
+
+(defun test/people-count ()
+  (= (length (phonebook/people (phonebook/fixture-profiles))) 3))
+
+(defun test/agents-count ()
+  (= (length (phonebook/agents (phonebook/fixture-profiles))) 3))
+
+(defun test/manager ()
+  (let ((profile (phonebook/by-handle "jwagar" (phonebook/fixture-profiles)))
+        (manager (phonebook/manager-of (phonebook/by-handle "jwagar" (phonebook/fixture-profiles))
+                    (phonebook/fixture-profiles))))
+    (and (= (field profile :manager) "avery")
+         (= (field manager :handle) "avery"))))
+
+(defun test/agent-render-is-cyberspace ()
+  (let ((profile (phonebook/by-handle "nightwatch" (phonebook/fixture-profiles))))
+    (string-contains?
+      (render-html (pb/profile-page profile (phonebook/fixture-profiles) (phonebook/fixture-badges)))
+      "pb-realm-cyberspace")))
+
+(defun test/human-render-is-meatspace ()
+  (let ((profile (phonebook/by-handle "avery" (phonebook/fixture-profiles))))
+    (string-contains?
+      (render-html (pb/profile-page profile (phonebook/fixture-profiles) (phonebook/fixture-badges)))
+      "pb-realm-meatspace")))
