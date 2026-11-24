@@ -1,0 +1,38 @@
+schema = 1
+
+[spore]
+id = "dev.ajmwagar.phonebook"
+name = "phonebook"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+summary = "An Amazon-phone-tool-style identity directory for humans (meatspace) and agents (cyberspace)"
+
+[engine]
+soil = ">=0.1"
+target = "wasm32-wasip2"
+
+[launch]
+default = "web"
+surfaces = ["web"]
+
+[[surfaces]]
+name = "web"
+kind = "web"
+entry = "web/index.html"
+
+[anycast]
+name = "phonebook"
+kind = "phonebook"
+alpns = ["soil/http/1"]
+ttl_secs = 240
+
+[grants]
+"soil:records" = "read and seed identity profiles and badge definitions"
+
+[denied]
+"soil:http" = ["identity data is local; the host owns network authority"]
+"wasi:filesystem" = ["the host owns the identity records and paths"]
+
+[presentation]
+badge = "P"
+color = "#d96b1f"
