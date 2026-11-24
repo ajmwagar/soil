@@ -1,0 +1,512 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Phonebook UI: one HTML/CSS surface, two realms.
+;
+; Meatspace is warm paper and orange, the Amazon phone tool after a good
+; archival scan. Cyberspace is the same information in a dark register with a
+; grid, a cyan rule and a monospace voice. The realm is derived from the
+; subject's `kind`; a page cannot land in the wrong world by forgetting an
+; argument.
+
+(defun pb/div (class children)
+  (el "div" (list (attr :class class)) children))
+
+(defun pb/span (class children)
+  (el "span" (list (attr :class class)) children))
+
+(defun pb/a (href class children)
+  (el "a" (list (attr :href href) (attr :class class)) children))
+
+(defun pb/p (class children)
+  (el "p" (list (attr :class class)) children))
+
+(defun pb/or (value fallback)
+  (if (nil? value) fallback value))
+
+(defun pb/str-or (value fallback)
+  (if (nil? value) fallback (str value)))
+
+(defun pb/non-empty? (value)
+  (and (not (nil? value)) (not (= value ""))))
+
+(defun pb/pill (text tone)
+  (el "span" (list (attr :class (str "pb-pill pb-pill-" tone))) (list (txt text))))
+
+(defun pb/glyph (kind)
+  (cond
+    ((= kind "craft") "🛠")
+    ((= kind "service") "🛡")
+    ((= kind "peer") "🤝")
+    ((= kind "membership") "🎟")
+    ((= kind "tenure") "⏳")
+    (else "✦")))
+
+(defun pb/avatar (profile large)
+  (let ((photo (field profile :photo))
+        (name (pb/str-or (field profile :name) (field profile :handle)))
+        (agent (phonebook/agent? profile)))
+    (if (pb/non-empty? photo)
+        (pb/div (str "pb-avatar " (if large "pb-avatar-lg" ""))
+          (list (el "img" (list (attr :src photo) (attr :alt name)) nil)))
+        (pb/div
+          (str "pb-avatar "
+               (if large "pb-avatar-lg " "")
+               (if agent "pb-avatar-agent" "pb-avatar-human"))
+          (list
+            (pb/span "pb-avatar-initials" (list (txt (phonebook/initials name))))
+            (if agent
+                (pb/span "pb-avatar-glyph" (list (txt "◈")))
+                nil))))))
+
+(defun pb/kind-pill (profile)
+  (if (phonebook/agent? profile)
+      (pb/pill "AGENT" "agent")
+      (pb/pill "HUMAN" "human")))
+
+(defun pb/status-dot (profile)
+  (let ((status (pb/str-or (field profile :status) (if (phonebook/agent? profile) "registered" "active"))))
+    (pb/span (str "pb-status pb-status-" status)
+      (list (pb/span "pb-dot" nil) (txt status)))))
+
+(defun pb/link (link)
+  (pb/a (pb/str-or (field link :url) "#") "pb-link"
+    (list (txt (pb/str-or (field link :label) "link")))))
+
+(defun pb/links (profile)
+  (let ((links (field profile :links)))
+    (if (nil? links)
+        nil
+        (pb/div "pb-links" (map 'pb/link links)))))
+
+(defun pb/skill (skill)
+  (pb/span "pb-chip" (list (txt skill))))
+
+(defun pb/skills (profile)
+  (let ((skills (field profile :skills)))
+    (if (nil? skills)
+        nil
+        (pb/div "pb-chips" (map 'pb/skill skills)))))
+
+(defun pb/project (project)
+  (pb/span "pb-project" (list (txt project))))
+
+(defun pb/projects (profile)
+  (let ((projects (field profile :projects)))
+    (if (nil? projects)
+        nil
+        (pb/div "pb-projects"
+          (cons (pb/span "pb-label" (list (txt "Projects")))
+                (map 'pb/project projects))))))
+
+;;; One label/value row. Absent values render nothing rather than an empty cell.
+(defun pb/kv (label value)
+  (if (pb/non-empty? value)
+      (list
+        (el "dt" nil (list (txt label)))
+        (el "dd" nil (list (if (atom value) (txt value) value))))
+      nil))
+
+(defun pb/kv-list (rows)
+  (let ((present (filter 'pb/present-row? rows)))
+    (if (nil? present)
+        nil
+        (el "dl" (list (attr :class "pb-kv")) present))))
+
+(defun pb/present-row? (row)
+  (not (nil? row)))
+
+(defun pb/meta (label value)
+  (if (pb/non-empty? value)
+      (list (el "dt" nil (list (txt label))) (el "dd" nil (list (txt value))))
+      nil))
+
+(defun pb/manager-name (profile profiles)
+  (let ((manager (phonebook/manager-of profile profiles)))
+    (if (nil? manager) nil (field manager :name))))
+
+(defun pb/report-names (profile profiles)
+  (let ((reports (phonebook/direct-reports profile profiles)))
+    (if (nil? reports)
+        nil
+        (string-join (map 'pb/name reports) ", "))))
+
+(defun pb/name (profile)
+  (pb/str-or (field profile :name) (field profile :handle)))
+
+(defun pb/contact-card (profile)
+  (pb/div "pb-panel pb-contact"
+    (list
+      (pb/p "pb-eyebrow" (list (txt "CONTACT")))
+      (pb/kv-list
+        (list
+          (pb/kv "email" (field profile :email))
+          (pb/kv "phone" (field profile :phone))
+          (pb/kv "location" (field profile :location))
+          (pb/kv "timezone" (field profile :timezone))
+          (pb/kv "login" (field profile :login))
+          (pb/kv "endpoint" (field profile :endpoint))
+          (pb/kv "employee id" (field profile :employee_id))))
+      (pb/links profile))))
+
+(defun pb/agent-card (profile)
+  (pb/div "pb-panel pb-agent"
+    (list
+      (pb/p "pb-eyebrow" (list (txt "CYBERSPACE")))
+      (pb/kv-list
+        (list
+          (pb/kv "runtime" (field profile :runtime))
+          (pb/kv "model" (field profile :model))
+          (pb/kv "owner" (field profile :owner))
+          (pb/kv "trust" (field profile :trust))
+          (pb/kv "status" (field profile :status))
+          (pb/kv "last seen" (field profile :last_seen))))
+      (let ((tools (field profile :tools)))
+        (if (nil? tools)
+            nil
+            (list
+              (pb/p "pb-eyebrow pb-eyebrow-gap" (list (txt "TOOLS")))
+              (pb/div "pb-chips" (map 'pb/skill tools))))))))
+
+(defun pb/badge-meta (badge)
+  (let ((by (field badge :by))
+        (on (field badge :on))
+        (kind (field badge :kind)))
+    (cond
+      ((= kind "tenure") (str "since " (pb/str-or on "day one")))
+      ((nil? by) (str "on " (pb/str-or on "an unknown day")))
+      (else (str "by " by " · " (pb/str-or on "an unknown day"))))))
+
+(defun pb/badge-tile (badge)
+  (let ((kind (pb/str-or (field badge :kind) "award")))
+    (el "article"
+      (list (attr :class "pb-badge") (attr :data-kind kind))
+      (list
+        (pb/div "pb-badge-icon" (list (txt (pb/glyph kind))))
+        (pb/div "pb-badge-body"
+          (list
+            (pb/span "pb-badge-kind" (list (txt kind)))
+            (el "h3" nil (list (txt (pb/str-or (field badge :name) "Badge"))))
+            (pb/p "pb-badge-citation" (list (txt (pb/str-or (field badge :citation) ""))))
+            (pb/p "pb-badge-meta" (list (txt (pb/badge-meta badge))))))))))
+
+(defun pb/badge-wall (profile badges)
+  (let ((wall (phonebook/badges-for profile badges)))
+    (pb/section "pb-section pb-wall"
+      (list
+        (pb/div "pb-section-head"
+          (list
+            (pb/div nil
+              (list
+                (pb/p "pb-eyebrow" (list (txt "THE WALL")))
+                (el "h2" nil (list (txt "Badges")))))
+            (pb/span "pb-count" (list (txt (str (length wall) " on the wall"))))))
+        (if (nil? wall)
+            (pb/p "pb-empty" (list (txt "No badges yet. The wall fills in when someone was there.")))
+            (pb/div "pb-badge-grid" (map 'pb/badge-tile wall)))))))
+
+(defun pb/section (class children)
+  (el "section" (list (attr :class class)) children))
+
+(defun pb/identity-hero (profile)
+  (pb/div "pb-hero"
+    (list
+      (pb/div "pb-hero-art"
+        (list
+          (pb/avatar profile #t)
+          (pb/div "pb-hero-id"
+            (list
+              (pb/p "pb-handle" (list (txt (str "@" (pb/str-or (field profile :login) (field profile :handle))))))
+              (pb/status-dot profile)))))
+      (pb/div "pb-hero-copy"
+        (list
+          (pb/div "pb-hero-kicker"
+            (list (pb/kind-pill profile) (pb/pill (phonebook/realm-label profile) (phonebook/theme profile))))
+          (el "h1" nil (list (txt (pb/name profile))))
+          (if (pb/non-empty? (field profile :pronouns))
+              (pb/p "pb-pronouns" (list (txt (field profile :pronouns))))
+              nil)
+          (pb/p "pb-title" (list (txt (pb/str-or (field profile :title) "Member"))))
+          (pb/p "pb-org" (list (txt (str (pb/str-or (field profile :team) "FPL") " · " (pb/str-or (field profile :org) "FPL Holding")))))
+          (if (pb/non-empty? (field profile :message))
+              (el "blockquote" (list (attr :class "pb-message"))
+                (list (pb/p nil (list (txt (str "MESSAGE: " (field profile :message)))))))
+              nil)
+          (pb/div "pb-hero-actions"
+            (list
+              (pb/a "#" "pb-btn pb-btn-primary" (list (txt "Edit my info")))
+              (pb/a "index.html" "pb-btn" (list (txt "Back to directory"))))))))))
+
+(defun pb/profile-meta (profile profiles)
+  (pb/div "pb-panel pb-meta"
+    (list
+      (pb/p "pb-eyebrow" (list (txt "THE FACTS")))
+      (pb/kv-list
+        (list
+          (pb/kv "started" (field profile :started_on))
+          (pb/kv "tenure" (phonebook/tenure-label profile (phonebook/as-of)))
+          (pb/kv "level" (field profile :level))
+          (pb/kv "org" (field profile :org))
+          (pb/kv "team" (field profile :team))
+          (pb/kv "manager" (pb/manager-name profile profiles))
+          (pb/kv "direct reports" (pb/report-names profile profiles)))))))
+
+(defun pb/roster-nav (count-people count-agents)
+  (pb/div "pb-nav"
+    (list
+      (pb/a "index.html" "pb-brand"
+        (list
+          (pb/span "pb-brand-mark" (list (txt "☎")))
+          (pb/span nil (list (txt "PHONEBOOK")))))
+      (pb/div "pb-nav-links"
+        (list
+          (pb/a "index.html#people" "pb-nav-link" (list (txt (str "People " count-people))))
+          (pb/a "index.html#agents" "pb-nav-link" (list (txt (str "Agents " count-agents))))
+          (pb/a "#" "pb-nav-link" (list (txt "Badges")))
+          (pb/a "#" "pb-nav-link" (list (txt "Org")))))
+      (el "form" (list (attr :class "pb-search") (attr :action "index.html") (attr :method "get"))
+        (list
+          (el "input" (list (attr :type "search") (attr :name "q") (attr :placeholder "name, handle, skill…") (attr :aria-label "Search the directory")) nil)
+          (el "button" (list (attr :type "submit") (attr :class "pb-btn")) (list (txt "Search"))))))))
+
+(defun pb/profile-nav (profile)
+  (pb/div "pb-nav"
+    (list
+      (pb/a "index.html" "pb-brand"
+        (list
+          (pb/span "pb-brand-mark" (list (txt "☎")))
+          (pb/span nil (list (txt "PHONEBOOK")))))
+      (pb/div "pb-nav-links"
+        (list
+          (pb/a "index.html#people" "pb-nav-link" (list (txt "People")))
+          (pb/a "index.html#agents" "pb-nav-link" (list (txt "Agents")))
+          (pb/a "#" "pb-nav-link" (list (txt "Badges")))
+          (pb/a "#" "pb-nav-link" (list (txt "Org")))))
+      (pb/div "pb-nav-realm"
+        (list (pb/kind-pill profile) (pb/pill (phonebook/realm-label profile) (phonebook/theme profile)))))))
+
+(defun pb/profile-page (profile profiles badges)
+  (let ((realm (phonebook/theme profile)))
+    (pb/div (str "pb pb-realm-" realm)
+      (list
+        (pb/profile-nav profile)
+        (pb/identity-hero profile)
+        (pb/div "pb-columns"
+          (list
+            (pb/div "pb-col"
+              (list
+                (pb/contact-card profile)
+                (if (phonebook/agent? profile) (pb/agent-card profile) nil)
+                (pb/skills profile)
+                (pb/projects profile)))
+            (pb/div "pb-col pb-col-wide"
+              (list
+                (pb/profile-meta profile profiles)
+                (pb/div "pb-panel pb-passion"
+                  (list
+                    (pb/p "pb-eyebrow" (list (txt "WHAT TO ASK ABOUT")))
+                    (if (pb/non-empty? (field profile :message))
+                        (pb/p nil (list (txt (field profile :message))))
+                        (pb/p "pb-muted" (list (txt "No message yet."))))))))))
+        (pb/badge-wall profile badges)
+        (pb/footer)))))
+
+(defun pb/roster-card (profile badges)
+  (let ((realm (phonebook/theme profile))
+        (handle (field profile :handle))
+        (top (take 3 (phonebook/badges-for profile badges))))
+    (el "a"
+      (list (attr :class "pb-card") (attr :href (str handle ".html")) (attr :data-realm realm))
+      (list
+        (pb/div "pb-card-head"
+          (list
+            (pb/avatar profile #f)
+            (pb/div "pb-card-id"
+              (list
+                (pb/span "pb-card-name" (list (txt (pb/name profile))))
+                (pb/span "pb-card-title" (list (txt (pb/str-or (field profile :title) "Member"))))
+                (pb/span "pb-card-handle" (list (txt (str "@" (pb/str-or (field profile :login) handle)))))
+                (pb/kind-pill profile)))))
+        (pb/div "pb-card-badges"
+          (if (nil? top)
+              (pb/span "pb-muted" (list (txt "no badges yet")))
+              (map 'pb/card-badge top)))
+        (pb/div "pb-card-foot"
+          (list
+            (pb/span "pb-card-count" (list (txt (str (phonebook/badge-count profile badges) " badges"))))
+            (pb/span "pb-card-arrow" (list (txt "→")))))))))
+
+(defun pb/card-badge (badge)
+  (pb/span (str "pb-mini-badge pb-mini-" (pb/str-or (field badge :kind) "award"))
+    (list (txt (pb/glyph (field badge :kind))))))
+
+(defun pb/roster-section (title subtitle profiles badges id)
+  (pb/section "pb-section pb-roster-section"
+    (list
+      (pb/div "pb-section-head"
+        (list
+          (pb/div nil
+            (list
+              (pb/p "pb-eyebrow" (list (txt id)))
+              (el "h2" nil (list (txt title)))
+              (pb/p "pb-section-sub" (list (txt subtitle)))))
+          (pb/span "pb-count" (list (txt (str (length profiles) " registered"))))))
+      (pb/div "pb-grid" (map-with 'pb/roster-card badges profiles)))))
+
+(defun pb/index-page (profiles badges)
+  (let ((people (phonebook/people profiles))
+        (agents (phonebook/agents profiles)))
+    (pb/div "pb pb-realm-meatspace"
+      (list
+        (pb/roster-nav (length people) (length agents))
+        (el "header" (list (attr :class "pb-index-hero"))
+          (list
+            (pb/p "pb-eyebrow" (list (txt "FPL HOLDING · IDENTITY")))
+            (el "h1" nil (list (txt "Who is who, and what they can be asked about.")))
+            (pb/p "pb-lede"
+              (list (txt "The Phonebook holds a username and a face for every human and every agent. People live in meatspace; agents live in cyberspace. Same directory, two realms, one badge wall.")))
+            (pb/div "pb-index-stats"
+              (list
+                (pb/stat (str (length people)) "people" "human")
+                (pb/stat (str (length agents)) "agents" "agent")
+                (pb/stat (str (+ (length people) (length agents))) "subjects" "neutral")
+                (pb/stat (str (length badges)) "badges defined" "neutral")))))
+        (pb/roster-section "Meatspace" "Humans, their contact card, their tenure, and the wall their colleagues wrote." people badges "PEOPLE")
+        (pb/roster-section "Cyberspace" "Agents, their owner, their runtime, their tools, and the work they are trusted with." agents badges "AGENTS")
+        (pb/footer)))))
+
+(defun pb/stat (value label tone)
+  (pb/div (str "pb-stat pb-stat-" tone)
+    (list
+      (pb/span "pb-stat-value" (list (txt value)))
+      (pb/span "pb-stat-label" (list (txt label))))))
+
+(defun pb/footer ()
+  (el "footer" (list (attr :class "pb-footer"))
+    (list
+      (pb/span nil (list (txt "Phonebook · identity as a Spore · soil:records")))
+      (pb/span nil (list (txt "meatspace / cyberspace"))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Styles. The realm is one attribute; there is no second stylesheet.
+;;; ---------------------------------------------------------------------------
+
+(defun pb/base-styles ()
+  (str
+    ":root { color-scheme: light; }\n"
+    "* { box-sizing: border-box; }\n"
+    "html, body { margin: 0; min-height: 100%; }\n"
+    "body { margin: 0; }\n"
+    ".pb { min-height: 100vh; padding: 0 clamp(16px, 4vw, 56px) 64px; background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.55; }\n"
+    ".pb-realm-meatspace { --bg:#f3efe6; --panel:#fffdf7; --panel-2:#f8f2e6; --ink:#211d18; --muted:#6f6557; --dim:#9b8e7c; --line:#e2d8c7; --accent:#d96b1f; --accent-ink:#fffaf2; --accent-2:#2d6f8e; --soft:#f4e7d4; --shadow:0 1px 0 rgba(33,29,24,.06), 0 14px 30px rgba(33,29,24,.06); --font-display: ui-serif, Georgia, 'Times New Roman', serif; --font-body: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace; }\n"
+    ".pb-realm-cyberspace { --bg:#060a10; --panel:#0b141f; --panel-2:#101c2a; --ink:#d8f3ff; --muted:#7d9ab0; --dim:#546e84; --line:#1b3244; --accent:#49f2c2; --accent-ink:#04110d; --accent-2:#b388ff; --soft:#0d1a26; --shadow:0 0 0 1px rgba(73,242,194,.08), 0 18px 40px rgba(0,0,0,.45); --font-display: ui-monospace, SFMono-Regular, Menlo, monospace; --font-body: ui-monospace, SFMono-Regular, Menlo, monospace; --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace; color-scheme: dark; }\n"
+    ".pb-realm-cyberspace::before { content:''; position: fixed; inset: 0; pointer-events: none; z-index: 0; background-image: linear-gradient(rgba(73,242,194,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(73,242,194,.035) 1px, transparent 1px); background-size: 34px 34px; mask-image: linear-gradient(180deg, rgba(0,0,0,.9), transparent 70%); }\n"
+    ".pb-realm-cyberspace > * { position: relative; z-index: 1; }\n"
+    ".pb-nav { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:14px; padding:18px 0; border-bottom:1px solid var(--line); }\n"
+    ".pb-brand { display:flex; align-items:center; gap:10px; color:var(--ink); text-decoration:none; font:700 13px/1 var(--font-mono); letter-spacing:.18em; }\n"
+    ".pb-brand-mark { display:grid; place-items:center; width:28px; height:28px; border-radius:8px; background:var(--accent); color:var(--accent-ink); font-size:16px; }\n"
+    ".pb-nav-links { display:flex; flex-wrap:wrap; gap:4px; }\n"
+    ".pb-nav-link { color:var(--muted); text-decoration:none; padding:7px 10px; border-radius:999px; font:600 12px/1 var(--font-mono); letter-spacing:.04em; }\n"
+    ".pb-nav-link:hover { color:var(--accent); background:var(--panel-2); }\n"
+    ".pb-nav-realm { display:flex; gap:8px; align-items:center; }\n"
+    ".pb-search { display:flex; gap:8px; flex:1 1 260px; max-width:380px; }\n"
+    ".pb-search input { flex:1; min-width:0; padding:9px 12px; border:1px solid var(--line); border-radius:9px; background:var(--panel); color:var(--ink); font:14px var(--font-body); }\n"
+    ".pb-search input::placeholder { color:var(--dim); }\n"
+    ".pb-btn { display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--line); border-radius:9px; padding:9px 13px; background:var(--panel-2); color:var(--ink); font:600 13px/1.2 var(--font-body); text-decoration:none; cursor:pointer; }\n"
+    ".pb-btn:hover { border-color:var(--accent); color:var(--accent); }\n"
+    ".pb-btn-primary { background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }\n"
+    ".pb-btn-primary:hover { background:var(--accent); color:var(--accent-ink); }\n"
+    ".pb-index-hero { padding:clamp(34px,7vh,72px) 0 30px; max-width:1040px; }\n"
+    ".pb-index-hero h1 { margin:0; font:700 clamp(30px,5vw,54px)/1.02 var(--font-display); letter-spacing:-.03em; max-width:20ch; }\n"
+    ".pb-lede { color:var(--muted); max-width:66ch; margin:16px 0 0; font-size:16px; }\n"
+    ".pb-index-stats { display:flex; flex-wrap:wrap; gap:10px; margin-top:28px; }\n"
+    ".pb-stat { flex:1 1 130px; border:1px solid var(--line); border-radius:12px; padding:14px 16px; background:var(--panel); box-shadow:var(--shadow); }\n"
+    ".pb-stat-value { display:block; font:700 30px/1 var(--font-display); letter-spacing:-.03em; }\n"
+    ".pb-stat-label { display:block; margin-top:6px; color:var(--muted); font:10px/1.2 var(--font-mono); letter-spacing:.14em; text-transform:uppercase; }\n"
+    ".pb-stat-human { border-top:3px solid var(--accent); }\n"
+    ".pb-stat-agent { border-top:3px solid var(--accent-2); }\n"
+    ".pb-section { padding:34px 0 0; }\n"
+    ".pb-section-head { display:flex; flex-wrap:wrap; align-items:flex-end; justify-content:space-between; gap:16px; padding-bottom:14px; border-bottom:1px solid var(--line); }\n"
+    ".pb-section-head h2 { margin:0; font:700 24px/1.1 var(--font-display); letter-spacing:-.02em; }\n"
+    ".pb-section-sub { margin:6px 0 0; color:var(--muted); max-width:64ch; }\n"
+    ".pb-eyebrow { margin:0 0 7px; color:var(--accent); font:11px/1.2 var(--font-mono); letter-spacing:.2em; text-transform:uppercase; }\n"
+    ".pb-eyebrow-gap { margin-top:16px; }\n"
+    ".pb-count { color:var(--muted); font:12px/1 var(--font-mono); }\n"
+    ".pb-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:14px; margin-top:18px; }\n"
+    ".pb-card { display:flex; flex-direction:column; gap:14px; padding:16px; border:1px solid var(--line); border-radius:14px; background:var(--panel); color:var(--ink); text-decoration:none; box-shadow:var(--shadow); transition:border-color .12s ease, transform .12s ease; }\n"
+    ".pb-card:hover { border-color:var(--accent); transform:translateY(-1px); }\n"
+    ".pb-card[data-realm='cyberspace'] { --bg:#060a10; --panel:#0b141f; --panel-2:#101c2a; --ink:#d8f3ff; --muted:#7d9ab0; --dim:#546e84; --line:#1b3244; --accent:#49f2c2; --accent-ink:#04110d; --accent-2:#b388ff; background:var(--panel); }\n"
+    ".pb-card-head { display:flex; gap:12px; align-items:flex-start; }\n"
+    ".pb-card-id { min-width:0; display:flex; flex-direction:column; gap:3px; }\n"
+    ".pb-card-name { font:700 17px/1.15 var(--font-display); letter-spacing:-.01em; overflow-wrap:anywhere; }\n"
+    ".pb-card-title { color:var(--muted); font-size:13px; }\n"
+    ".pb-card-handle { color:var(--dim); font:11px/1 var(--font-mono); }\n"
+    ".pb-card-badges { display:flex; gap:5px; flex-wrap:wrap; min-height:26px; align-items:center; }\n"
+    ".pb-card-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; padding-top:10px; border-top:1px solid var(--line); }\n"
+    ".pb-card-count { color:var(--muted); font:11px/1 var(--font-mono); }\n"
+    ".pb-card-arrow { color:var(--accent); font-weight:700; }\n"
+    ".pb-mini-badge { display:grid; place-items:center; width:26px; height:26px; border-radius:7px; background:var(--soft); border:1px solid var(--line); font-size:13px; }\n"
+    ".pb-avatar { display:grid; place-items:center; position:relative; flex:none; width:52px; height:52px; border-radius:12px; overflow:hidden; background:var(--soft); border:1px solid var(--line); color:var(--ink); }\n"
+    ".pb-avatar-lg { width:132px; height:132px; border-radius:16px; }\n"
+    ".pb-avatar img { width:100%; height:100%; object-fit:cover; }\n"
+    ".pb-avatar-human { background:linear-gradient(145deg, var(--soft), var(--panel)); }\n"
+    ".pb-avatar-agent { background:linear-gradient(145deg, #10253a, #07111c); color:var(--accent); border-color:rgba(73,242,194,.35); box-shadow:inset 0 0 24px rgba(73,242,194,.12); }\n"
+    ".pb-avatar-initials { font:700 18px/1 var(--font-display); letter-spacing:.02em; }\n"
+    ".pb-avatar-lg .pb-avatar-initials { font-size:42px; }\n"
+    ".pb-avatar-glyph { position:absolute; right:5px; bottom:2px; font-size:11px; opacity:.7; }\n"
+    ".pb-pill { display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:999px; padding:3px 8px; font:700 10px/1.2 var(--font-mono); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); background:var(--panel-2); }\n"
+    ".pb-pill-human { color:var(--accent); border-color:color-mix(in srgb, var(--accent) 40%, var(--line)); }\n"
+    ".pb-pill-agent { color:var(--accent-2); border-color:color-mix(in srgb, var(--accent-2) 42%, var(--line)); }\n"
+    ".pb-pill-meatspace { color:var(--accent); }\n"
+    ".pb-pill-cyberspace { color:var(--accent-2); }\n"
+    ".pb-hero { display:flex; flex-wrap:wrap; gap:clamp(20px,4vw,40px); align-items:center; padding:clamp(26px,5vh,52px) 0 30px; border-bottom:1px solid var(--line); }\n"
+    ".pb-hero-art { display:flex; align-items:center; gap:16px; }\n"
+    ".pb-hero-id { display:flex; flex-direction:column; gap:8px; }\n"
+    ".pb-handle { margin:0; color:var(--dim); font:12px/1 var(--font-mono); }\n"
+    ".pb-hero-copy { flex:1 1 420px; min-width:0; }\n"
+    ".pb-hero-kicker { display:flex; flex-wrap:wrap; gap:7px; margin-bottom:10px; }\n"
+    ".pb-hero h1 { margin:0; font:700 clamp(34px,6vw,64px)/.98 var(--font-display); letter-spacing:-.045em; overflow-wrap:anywhere; }\n"
+    ".pb-pronouns { margin:6px 0 0; color:var(--dim); font:12px/1 var(--font-mono); }\n"
+    ".pb-title { margin:8px 0 0; font-size:19px; color:var(--ink); }\n"
+    ".pb-org { margin:4px 0 0; color:var(--muted); font:12px/1.4 var(--font-mono); }\n"
+    ".pb-message { margin:18px 0 0; padding:14px 16px; border-left:3px solid var(--accent); background:var(--panel); border-radius:0 10px 10px 0; }\n"
+    ".pb-message p { margin:0; color:var(--muted); }\n"
+    ".pb-hero-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:18px; }\n"
+    ".pb-status { display:inline-flex; align-items:center; gap:6px; color:var(--muted); font:11px/1 var(--font-mono); text-transform:uppercase; letter-spacing:.08em; }\n"
+    ".pb-dot { width:7px; height:7px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }\n"
+    ".pb-columns { display:grid; grid-template-columns:minmax(240px, 320px) 1fr; gap:18px; align-items:start; padding-top:26px; }\n"
+    ".pb-col { display:flex; flex-direction:column; gap:14px; min-width:0; }\n"
+    ".pb-col-wide { min-width:0; }\n"
+    ".pb-panel { border:1px solid var(--line); border-radius:14px; padding:16px; background:var(--panel); box-shadow:var(--shadow); }\n"
+    ".pb-kv { display:grid; grid-template-columns:minmax(88px,auto) 1fr; gap:7px 14px; margin:0; font-size:13px; }\n"
+    ".pb-kv dt { color:var(--dim); font:11px/1.4 var(--font-mono); text-transform:uppercase; letter-spacing:.06em; }\n"
+    ".pb-kv dd { margin:0; overflow-wrap:anywhere; }\n"
+    ".pb-links { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }\n"
+    ".pb-link { color:var(--accent-2); font:12px/1 var(--font-mono); text-decoration:none; border-bottom:1px solid color-mix(in srgb, var(--accent-2) 35%, transparent); }\n"
+    ".pb-chips { display:flex; flex-wrap:wrap; gap:6px; }\n"
+    ".pb-chip { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:4px 9px; background:var(--panel-2); color:var(--muted); font:11px/1.3 var(--font-mono); }\n"
+    ".pb-projects { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }\n"
+    ".pb-label { color:var(--dim); font:11px/1 var(--font-mono); letter-spacing:.08em; text-transform:uppercase; }\n"
+    ".pb-project { color:var(--muted); font-size:13px; }\n"
+    ".pb-project + .pb-project::before { content:'·'; margin-right:8px; color:var(--dim); }\n"
+    ".pb-wall { padding-top:34px; }\n"
+    ".pb-badge-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:10px; margin-top:16px; }\n"
+    ".pb-badge { display:flex; gap:11px; padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--panel); box-shadow:var(--shadow); border-top:3px solid var(--badge, var(--accent)); }\n"
+    ".pb-badge[data-kind='craft'] { --badge:#d96b1f; }\n"
+    ".pb-badge[data-kind='service'] { --badge:#2d6f8e; }\n"
+    ".pb-badge[data-kind='peer'] { --badge:#8a6bbf; }\n"
+    ".pb-badge[data-kind='membership'] { --badge:#b08a2e; }\n"
+    ".pb-badge[data-kind='tenure'] { --badge:#5b8a5b; }\n"
+    ".pb-realm-cyberspace .pb-badge { border-top-color:var(--badge, var(--accent)); box-shadow:0 0 0 1px rgba(73,242,194,.06), 0 10px 24px rgba(0,0,0,.35); }\n"
+    ".pb-badge-icon { display:grid; place-items:center; flex:none; width:36px; height:36px; border-radius:9px; background:var(--soft); border:1px solid var(--line); font-size:17px; }\n"
+    ".pb-badge-body { min-width:0; }\n"
+    ".pb-badge-kind { color:var(--dim); font:9px/1 var(--font-mono); letter-spacing:.14em; text-transform:uppercase; }\n"
+    ".pb-badge h3 { margin:3px 0 3px; font:700 14px/1.2 var(--font-display); }\n"
+    ".pb-badge-citation { margin:0; color:var(--muted); font-size:12px; }\n"
+    ".pb-badge-meta { margin:6px 0 0; color:var(--dim); font:10px/1.2 var(--font-mono); }\n"
+    ".pb-empty { color:var(--muted); font-style:italic; }\n"
+    ".pb-muted { color:var(--muted); }\n"
+    ".pb-footer { display:flex; flex-wrap:wrap; justify-content:space-between; gap:12px; margin-top:44px; padding-top:16px; border-top:1px solid var(--line); color:var(--dim); font:10px/1.4 var(--font-mono); letter-spacing:.06em; text-transform:uppercase; }\n"
+    "@media (max-width:820px) { .pb-columns { grid-template-columns:1fr; } .pb-hero-art { width:100%; } .pb-avatar-lg { width:96px; height:96px; } }\n"
+    "@media (prefers-reduced-motion:reduce) { .pb-card { transition:none; } }\n"))
+
+(defun pb/styles ()
+  (pb/base-styles))

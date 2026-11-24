@@ -1,0 +1,174 @@
+; SPDX-License-Identifier: MIT OR Apache-2.0
+; Phonebook: identity records for humans (meatspace) and agents (cyberspace).
+;
+; The host owns durability. This file owns the schema names, the small derived
+; facts a profile shows, and the rules that decide which realm a subject
+; belongs to. Nothing here calls the network or writes a record.
+
+(defun phonebook/profiles-collection () "identity.profile")
+(defun phonebook/badges-collection () "identity.badge")
+(defun phonebook/schema-profile () "identity.profile.v1")
+(defun phonebook/schema-badge () "identity.badge.v1")
+
+;;; A fixed "today" keeps SSR and tests deterministic. A host that wants a
+;;; live clock passes its own date.
+(defun phonebook/as-of () "2026-11-24")
+
+(defun phonebook/or (value fallback)
+  (if (nil? value) fallback value))
+
+(defun phonebook/str-or (value fallback)
+  (if (nil? value) fallback (str value)))
+
+(defun phonebook/human? (profile)
+  (= (field profile :kind) "human"))
+
+(defun phonebook/agent? (profile)
+  (= (field profile :kind) "agent"))
+
+;;; One attribute selects the whole visual world: a person is meatspace, an
+;;; agent is cyberspace. It is derived, never stored twice.
+(defun phonebook/theme (profile)
+  (if (phonebook/agent? profile) "cyberspace" "meatspace"))
+
+(defun phonebook/realm-label (profile)
+  (if (phonebook/agent? profile) "CYBERSPACE" "MEATSPACE"))
+
+;;; First letter of the first two words, for a photo-less avatar.
+(defun phonebook/initials-loop (chars prev-space acc)
+  (if (nil? chars)
+      acc
+      (let ((c (first chars)))
+        (if (= c " ")
+            (phonebook/initials-loop (rest chars) #t acc)
+            (if prev-space
+                (phonebook/initials-loop (rest chars) #f
+                  (str acc (string-join (take 1 (list c)) "")))
+                (phonebook/initials-loop (rest chars) #f acc))))))
+
+(defun phonebook/initials (name)
+  (let ((chars (string-chars (phonebook/str-or name ""))))
+    (if (nil? chars)
+        "?"
+        (phonebook/initials-loop
+          (rest chars) #f
+          (string-join (take 1 chars) "")))))
+
+;;; Date parts from YYYY-MM-DD without pulling in a second date parser.
+(defun phonebook/year-of (date)
+  (if (nil? date) nil (date/part (string-chars date) 4)))
+
+(defun phonebook/month-of (date)
+  (if (nil? date) nil (date/part (drop 5 (string-chars date)) 2)))
+
+(defun phonebook/day-of (date)
+  (if (nil? date) nil (date/part (drop 8 (string-chars date)) 2)))
+
+(defun phonebook/tenure-years (started as-of)
+  (if (or (nil? started) (nil? as-of))
+      nil
+      (let ((sy (phonebook/year-of started))
+            (sm (phonebook/month-of started))
+            (sd (phonebook/day-of started))
+            (ay (phonebook/year-of as-of))
+            (am (phonebook/month-of as-of))
+            (ad (phonebook/day-of as-of)))
+        (if (or (nil? sy) (nil? sm) (nil? sd) (nil? ay) (nil? am) (nil? ad))
+            nil
+            (let ((years (- ay sy)))
+              (if (or (< am sm) (and (= am sm) (< ad sd)))
+                  (- years 1)
+                  years))))))
+
+(defun phonebook/plural (n one many)
+  (if (= n 1) (str n " " one) (str n " " many)))
+
+(defun phonebook/tenure-label (profile as-of)
+  (let ((years (phonebook/tenure-years (field profile :started_on) as-of)))
+    (cond
+      ((nil? years) "—")
+      ((= years 0) "less than a year")
+      (else (phonebook/plural years "year" "years")))))
+
+;;; Badges are defined once under identity.badge and granted by reference.
+(defun phonebook/badge-id? (badge id)
+  (= (field badge :id) id))
+
+(defun phonebook/badge-by-id (id badges)
+  (find-with 'phonebook/badge-id? id badges))
+
+(defun phonebook/grant->badge (grant badges)
+  (let ((definition (phonebook/badge-by-id (field grant :badge) badges)))
+    (if (nil? definition)
+        (list
+          (list :id (field grant :badge))
+          (list :name (phonebook/str-or (field grant :badge) "Unknown badge"))
+          (list :kind "award")
+          (list :citation "This grant names a badge that no longer exists.")
+          (list :on (field grant :on))
+          (list :by (field grant :by)))
+        (list
+          (list :id (field definition :id))
+          (list :name (field definition :name))
+          (list :kind (field definition :kind))
+          (list :citation (field definition :citation))
+          (list :on (field grant :on))
+          (list :by (field grant :by))))))
+
+(defun phonebook/award-badges (profile badges)
+  (map-with 'phonebook/grant->badge badges (field profile :badges)))
+
+(defun phonebook/tenure-badge (year profile)
+  (list
+    (list :id (str "tenure-" year))
+    (list :name (str year " " (if (= year 1) "Year" "Years")))
+    (list :kind "tenure")
+    (list :citation (str "On the wall since " (phonebook/str-or (field profile :started_on) "day one")))
+    (list :on (field profile :started_on))
+    (list :by nil)))
+
+;;; Tenure badges are derived from the start date; nobody grants them.
+(defun phonebook/tenure-badges (profile as-of)
+  (let ((years (phonebook/tenure-years (field profile :started_on) as-of)))
+    (if (or (nil? years) (= years 0))
+        nil
+        (map-with 'phonebook/tenure-badge profile (range 1 (+ years 1))))))
+
+(defun phonebook/badges-for (profile badges)
+  (append
+    (phonebook/award-badges profile badges)
+    (phonebook/tenure-badges profile (phonebook/as-of))))
+
+(defun phonebook/badge-count (profile badges)
+  (length (phonebook/badges-for profile badges)))
+
+(defun phonebook/handle? (profile handle)
+  (= (field profile :handle) handle))
+
+(defun phonebook/by-handle (handle profiles)
+  (find-with 'phonebook/handle? handle profiles))
+
+(defun phonebook/manager-of (profile profiles)
+  (let ((manager (field profile :manager)))
+    (if (nil? manager)
+        nil
+        (phonebook/by-handle manager profiles))))
+
+(defun phonebook/reports-to? (profile manager)
+  (= (field profile :manager) manager))
+
+(defun phonebook/direct-reports (profile profiles)
+  (let ((handle (field profile :handle)))
+    (filter-with 'phonebook/reports-to? handle profiles)))
+
+(defun phonebook/people (profiles)
+  (filter 'phonebook/human? profiles))
+
+(defun phonebook/agents (profiles)
+  (filter 'phonebook/agent? profiles))
+
+(defun phonebook/kind? (profile kind)
+  (= (field profile :kind) kind))
+
+(defun phonebook/kind-count (profiles kind)
+  (length (filter-with 'phonebook/kind? kind profiles)))

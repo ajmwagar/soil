@@ -1,0 +1,34 @@
+(spore
+  (schema 1)
+  (kind "spore")
+
+  (id "dev.ajmwagar.phonebook")
+  (name "phonebook")
+  (version "0.1.0")
+  (license "MIT OR Apache-2.0")
+  (summary "An Amazon-phone-tool-style identity directory for humans (meatspace) and agents (cyberspace)")
+  (homepage "https://github.com/ajmwagar/soil")
+
+  (world "root:component")
+  (wit "wit/phonebook.wit")
+
+  (distribution "source")
+  (source "source/")
+
+  (requires
+    ("soil:records/records@0.1.0" "identity profiles, badge definitions, and grants")
+    ("wasi:cli" "seed and SSR render commands")
+    ("wasi:clocks" "tenure and last-seen timestamps"))
+
+  (anycast
+    (name "phonebook")
+    (kind "phonebook")
+    (alpns ("soil/http/1"))
+    (ttl_secs 240))
+
+  (surfaces
+    (surface "web" (kind "web") (entry "web/index.html")))
+
+  (docs
+    (usage "phonebook seed | phonebook render [handle]")
+    (man "README.md")))
