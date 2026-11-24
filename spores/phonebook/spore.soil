@@ -20,6 +20,12 @@
     ("wasi:cli" "seed and SSR render commands")
     ("wasi:clocks" "tenure and last-seen timestamps"))
 
+  (anycast
+    (name "phonebook")
+    (kind "phonebook")
+    (alpns ("soil/http/1"))
+    (ttl_secs 240))
+
   (surfaces
     (surface "cli" (world "wasi:cli/command@0.2.0"))
     (surface "web" (world "wasi:http/proxy") (assets "web/")))
