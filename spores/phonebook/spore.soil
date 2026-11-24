@@ -27,8 +27,7 @@
     (ttl_secs 240))
 
   (surfaces
-    (surface "cli" (world "wasi:cli/command@0.2.0"))
-    (surface "web" (world "wasi:http/proxy") (assets "web/")))
+    (surface "web" (kind "web") (entry "web/index.html")))
 
   (docs
     (usage "phonebook seed | phonebook render [handle]")
