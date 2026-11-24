@@ -74,6 +74,21 @@ dynamic path.
 tenure across an anniversary, badge lookup, the badge wall count, the manager
 edge, and the rendered realm class.
 
+## Target architecture
+
+The Rust `meatspace` app is **frozen**. This Spore is the identity surface.
+
+- **Loam / Mycelium** own `soil:principal` (auth/session), `soil:records`
+  (profiles + badges), directory sync from fpl-auth, `soil:vfs` (photos), and
+  `.myc` leases/routing.
+- **This Spore** owns the domain rules (realm, tenure, badge grants, manager
+  graph) and the SSR/HTML/CSS surface.
+- No standalone Rust identity web server. The Rust app is a contract reference
+  until the parity checklist is green, then its web layer is deleted and the
+  repo archived.
+
+See `../../charter/03-internal-affairs.md`.
+
 ## Build status
 
 This is a source-distributed Spore (`distribution "source"`). The `module.wasm`
